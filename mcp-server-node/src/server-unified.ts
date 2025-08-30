@@ -10,9 +10,13 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 8977;
 
-// Configuración CORS amplia para MCP Inspector
+// Configuración CORS segura basada en ambiente
+const allowedOrigins = process.env.NODE_ENV === 'production' 
+  ? ['https://biosanarcall.site', 'https://mcp-inspector.com']
+  : ['*']; // En desarrollo permitir todos
+
 app.use(cors({
-  origin: '*',
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'x-requested-with'],
   credentials: false
