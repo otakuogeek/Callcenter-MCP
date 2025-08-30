@@ -225,6 +225,25 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       } catch {/* ignore */}
     }
 
+    // Registrar asignación en preallocation si aplica: buscar preallocation del doctor para target_date (DATE(scheduled_at)) y con remaining > 0
+    try {
+      const targetDate = d.scheduled_at.slice(0,10);
+      const [preRows]: any = await pool.query(
+        `SELECT id, slots, assigned_count
+           FROM scheduling_preallocation
+          WHERE doctor_id = ? AND target_date = ? AND pre_date <= CURDATE() AND assigned_count < slots
+          ORDER BY pre_date ASC`,
+        [d.doctor_id, targetDate]
+      );
+      if (Array.isArray(preRows) && preRows.length) {
+        const pre = preRows[0];
+        try {
+          await pool.query('CALL assign_preallocation_slot(?,?,?)', [pre.id, d.patient_id, created.id]);
+          (created as any).preallocation_id = pre.id;
+        } catch (e) { /* ignore slot assign error */ }
+      }
+    } catch { /* ignore */ }
+
     return res.status(201).json(created);
   } catch {
     return res.status(500).json({ message: 'Server error' });
@@ -302,6 +321,10 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     values.push(id);
     const doctorChanged = fields.some(f => f.startsWith('doctor_id'));
     await pool.query(`UPDATE appointments SET ${fields.join(', ')} WHERE id = ?`, values);
+    // Si se cancela, liberar preallocation si corresponde
+    if (d.status === 'Cancelada') {
+      try { await pool.query('CALL release_preallocation_slot(?)', [id]); } catch { /* ignore */ }
+    }
     // Recalcular facturación si cambió el doctor
     if (doctorChanged) {
       try {

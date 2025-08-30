@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Calendar } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,8 +11,6 @@ import {
   Clock, 
   Users, 
   Filter,
-  ChevronLeft,
-  ChevronRight,
   Eye,
   Plus
 } from "lucide-react";
@@ -22,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { motion, AnimatePresence } from "framer-motion";
+// (Animations removidas por ahora – no usadas)
 
 interface DayDetailModalProps {
   isOpen: boolean;
@@ -201,6 +199,15 @@ interface EnhancedAppointmentCalendarProps {
     specialties: number[];
     locations: number[];
   };
+  targetDate?: string; // día de atención del médico
+  preallocation?: { date: string; assigned: number }[]; // distribución de cupos
+  preallocationTotal?: number;
+  preallocationDoctorName?: string;
+  preallocationRequestedTotal?: number;
+  preallocationPersisted?: boolean;
+  onSelectTargetDate?: (ymd: string) => void;
+  // Nuevo: mapa por doctor para mostrar disponible vs asignado
+  preallocationByDoctor?: Record<string, Array<{ doctor_id: number; doctor_name: string; pre_date: string; slots: number; assigned_count: number }>>; // key = YYYY-MM-DD
 }
 
 const EnhancedAppointmentCalendar = ({ 
@@ -210,7 +217,15 @@ const EnhancedAppointmentCalendar = ({
   onMonthChange,
   onCreateAvailability,
   onViewAppointments,
-  selectedFilters
+  selectedFilters,
+  targetDate,
+  preallocation,
+  preallocationTotal,
+  preallocationDoctorName,
+  preallocationRequestedTotal,
+  preallocationPersisted,
+  onSelectTargetDate,
+  preallocationByDoctor
 }: EnhancedAppointmentCalendarProps) => {
   const [selectedDayData, setSelectedDayData] = useState<{
     date: Date | null;
@@ -223,8 +238,10 @@ const EnhancedAppointmentCalendar = ({
     const hasAvailabilities = new Set<string>();
     const highActivity = new Set<string>();
     const mediumActivity = new Set<string>();
+    const target = new Set<string>();
+    const prealloc = new Set<string>();
     
-    Object.entries(summary).forEach(([d, v]) => {
+  Object.entries(summary).forEach(([d, v]) => {
       const totalActivity = (v?.appointments || 0) + (v?.availabilities || 0);
       if ((v?.appointments || 0) > 0) hasAppointments.add(d);
       if ((v?.availabilities || 0) > 0) hasAvailabilities.add(d);
@@ -232,6 +249,9 @@ const EnhancedAppointmentCalendar = ({
       if (totalActivity >= 10) highActivity.add(d);
       else if (totalActivity >= 5) mediumActivity.add(d);
     });
+
+  if (targetDate) target.add(targetDate);
+  if (preallocation) preallocation.forEach(p => prealloc.add(p.date));
     
     const toDates = (set: Set<string>) => Array.from(set).map(d => new Date(d + 'T00:00:00'));
     return {
@@ -239,25 +259,33 @@ const EnhancedAppointmentCalendar = ({
       hasAvailabilities: toDates(hasAvailabilities),
       highActivity: toDates(highActivity),
       mediumActivity: toDates(mediumActivity),
+      targetDay: toDates(target),
+      preallocDay: toDates(prealloc),
     } as any;
-  }, [summary]);
+  }, [summary, targetDate, preallocation]);
 
   const classNames = useMemo(() => ({
     day_hasAppointments: 'relative hover:bg-blue-50 transition-colors cursor-pointer',
     day_hasAvailabilities: 'relative hover:bg-green-50 transition-colors cursor-pointer',
     day_highActivity: 'ring-2 ring-medical-500 ring-opacity-60',
     day_mediumActivity: 'ring-1 ring-medical-300 ring-opacity-40',
+    day_targetDay: 'relative border-2 border-fuchsia-500 bg-fuchsia-50',
+    day_preallocDay: 'relative after:absolute after:bottom-0 after:left-0 after:right-0 after:h-1 after:bg-amber-400/70 rounded-md',
   }), []);
 
-  const handleDayClick = (clickedDate: Date | undefined) => {
+  const handleDayClick = (clickedDate: Date | undefined, ev?: any) => {
     if (!clickedDate) return;
+    if (ev && (ev.altKey || ev.metaKey)) { // evitar cambiar target si se mantiene Alt/Meta
+      return;
+    }
     
     setDate(clickedDate);
     const iso = clickedDate.toISOString().split('T')[0];
     const dayData = summary[iso] || { appointments: 0, availabilities: 0 };
     
     setSelectedDayData({ date: clickedDate, data: dayData });
-    setShowDayModal(true);
+  setShowDayModal(true);
+  if (onSelectTargetDate) onSelectTargetDate(iso);
   };
 
   const getIntensityLevel = (appointments: number, availabilities: number) => {
@@ -305,38 +333,48 @@ const EnhancedAppointmentCalendar = ({
           <Calendar
             mode="single"
             selected={date}
-            onSelect={handleDayClick}
+            onSelect={(d, _selectedDay, ev) => handleDayClick(d, ev)}
             locale={es}
-            className="w-full"
+            className="w-full max-w-full"
+        disabled={{ before: new Date(new Date().setHours(0,0,0,0)) }}
             modifiers={modifiers as any}
             classNames={{
               ...classNames,
-              day: "h-12 w-12 text-center text-sm transition-all hover:bg-accent hover:text-accent-foreground focus-within:relative focus-within:z-20 rounded-md",
+              day: "h-16 w-16 text-center text-sm transition-all hover:bg-accent hover:text-accent-foreground focus-within:relative focus-within:z-20 rounded-md",
               day_selected: "bg-medical-600 text-white hover:bg-medical-700 hover:text-white focus:bg-medical-600 focus:text-white",
               day_today: "bg-accent text-accent-foreground font-semibold",
               day_outside: "text-muted-foreground opacity-50",
-              day_disabled: "text-muted-foreground opacity-50 cursor-not-allowed",
+              day_disabled: "text-muted-foreground opacity-30 cursor-not-allowed pointer-events-none",
               day_hidden: "invisible",
             } as any}
             components={{
               DayContent: (props: any) => {
                 const d: Date = props.date;
+                const todayMid = new Date(); todayMid.setHours(0,0,0,0);
+                const dateMid = new Date(d); dateMid.setHours(0,0,0,0);
                 const iso = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())).toISOString().slice(0, 10);
                 const info = summary[iso];
                 const appts = info?.appointments || 0;
                 const avails = info?.availabilities || 0;
                 const intensity = getIntensityLevel(appts, avails);
+                const preallocInfo = preallocation?.find(p => p.date === iso);
+                const perDoctor = preallocationByDoctor?.[iso];
+                const totalAssigned = perDoctor ? perDoctor.reduce((s: number, i: any)=> s + (i.assigned_count||0),0) : 0;
+                const totalPlanned = perDoctor ? perDoctor.reduce((s: number, i: any)=> s + (i.slots||0),0) : 0;
+                const remaining = preallocationRequestedTotal !== undefined && preallocation
+                  ? Math.max(0, preallocationRequestedTotal - preallocation.reduce((s,p)=> s + p.assigned, 0))
+                  : undefined;
                 
                 return (
-                  <TooltipProvider delayDuration={150}>
+      <TooltipProvider delayDuration={150}>
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <div className={`w-full h-full flex flex-col items-center justify-center gap-1 rounded-lg border-2 transition-all ${getStatusColor(appts, avails)} ${
                           intensity === 'high' ? 'ring-2 ring-medical-500' :
                           intensity === 'medium' ? 'ring-1 ring-medical-300' : ''
-                        }`}>
+                        } ${dateMid < todayMid ? 'opacity-40' : ''}`}>
                           <div className="text-sm font-medium">{d.getDate()}</div>
-                          <div className="flex items-center gap-1">
+                          <div className="flex flex-col items-center gap-0.5">
                             {avails > 0 && (
                               <div className="flex items-center">
                                 <span className="w-1.5 h-1.5 rounded-full bg-green-500"></span>
@@ -347,6 +385,12 @@ const EnhancedAppointmentCalendar = ({
                               <div className="flex items-center">
                                 <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
                                 <span className="text-[10px] ml-0.5 text-blue-700">{appts}</span>
+                              </div>
+                            )}
+              {(preallocInfo || perDoctor) && (
+                              <div className="flex items-center">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
+                <span className="text-[10px] ml-0.5 text-amber-700">{perDoctor ? `${totalAssigned}/${totalPlanned}` : preallocInfo?.assigned}</span>
                               </div>
                             )}
                           </div>
@@ -363,6 +407,41 @@ const EnhancedAppointmentCalendar = ({
                             <span className="w-2 h-2 rounded-full bg-blue-500"></span>
                             <span>{appts} cita{appts === 1 ? '' : 's'}</span>
                           </div>
+                          { (preallocInfo || perDoctor) && (
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                              {perDoctor ? (
+                                <span>{totalAssigned}/{totalPlanned} cupos usados/planificados</span>
+                              ) : (
+                                <span>{preallocInfo?.assigned} cupos planificados</span>
+                              )}
+                            </div>
+                          )}
+                          {perDoctor && perDoctor.length > 0 && (
+                            <div className="mt-1 space-y-0.5">
+                              {perDoctor.slice(0,4).map((doc: any) => (
+                                <div key={doc.doctor_id} className="flex items-center justify-between gap-2">
+                                  <span className="truncate max-w-[90px]">{doc.doctor_name || `Dr ${doc.doctor_id}`}</span>
+                                  <span className="text-[10px] font-medium">{doc.assigned_count}/{doc.slots}</span>
+                                </div>
+                              ))}
+                              {perDoctor.length > 4 && (
+                                <div className="text-[10px] text-gray-500">+{perDoctor.length - 4} más</div>
+                              )}
+                            </div>
+                          )}
+                          {preallocation && remaining !== undefined && (
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-gray-400"></span>
+                              <span>{remaining} restantes globales</span>
+                            </div>
+                          )}
+                          {targetDate === iso && (
+                            <div className="flex items-center gap-2">
+                              <span className="w-2 h-2 rounded-full bg-fuchsia-500"></span>
+                              <span>Día objetivo de atención</span>
+                            </div>
+                          )}
                           {appts > 0 || avails > 0 ? (
                             <div className="text-medical-600 font-medium">Clic para ver detalles</div>
                           ) : (
@@ -400,6 +479,19 @@ const EnhancedAppointmentCalendar = ({
                 <span className="w-3 h-3 rounded border border-medical-300"></span>
                 <span>Media actividad (5-9)</span>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-amber-500"></span>
+                <span>Cupos planificados (global o por doctor)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 rounded-full bg-fuchsia-500"></span>
+                <span>Día objetivo</span>
+              </div>
+        {preallocation && (
+                <div className="col-span-2 text-[11px] text-gray-600 mt-2">
+          Plan {preallocationDoctorName ? `para ${preallocationDoctorName}` : ''}: {preallocationTotal} cupos distribuidos de {preallocationRequestedTotal ?? preallocationTotal}. {preallocationPersisted ? 'Persistido' : 'No guardado'}.
+                </div>
+              )}
             </div>
             <div className="mt-2 pt-2 border-t border-gray-200">
               <p className="text-xs text-gray-600">

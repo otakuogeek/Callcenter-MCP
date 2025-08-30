@@ -21,13 +21,18 @@ import {
   Timer,
   AlertCircle,
   CheckCircle2,
-  XCircle
+  XCircle,
+  BarChart3,
+  Settings
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import api from "@/lib/api";
 import { EnhancedStaggerContainer, EnhancedStaggerChild, AnimatedCard } from "@/components/ui/enhanced-animated-container";
 import { useToast } from "@/hooks/use-toast";
 import CreateAppointmentModal from "@/components/CreateAppointmentModal";
+import SmartSchedulingAssistant from "@/components/agenda/SmartSchedulingAssistant";
+import AdvancedTemplateManager from "@/components/agenda/AdvancedTemplateManager";
+import AgendaAnalyticsDashboard from "@/components/agenda/AgendaAnalyticsDashboard";
 
 // Tipos de datos
 interface Availability {
@@ -357,8 +362,19 @@ const CalendarCentricDashboard = () => {
         </EnhancedStaggerChild>
       </EnhancedStaggerContainer>
 
-      {/* Contenido principal */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Tabs para diferentes vistas y funcionalidades */}
+      <Tabs defaultValue="calendar" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-5">
+          <TabsTrigger value="calendar">Calendario</TabsTrigger>
+          <TabsTrigger value="analytics">Analíticas</TabsTrigger>
+          <TabsTrigger value="templates">Plantillas</TabsTrigger>
+          <TabsTrigger value="assistant">Asistente IA</TabsTrigger>
+          <TabsTrigger value="config">Configuración</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="calendar">
+          {/* Contenido principal del calendario */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Calendario Principal */}
         <div className="lg:col-span-2">
           <Card>
@@ -553,22 +569,64 @@ const CalendarCentricDashboard = () => {
           </Card>
         </div>
       </div>
+      </TabsContent>
 
-      {/* Modal de creación de citas */}
-      <CreateAppointmentModal
-        isOpen={showCreateModal}
-        onClose={() => setShowCreateModal(false)}
-        onSuccess={() => {
-          loadCalendarData(); // Recargar datos después de crear una cita
-          toast({
-            title: "¡Cita creada!",
-            description: "La cita se ha creado exitosamente",
-            variant: "default"
-          });
-        }}
-        selectedDate={selectedDateForModal}
-      />
-    </div>
+      <TabsContent value="analytics">
+        <AgendaAnalyticsDashboard />
+      </TabsContent>
+
+      <TabsContent value="templates">
+        <AdvancedTemplateManager />
+      </TabsContent>
+
+      <TabsContent value="assistant">
+        <SmartSchedulingAssistant />
+      </TabsContent>
+
+      <TabsContent value="config">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="w-5 h-5" />
+              Configuración de Agenda
+            </CardTitle>
+            <CardDescription>
+              Próximamente: configuraciones avanzadas para la gestión de agenda
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <div className="p-4 border rounded-lg bg-blue-50">
+                <h4 className="font-semibold text-blue-900 mb-2">Funcionalidades en Desarrollo</h4>
+                <ul className="text-sm text-blue-800 space-y-1">
+                  <li>• Configuración de horarios por especialidad</li>
+                  <li>• Reglas automáticas de asignación</li>
+                  <li>• Integración con sistemas externos</li>
+                  <li>• Notificaciones personalizadas</li>
+                  <li>• Políticas de cancelación</li>
+                </ul>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </TabsContent>
+    </Tabs>
+
+    {/* Modal de creación de citas */}
+    <CreateAppointmentModal
+      isOpen={showCreateModal}
+      onClose={() => setShowCreateModal(false)}
+      onSuccess={() => {
+        loadCalendarData(); // Recargar datos después de crear una cita
+        toast({
+          title: "¡Cita creada!",
+          description: "La cita se ha creado exitosamente",
+          variant: "default"
+        });
+      }}
+      selectedDate={selectedDateForModal}
+    />
+  </div>
   );
 };
 

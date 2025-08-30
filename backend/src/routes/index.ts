@@ -35,6 +35,10 @@ import sessions from './sessions';
 import patientsUpdated from './patients-updated';
 import lookups from './lookups';
 import webhooks from './webhooks';
+// Rutas avanzadas de gestión de agenda
+import agendaTemplates from './agenda-templates';
+import agendaOptimization from './agenda-optimization';
+import agendaConflicts from './agenda-conflicts';
 import { requireAuth } from '../middleware/auth';
 
 const router = Router();
@@ -105,6 +109,10 @@ router.use('/sessions', sessions);
 router.use('/patients-v2', patientsUpdated);
 router.use('/lookups', lookups);
 router.use('/webhooks', webhooks);
+// Rutas avanzadas de gestión de agenda
+router.use('/agenda-templates', agendaTemplates);
+router.use('/agenda-optimization', agendaOptimization);
+router.use('/agenda-conflicts', agendaConflicts);
 // TODO: mount more routers as they are implemented
 
 export default router; // Ensure this matches the server import

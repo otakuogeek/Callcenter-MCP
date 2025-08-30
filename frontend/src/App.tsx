@@ -20,6 +20,7 @@ import Locations from "./pages/Locations";
 import Analytics from "./pages/Analytics";
 import Billing from "./pages/Billing";
 import Settings from "./pages/Settings";
+import AgendaManagement from "./pages/AgendaManagement";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -110,6 +111,11 @@ const App = () => (
           <Route path="/settings" element={
             <ProtectedRoute>
               <Settings />
+            </ProtectedRoute>
+          } />
+          <Route path="/agenda-management" element={
+            <ProtectedRoute>
+              <AgendaManagement />
             </ProtectedRoute>
           } />
           <Route path="*" element={<NotFound />} />

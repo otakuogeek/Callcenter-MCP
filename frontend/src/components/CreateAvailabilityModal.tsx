@@ -36,6 +36,16 @@ const CreateAvailabilityModal = ({
   const isPastDate = availabilityForm.date ? (new Date(availabilityForm.date) < new Date(new Date().toDateString())) : false;
   const timeOrderInvalid = !!(availabilityForm.startTime && availabilityForm.endTime && availabilityForm.startTime >= availabilityForm.endTime);
   const capacityInvalid = availabilityForm.capacity < 1;
+  const [autoPreallocate, setAutoPreallocate] = useState(true);
+  const [publishDate, setPublishDate] = useState(todayStr);
+
+  // Cuando se abre el modal, reestablecer valores por defecto
+  useEffect(() => {
+    if (isOpen) {
+      setAutoPreallocate(true);
+      setPublishDate(todayStr);
+    }
+  }, [isOpen]);
 
   const dateError = isPastDate ? "No puede crear una agenda en una fecha pasada" : undefined;
   const startTimeError = timeOrderInvalid ? "La hora de inicio debe ser anterior a la hora de fin" : undefined;
@@ -70,7 +80,14 @@ const CreateAvailabilityModal = ({
 
           <AnimatedForm 
             className="space-y-4 sm:space-y-6"
-            onSubmit={(e) => { e.preventDefault(); if (!disableSubmit) onCreateAvailability(); }}
+            onSubmit={(e) => { 
+              e.preventDefault(); 
+              if (!disableSubmit) {
+                // inyectar flags en form antes de submit
+                setAvailabilityForm(prev => ({ ...prev, auto_preallocate: autoPreallocate, preallocation_publish_date: publishDate || undefined } as any));
+                setTimeout(() => onCreateAvailability(), 0);
+              }
+            }}
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <AnimatedSelectField
@@ -163,6 +180,35 @@ const CreateAvailabilityModal = ({
                 inputProps={{ min: 1, step: 1 }}
                 required
               />
+            </div>
+
+            <div className="space-y-2 border rounded-lg p-3 bg-medical-50/60">
+              <label className="flex items-start gap-2 text-sm font-medium text-medical-700">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4"
+                  checked={autoPreallocate}
+                  onChange={e => setAutoPreallocate(e.target.checked)}
+                />
+                <span>
+                  Generar distribución aleatoria de cupos automáticamente
+                  <span className="block text-xs font-normal text-medical-600">Marcado por defecto. Puedes desmarcarlo si no deseas pre-distribución.</span>
+                </span>
+              </label>
+              {autoPreallocate && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <AnimatedInputField
+                    label="Fecha Inicio Liberación"
+                    type="date"
+                    value={publishDate}
+                    onChange={(value) => setPublishDate(value)}
+                    inputProps={{ min: todayStr, max: availabilityForm.date || undefined }}
+                  />
+                  <div className="sm:col-span-2 text-xs text-medical-600 leading-snug">
+                    Se liberarán {availabilityForm.capacity} cupos (capacidad) de forma aleatoria entre días hábiles desde esta fecha hasta el día previo a la agenda ({availabilityForm.date || 'fecha no seleccionada'}). Ajusta la fecha si quieres iniciar antes.
+                  </div>
+                </div>
+              )}
             </div>
 
             <AnimatedTextareaField

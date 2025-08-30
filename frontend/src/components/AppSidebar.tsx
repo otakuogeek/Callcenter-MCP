@@ -87,7 +87,13 @@ const analyticsItems = [
 ];
 
 // Nuevos items para funcionalidades mejoradas
-// (advancedItems actualmente no renderizado; se puede habilitar cuando se requiera)
+const advancedItems = [
+  {
+    title: "Gestión Avanzada de Agenda",
+    url: "/agenda-management",
+    icon: Calendar,
+  },
+];
 
 export function AppSidebar() {
   const [queueCount, setQueueCount] = useState<number>(0);
@@ -297,6 +303,29 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {analyticsItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton 
+                    asChild 
+                    className="hover:bg-medical-50 hover:text-medical-700 data-[active=true]:bg-medical-100 data-[active=true]:text-medical-800"
+                  >
+                    <Link to={item.url} className="flex items-center space-x-3">
+                      <item.icon className="w-4 h-4" />
+                      <span>{item.title}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-medical-700 font-semibold">
+            Herramientas Avanzadas
+          </SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {advancedItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton 
                     asChild 

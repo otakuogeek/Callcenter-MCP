@@ -18,6 +18,7 @@ import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 
 const AppointmentManagement = () => {
   const [date, setDate] = useState<Date | undefined>(new Date());
@@ -78,6 +79,38 @@ const AppointmentManagement = () => {
     notes: ""
   });
 
+  // Estado para preallocation por doctor (distribución previa de cupos)
+  const [preallocationByDoctor, setPreallocationByDoctor] = useState<Record<string, Array<{ doctor_id: number; doctor_name: string; pre_date: string; slots: number; assigned_count: number }>>>({});
+
+  // Cargar preallocation (todas) para el mes visible
+  const loadMonthPreallocation = async (refDate: Date) => {
+    const monthStart = new Date(Date.UTC(refDate.getUTCFullYear(), refDate.getUTCMonth(), 1));
+    const monthEnd = new Date(Date.UTC(refDate.getUTCFullYear(), refDate.getUTCMonth() + 1, 0));
+    const from = monthStart.toISOString().slice(0,10);
+    const to = monthEnd.toISOString().slice(0,10);
+  try {
+      const resp: any = await api.getPreallocation({ from, to });
+      const rows = resp?.data?.preallocation || resp?.preallocation || [];
+      const map: Record<string, Array<{ doctor_id: number; doctor_name: string; pre_date: string; slots: number; assigned_count: number }>> = {};
+      rows.forEach((r: any) => {
+        const ymd = r.pre_date || r.pre_date; // pre_date ya es YYYY-MM-DD
+        if (!map[ymd]) map[ymd] = [];
+        map[ymd].push({
+          doctor_id: Number(r.doctor_id),
+          doctor_name: (doctors.find(d=> d.id === Number(r.doctor_id))?.name) || `Doctor ${r.doctor_id}`,
+          pre_date: r.pre_date,
+          slots: r.slots,
+          assigned_count: r.assigned_count ?? 0
+        });
+      });
+      // Ordenar cada lista por doctor name para consistencia
+      Object.values(map).forEach(arr => arr.sort((a,b)=> a.doctor_name.localeCompare(b.doctor_name)));
+      setPreallocationByDoctor(map);
+    } catch {
+      setPreallocationByDoctor({});
+  } finally { /* noop */ }
+  };
+
   const validateAvailabilityForm = (form: AvailabilityForm): string[] => {
     const errors: string[] = [];
     
@@ -129,8 +162,11 @@ const AppointmentManagement = () => {
         startTime: "",
         endTime: "",
         capacity: 1,
-        notes: ""
+  notes: "",
+  auto_preallocate: false,
+  preallocation_publish_date: undefined
       });
+  // Al reabrir el modal se vuelven a poner por defecto en el propio modal (useEffect allí)
       setIsCreateAvailabilityOpen(false);
     }
   };
@@ -141,6 +177,7 @@ const AppointmentManagement = () => {
     // También cargar resumen mensual para marcar el calendario
     const ref = date || new Date();
     loadCalendarSummary(ref.getUTCMonth(), ref.getUTCFullYear());
+  loadMonthPreallocation(ref);
   }, [date, loadAvailabilities, loadCalendarSummary]);
 
   // Cargar settings globales para auto-cancel
@@ -316,6 +353,66 @@ const AppointmentManagement = () => {
     setAutoCancelOpen(false);
   };
 
+  // Ejemplo simple: podría venir de otro hook/global
+  const [preallocationPlan, setPreallocationPlan] = useState<{date:string;assigned:number}[]|null>(null);
+  const [targetAttentionDate, setTargetAttentionDate] = useState<string|undefined>(undefined);
+  const [planDoctor, setPlanDoctor] = useState<string>("");
+  const [planTotalSlots, setPlanTotalSlots] = useState<number>(50);
+  const [planGenerating, setPlanGenerating] = useState(false);
+  const [planTotal, setPlanTotal] = useState<number>(0);
+  const [planPersisting, setPlanPersisting] = useState(false);
+  const [planPersisted, setPlanPersisted] = useState(false);
+  const [doctors, setDoctors] = useState<any[]>([]);
+
+  useEffect(() => {
+    (async () => { try { const d = await api.getDoctors(); setDoctors(d);} catch {} })();
+  }, []);
+
+  const generateRandomPlan = async () => {
+    if (!planDoctor) {
+      toast({ title: 'Selecciona un doctor', description: 'Debes elegir el doctor para distribuir sus citas', variant: 'destructive' });
+      return;
+    }
+    if (!targetAttentionDate) {
+      toast({ title: 'Falta fecha objetivo', description: 'Define la fecha objetivo (día de atención) seleccionando en el calendario', variant: 'destructive' });
+      return;
+    }
+    setPlanGenerating(true);
+    try {
+      const res = await api.agendaOptimization.randomDistribution({
+        target_date: targetAttentionDate,
+        total_slots: planTotalSlots,
+        doctor_id: Number(planDoctor)
+      });
+      setPreallocationPlan(res.data.distribution);
+      setPlanTotal(res.data.stats.total);
+      setPlanPersisted(false);
+      toast({ title: 'Plan generado', description: `${res.data.stats.total} cupos distribuidos` });
+    } catch (e:any) {
+      toast({ title: 'Error', description: e.message || 'No se pudo generar el plan', variant: 'destructive' });
+    } finally { setPlanGenerating(false); }
+  };
+
+  const persistPlan = async () => {
+    if (!planDoctor || !targetAttentionDate) return;
+    setPlanPersisting(true);
+    try {
+      const res = await api.agendaOptimization.randomDistribution({
+        target_date: targetAttentionDate,
+        total_slots: planTotalSlots,
+        doctor_id: Number(planDoctor),
+        apply: true
+      });
+      // Reemplazamos plan (puede variar mínimamente por nueva aleatoriedad)
+      setPreallocationPlan(res.data.distribution);
+      setPlanTotal(res.data.stats.total);
+      setPlanPersisted(res.data.persisted);
+      toast({ title: 'Plan persistido', description: `${res.data.persisted_rows} registros guardados` });
+    } catch (e:any) {
+      toast({ title: 'Error', description: e.message || 'No se pudo persistir', variant: 'destructive' });
+    } finally { setPlanPersisting(false); }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
       <div className="container mx-auto p-6 space-y-8">
@@ -466,7 +563,7 @@ const AppointmentManagement = () => {
           <TabsContent value="calendar" className="space-y-6">
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
               {/* Calendario con diseño mejorado */}
-              <div className="xl:col-span-4 space-y-6">
+              <div className="xl:col-span-5 space-y-6">
                 <Card className="border-0 shadow-xl bg-white/95 backdrop-blur-sm">
                   {enhancedMode ? (
                     <EnhancedAppointmentCalendar 
@@ -481,6 +578,14 @@ const AppointmentManagement = () => {
                         specialties: enhancedFilters.specialties,
                         locations: enhancedFilters.locations
                       }}
+                      targetDate={targetAttentionDate}
+                      preallocation={preallocationPlan || undefined}
+                      preallocationTotal={planTotal}
+                      preallocationDoctorName={planDoctor ? doctors.find(d=> String(d.id)===planDoctor)?.name : undefined}
+                      preallocationRequestedTotal={planTotalSlots}
+                      preallocationPersisted={planPersisted}
+                      onSelectTargetDate={(ymd)=> setTargetAttentionDate(ymd)}
+                      preallocationByDoctor={preallocationByDoctor}
                     />
                   ) : (
                     <AppointmentCalendar 
@@ -491,10 +596,56 @@ const AppointmentManagement = () => {
                     />
                   )}
                 </Card>
+                {/* Panel de distribución aleatoria */}
+                <Card className="p-4 border-0 shadow-md bg-white/90">
+                  <CardHeader className="p-0 mb-2">
+                    <CardTitle className="text-base">Distribución Aleatoria de Cupos</CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0 space-y-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label>Doctor</Label>
+                        <Select value={planDoctor} onValueChange={setPlanDoctor}>
+                          <SelectTrigger className="h-9"><SelectValue placeholder="Selecciona" /></SelectTrigger>
+                          <SelectContent>
+                            {doctors.map(d => <SelectItem key={d.id} value={String(d.id)}>{d.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Total Cupos</Label>
+                        <Input type="number" min={1} value={planTotalSlots} onChange={e=> setPlanTotalSlots(Number(e.target.value))} className="h-9" />
+                      </div>
+                      <div className="space-y-1 col-span-2">
+                        <Label>Fecha Objetivo (clic en calendario)</Label>
+                        <Input type="text" value={targetAttentionDate || ''} disabled className="h-9" placeholder="Selecciona un día en el calendario" />
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button onClick={generateRandomPlan} disabled={planGenerating} className="flex-1 h-9">
+                        {planGenerating ? 'Generando...' : 'Generar Plan'}
+                      </Button>
+                      <Button onClick={persistPlan} disabled={planPersisting || !preallocationPlan || planPersisted} variant={planPersisted ? 'secondary' : 'default'} className="h-9">
+                        {planPersisting ? 'Guardando...' : (planPersisted ? 'Guardado' : 'Persistir')}
+                      </Button>
+                      {preallocationPlan && (
+                        <Button variant="outline" className="h-9" onClick={()=> { setPreallocationPlan(null); setPlanTotal(0); }}>
+                          Limpiar
+                        </Button>
+                      )}
+                    </div>
+                    {preallocationPlan && (
+                      <div className="text-xs text-gray-600">
+                        Plan para {doctors.find(d=> String(d.id)===planDoctor)?.name || '—'}: {planTotal} cupos en {preallocationPlan.length} días hábiles. Restantes: {Math.max(0, planTotalSlots - planTotal)}.
+                        {planPersisted && <span className="ml-2 text-green-600">(Persistido)</span>}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
 
               {/* Lista de disponibilidades mejorada */}
-              <div className="xl:col-span-8">
+              <div className="xl:col-span-7">
                 <AvailabilityList 
                   date={date} 
                   filteredAvailabilities={filteredAvailabilities} 

@@ -42,10 +42,12 @@ export interface AvailabilityForm {
   endTime: string;
   capacity: number;
   notes: string;
+  auto_preallocate?: boolean;
+  preallocation_publish_date?: string;
 }
 
 export const useAppointmentData = () => {
-  const { handleApiCall, handleError } = useErrorHandler();
+  const { handleApiCall } = useErrorHandler();
   const [locations, setLocations] = useState<Location[]>([]);
   const [availabilities, setAvailabilities] = useState<Availability[]>([]);
   const [calendarSummary, setCalendarSummary] = useState<Record<string, { appointments: number; availabilities: number }>>({});
@@ -177,6 +179,8 @@ export const useAppointmentData = () => {
           end_time: availabilityData.endTime,
           capacity: availabilityData.capacity,
           notes: availabilityData.notes,
+          auto_preallocate: (availabilityData as any).auto_preallocate || false,
+          preallocation_publish_date: (availabilityData as any).preallocation_publish_date || undefined,
         });
         // Recargar las disponibilidades para la fecha especificada
         await loadAvailabilities(availabilityData.date);

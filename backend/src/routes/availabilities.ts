@@ -15,6 +15,8 @@ const schema = z.object({
   capacity: z.number().int().min(1).default(1),
   status: z.enum(['Activa','Cancelada','Completa']).default('Activa'),
   notes: z.string().optional().nullable(),
+  auto_preallocate: z.boolean().optional(),
+  preallocation_publish_date: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/).optional()
 });
 
 router.get('/', requireAuth, async (req: Request, res: Response) => {
@@ -59,7 +61,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
 router.post('/', requireAuth, async (req: Request, res: Response) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
-  const d = parsed.data;
+  const d = parsed.data as any;
   try {
     const [result] = await pool.query(
       `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, status, notes)
@@ -67,7 +69,28 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       [d.location_id, d.specialty_id, d.doctor_id, d.date, d.start_time, d.end_time, d.capacity, d.status, d.notes ?? null]
     );
     // @ts-ignore
-    return res.status(201).json({ id: result.insertId, ...d });
+    const availabilityId = result.insertId as number;
+
+    let preallocation: any = null;
+    if (d.auto_preallocate) {
+      try {
+        const { generateRandomPreallocation } = await import('../utils/randomPreallocation');
+        preallocation = await generateRandomPreallocation({
+          target_date: d.date,
+          total_slots: d.capacity,
+          publish_date: d.preallocation_publish_date,
+          doctor_id: d.doctor_id,
+          location_id: d.location_id,
+            specialty_id: d.specialty_id,
+          availability_id: availabilityId,
+          apply: true
+        });
+      } catch (e) {
+        console.warn('Fallo preallocation automática:', e);
+      }
+    }
+
+    return res.status(201).json({ id: availabilityId, ...d, preallocation });
   } catch (e: any) {
     return res.status(500).json({ message: 'Server error' });
   }
