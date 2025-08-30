@@ -1,0 +1,25 @@
+[0;1;32m●[0m nginx.service - A high performance web server and a reverse proxy server
+     Loaded: loaded (]8;;file://srv723383/usr/lib/systemd/system/nginx.service/usr/lib/systemd/system/nginx.service]8;;; [0;1;32menabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Mon 2025-08-11 14:33:16 UTC; 9h ago
+       Docs: ]8;;man:nginx(8)man:nginx(8)]8;;
+    Process: 25154 ExecReload=/usr/sbin/nginx -g daemon on; master_process on; -s reload (code=exited, status=0/SUCCESS)
+   Main PID: 753 (nginx)
+      Tasks: 4 (limit: 9485)
+     Memory: 15.3M (peak: 20.6M)
+        CPU: 4.755s
+     CGroup: /system.slice/nginx.service
+             ├─[0;38;5;245m  753 "nginx: master process /usr/sbin/nginx -g daemon on; master_process on;"[0m
+             ├─[0;38;5;245m14385 "nginx: worker process is shutting down"[0m
+             ├─[0;38;5;245m25156 "nginx: worker process"[0m
+             └─[0;38;5;245m25158 "nginx: worker process"[0m
+
+Aug 11 19:04:34 srv723383 systemd[1]: Reloaded nginx.service - A high performance web server and a reverse proxy server.
+Aug 11 19:23:05 srv723383 systemd[1]: Reloading nginx.service - A high performance web server and a reverse proxy server...
+Aug 11 19:23:05 srv723383 nginx[13662]: 2025/08/11 19:23:05 [notice] 13662#13662: signal process started
+Aug 11 19:23:05 srv723383 systemd[1]: Reloaded nginx.service - A high performance web server and a reverse proxy server.
+Aug 11 20:10:36 srv723383 systemd[1]: Reloading nginx.service - A high performance web server and a reverse proxy server...
+Aug 11 20:10:36 srv723383 nginx[14380]: 2025/08/11 20:10:36 [notice] 14380#14380: signal process started
+Aug 11 20:10:36 srv723383 systemd[1]: Reloaded nginx.service - A high performance web server and a reverse proxy server.
+Aug 11 23:02:07 srv723383 systemd[1]: Reloading nginx.service - A high performance web server and a reverse proxy server...
+Aug 11 23:02:07 srv723383 nginx[25154]: 2025/08/11 23:02:07 [notice] 25154#25154: signal process started
+Aug 11 23:02:07 srv723383 systemd[1]: Reloaded nginx.service - A high performance web server and a reverse proxy server.

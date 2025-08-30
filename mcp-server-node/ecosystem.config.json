@@ -1,0 +1,34 @@
+{
+  "apps": [
+    {
+      "name": "mcp-server-node",
+      "script": "npm",
+      "args": "run dev",
+      "cwd": "/home/ubuntu/app/mcp-server-node",
+      "instances": 1,
+      "exec_mode": "fork",
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "8977",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "3306",
+        "DB_USER": "biosanar_user",
+        "DB_PASSWORD": "/6Tx0eXqFQONTFuoc7aqPicNlPhmuINU",
+        "DB_NAME": "biosanar",
+        "MCP_API_KEY": "mcp-key-biosanarcall-2025",
+        "LOG_LEVEL": "info"
+      },
+      "error_file": "/home/ubuntu/app/mcp-server-node/logs/error.log",
+      "out_file": "/home/ubuntu/app/mcp-server-node/logs/out.log",
+      "log_file": "/home/ubuntu/app/mcp-server-node/logs/combined.log",
+      "time": true,
+      "autorestart": true,
+      "max_restarts": 5,
+      "min_uptime": "10s",
+      "max_memory_restart": "500M",
+      "watch": false,
+      "ignore_watch": ["node_modules", "logs"],
+      "node_args": "--max-old-space-size=512"
+    }
+  ]
+}

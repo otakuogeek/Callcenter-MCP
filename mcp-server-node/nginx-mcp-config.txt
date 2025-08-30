@@ -1,0 +1,78 @@
+# Configuración nginx para servidor MCP Node.js
+# Agregar estas líneas a la sección server {} en /etc/nginx/sites-available/biosanarcall.site
+
+    # ================================
+    # MCP Node.js Server Configuration
+    # ================================
+    
+    # Health check endpoint (sin auth para monitoreo)
+    location = /mcp-node-health { 
+        proxy_pass http://127.0.0.1:8976/api/health; 
+        access_log off; 
+        add_header Cache-Control "no-cache";
+    }
+    
+    # Info endpoint
+    location = /mcp-node-info { 
+        proxy_pass http://127.0.0.1:8976/api/info; 
+        add_header Cache-Control "no-cache";
+    }
+    
+    # MCP ElevenLabs endpoint (requiere autenticación)
+    location /mcp-elevenlabs/ {
+        proxy_pass http://127.0.0.1:8976/api/elevenlabs/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Mantener headers de autenticación
+        proxy_pass_request_headers on;
+        proxy_set_header X-API-Key $http_x_api_key;
+        
+        # Configuración para JSON-RPC
+        proxy_set_header Content-Type "application/json";
+        client_max_body_size 1M;
+    }
+    
+    # MCP Simple endpoint (requiere autenticación)
+    location /mcp-simple/ {
+        proxy_pass http://127.0.0.1:8976/api/mcp-simple/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Mantener headers de autenticación
+        proxy_pass_request_headers on;
+        proxy_set_header X-API-Key $http_x_api_key;
+        
+        # Configuración para JSON-RPC
+        proxy_set_header Content-Type "application/json";
+        client_max_body_size 1M;
+    }
+    
+    # Endpoint directo para testing (sin barra final)
+    location = /mcp-elevenlabs {
+        proxy_pass http://127.0.0.1:8976/api/elevenlabs;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass_request_headers on;
+        proxy_set_header X-API-Key $http_x_api_key;
+    }
+    
+    location = /mcp-simple {
+        proxy_pass http://127.0.0.1:8976/api/mcp-simple;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass_request_headers on;
+        proxy_set_header X-API-Key $http_x_api_key;
+    }

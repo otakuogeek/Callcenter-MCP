@@ -1,0 +1,33 @@
+{
+  "apps": [
+    {
+      "name": "mcp-unified",
+      "script": "ts-node",
+      "args": ["server-unified.ts"],
+      "cwd": "/home/ubuntu/app/mcp-server-node",
+      "instances": 1,
+      "exec_mode": "fork",
+      "autorestart": true,
+      "watch": false,
+      "max_memory_restart": "1G",
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "8976",
+        "DB_HOST": "localhost",
+        "DB_PORT": "3306",
+        "DB_USER": "root",
+        "DB_PASSWORD": "",
+        "DB_NAME": "biosanar"
+      },
+      "error_file": "/home/ubuntu/app/mcp-server-node/logs/unified-error.log",
+      "out_file": "/home/ubuntu/app/mcp-server-node/logs/unified-out.log",
+      "log_file": "/home/ubuntu/app/mcp-server-node/logs/unified-combined.log",
+      "time": true,
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z",
+      "merge_logs": true,
+      "kill_timeout": 5000,
+      "listen_timeout": 10000,
+      "restart_delay": 1000
+    }
+  ]
+}

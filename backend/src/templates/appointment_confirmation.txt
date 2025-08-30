@@ -1,0 +1,18 @@
+Hola{{#if patientName}} {{patientName}}{{/if}},
+
+Tu cita ha sido agendada correctamente.
+
+{{#if specialtyName}}Especialidad: {{specialtyName}}
+{{/if}}{{#if doctorName}}Profesional: {{doctorName}}
+{{/if}}Fecha y hora: {{scheduledAt}}
+{{#if appointmentType}}Modalidad: {{appointmentType}}
+{{/if}}{{#if locationName}}Lugar: {{locationName}}
+{{/if}}
+
+Si no reconoces esta cita o deseas modificarla, por favor comunícate con nosotros.
+{{#if supportPhone}}Teléfono de soporte: {{supportPhone}}
+{{/if}}{{#if supportEmail}}Correo de soporte: {{supportEmail}}
+{{/if}}
+{{#if footer}}
+{{footer}}
+{{/if}}

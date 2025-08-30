@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "biosanarcall-elevenlabs": {
+      "command": "/home/ubuntu/app/mcp-server-node/mcp-wrapper.sh",
+      "args": [],
+      "env": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin"
+      }
+    }
+  }
+}

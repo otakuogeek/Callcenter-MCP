@@ -1,0 +1,28 @@
+{
+  "mcpServers": {
+    "biosanar-unified": {
+      "type": "streamable-http",
+      "url": "https://biosanarcall.site/mcp-unified",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "note": "Biosanar MCP Server - Unified with 17 medical tools"
+    },
+    "biosanarcall-elevenlabs": {
+      "type": "streamable-http",
+      "url": "https://biosanarcall.site/mcp-elevenlabs",
+      "headers": {
+        "X-API-Key": "biosanarcall_mcp_node_2025"
+      },
+      "note": "Biosanarcall MCP Server - ElevenLabs optimized"
+    },
+    "biosanarcall-simple": {
+      "type": "streamable-http", 
+      "url": "https://biosanarcall.site/mcp-simple",
+      "headers": {
+        "X-API-Key": "biosanarcall_mcp_node_2025"
+      },
+      "note": "Biosanarcall MCP Server - Simple tools"
+    }
+  }
+}

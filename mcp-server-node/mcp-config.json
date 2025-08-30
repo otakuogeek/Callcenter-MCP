@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "biosanarcall-elevenlabs": {
+      "command": "node",
+      "args": ["/home/ubuntu/app/mcp-server-node/mcp-bridge.js"],
+      "env": {
+        "MCP_SERVER_URL": "http://localhost:8976/api/elevenlabs",
+        "API_KEY": "biosanarcall_mcp_node_2025"
+      }
+    }
+  }
+}

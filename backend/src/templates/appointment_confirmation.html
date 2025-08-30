@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Confirmación de cita</title>
+  </head>
+  <body style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; color:#111">
+    <h2>Confirmación de cita médica{{#if brand}} - {{brand}}{{/if}}</h2>
+    <p>Hola{{#if patientName}} {{patientName}}{{/if}},</p>
+    <p>Tu cita ha sido agendada correctamente.</p>
+    <ul>
+      {{#if specialtyName}}<li><strong>Especialidad:</strong> {{specialtyName}}</li>{{/if}}
+      {{#if doctorName}}<li><strong>Profesional:</strong> {{doctorName}}</li>{{/if}}
+      <li><strong>Fecha y hora:</strong> {{scheduledAt}}</li>
+      {{#if appointmentType}}<li><strong>Modalidad:</strong> {{appointmentType}}</li>{{/if}}
+      {{#if locationName}}<li><strong>Lugar:</strong> {{locationName}}</li>{{/if}}
+    </ul>
+    <p>Si no reconoces esta cita o deseas modificarla, por favor comunícate con nosotros.</p>
+    {{#if supportPhone}}{{#if supportEmail}}<p>Teléfono de soporte: {{supportPhone}} · Correo de soporte: {{supportEmail}}</p>{{else}}<p>Teléfono de soporte: {{supportPhone}}</p>{{/if}}{{else}}{{#if supportEmail}}<p>Correo de soporte: {{supportEmail}}</p>{{/if}}{{/if}}
+    {{#if footer}}<p style="margin-top: 1rem; color: #666; font-size: 12px;">{{footer}}</p>{{/if}}
+  </body>
+</html>
