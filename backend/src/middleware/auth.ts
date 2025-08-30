@@ -13,7 +13,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
       (req as any).user = { id: 1, role: 'admin', name: 'Test User', email: 'test@example.com' };
       return next();
     }
-    const payload = jwt.verify(token, process.env.JWT_SECRET || 'secret') as AuthPayload;
+    const payload = jwt.verify(token, process.env.JWT_SECRET || (() => {
+      console.error('⚠️  WARNING: JWT_SECRET not set, using insecure default');
+      return 'biosanarcall_default_jwt_secret_2025_change_in_production';
+    })()) as AuthPayload;
     (req as any).user = payload;
     next();
   } catch {

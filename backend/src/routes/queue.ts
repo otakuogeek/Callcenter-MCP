@@ -28,7 +28,10 @@ router.get('/overview', requireAuth, async (_req: Request, res: Response) => {
     try {
       const [aRows] = await pool.query<any[]>("SELECT COUNT(*) AS c FROM users WHERE role IN ('agent','reception') AND status='Activo'");
       agentsAvailable = Number((aRows as any)[0]?.c || 0);
-    } catch { agentsAvailable = 0; }
+    } catch (error) { 
+      console.error('Error counting available agents:', error);
+      agentsAvailable = 0; 
+    }
 
     const waiting = Number(cnt.waiting || 0);
     const avg_wait_seconds = cnt.avg_wait_seconds != null ? Math.round(Number(cnt.avg_wait_seconds)) : 0;
@@ -141,7 +144,8 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   // Notificar a suscriptores SSE
   publish('queue', 'enqueue', payload);
   return res.status(201).json(payload);
-  } catch {
+  } catch (error) {
+    console.error('Error enqueuing entry:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -178,7 +182,8 @@ router.post('/next', requireAuth, async (req: Request, res: Response) => {
   const item = Array.isArray(row) && row.length ? row[0] : null;
   if (item) publish('queue', 'assign', { id: item.id, specialty_id: item.specialty_id, assigned_user_id: userId });
   return res.json(item);
-  } catch {
+  } catch (error) {
+    console.error('Error assigning next queue entry:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -223,7 +228,10 @@ router.post('/:id/schedule', requireAuth, async (req: Request, res: Response) =>
           [e.patient_id, e.specialty_id, id, userId, d.outcome, d.notes ?? null]
         );
       }
-    } catch { /* ignore */ }
+    } catch (logError) { 
+      console.error('Error logging call outcome:', logError);
+      /* Continue with scheduling even if logging fails */ 
+    }
   publish('queue', 'scheduled', { id });
   return res.json({ id, status: 'scheduled' });
   } catch {

@@ -14,8 +14,8 @@
     "test:features": "ts-node-dev --transpile-only scripts/test-new-features.ts",
     "test": "jest --runInBand",
     "archive:calls": "ts-node-dev --transpile-only scripts/archive-calls.ts",
-  "recalc:appointments": "ts-node-dev --transpile-only scripts/recalc-appointments.ts",
-    "lint": "echo 'Add ESLint config to enable linting'",
+    "recalc:appointments": "ts-node-dev --transpile-only scripts/recalc-appointments.ts",
+    "lint": "eslint src --ext .ts --fix",
     "health": "curl -s http://localhost:$PORT/health || true"
   },
   "dependencies": {
@@ -50,6 +50,9 @@
     "@types/multer": "^1.4.11",
     "@types/node": "^20.12.12",
     "@types/supertest": "^2.0.16",
+    "@typescript-eslint/eslint-plugin": "^8.41.0",
+    "@typescript-eslint/parser": "^8.41.0",
+    "eslint": "^9.34.0",
     "jest": "^29.7.0",
     "supertest": "^6.3.4",
     "ts-jest": "^29.2.5",

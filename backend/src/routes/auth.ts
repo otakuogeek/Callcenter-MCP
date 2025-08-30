@@ -25,7 +25,10 @@ router.post('/login', async (req: Request, res: Response) => {
   if (user.status !== 'Activo') return res.status(403).json({ message: 'Usuario inactivo' });
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) return res.status(401).json({ message: 'Credenciales inválidas' });
-    const token = jwt.sign({ id: user.id, role: user.role, name: user.name, email: user.email }, process.env.JWT_SECRET || 'secret', { expiresIn: '8h' });
+    const token = jwt.sign({ id: user.id, role: user.role, name: user.name, email: user.email }, process.env.JWT_SECRET || (() => {
+      console.error('⚠️  WARNING: JWT_SECRET not set, using insecure default');
+      return 'biosanarcall_default_jwt_secret_2025_change_in_production';
+    })(), { expiresIn: '8h' });
     return res.json({ token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
     console.error(err);
