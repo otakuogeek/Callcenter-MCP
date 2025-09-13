@@ -79,8 +79,8 @@ const BillingDashboard = () => {
       if (!res.ok) throw new Error('load error');
       return await res.json(); // { data, total, limit, offset }
     },
-    keepPreviousData: true,
-    staleTime: 30_000
+  staleTime: 30_000,
+  refetchOnWindowFocus: false
   });
   const summaryQuery = useQuery({
     queryKey: summaryKey,
@@ -119,7 +119,7 @@ const BillingDashboard = () => {
   const total = listQuery.data?.total || 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const filtered = records; // server-side ya aplica filtros principales
-  const sorted = records; // orden ya aplicado server-side
+  // eliminado sorted no usado
   const pageRecords = records; // page ya está aplicado server-side
   useEffect(()=>{ setPage(1); },[search, status, from, to, doctorId, serviceId, sortKey, sortDir]);
 
@@ -179,11 +179,39 @@ const BillingDashboard = () => {
   useEffect(()=> {
     if (!live) return;
     if (!token) return;
-    const es = new EventSource(`${apiBase}/appointment-billing/stream?token=${encodeURIComponent(token)}`);
-    es.onmessage = ()=>{};
-    es.addEventListener('billing_created', (e:any)=> { try { const d = JSON.parse(e.data); qc.invalidateQueries({queryKey:listKey}); qc.invalidateQueries({queryKey:summaryKey}); loadMetrics(); } catch {} });
-    es.addEventListener('billing_status_updated', (e:any)=> { qc.invalidateQueries({queryKey:listKey}); qc.invalidateQueries({queryKey:summaryKey}); loadMetrics(); });
-    return ()=> { es.close(); };
+    let es: EventSource | null = null;
+    let attempts = 0;
+    let closed = false;
+    let fallbackInterval: any = null;
+    const invalidateAll = () => { qc.invalidateQueries({queryKey:listKey}); qc.invalidateQueries({queryKey:summaryKey}); loadMetrics(); };
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      fallbackInterval = setInterval(invalidateAll, 15000);
+      invalidateAll();
+    };
+    const stopFallback = () => { if (fallbackInterval) { clearInterval(fallbackInterval); fallbackInterval=null; } };
+    const connect = () => {
+      if (closed) return;
+      try {
+        es = new EventSource(`${apiBase}/appointment-billing/stream?token=${encodeURIComponent(token)}`);
+        es.onopen = () => { attempts = 0; stopFallback(); };
+        es.addEventListener('billing_created', invalidateAll as any);
+        es.addEventListener('billing_status_updated', invalidateAll as any);
+        es.onerror = () => {
+          try { es?.close(); } catch {}
+          es = null; attempts += 1;
+          if (attempts >= 3) startFallback();
+          const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+          if (!closed) setTimeout(connect, delay);
+        };
+      } catch {
+        attempts += 1; if (attempts >=3) startFallback();
+        const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+        if (!closed) setTimeout(connect, delay);
+      }
+    };
+    connect();
+    return () => { closed = true; try { es?.close(); } catch {}; stopFallback(); };
   },[live, token, listKey, summaryKey, qc, loadMetrics]);
 
   return (

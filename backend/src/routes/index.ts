@@ -40,6 +40,7 @@ import agendaTemplates from './agenda-templates';
 import agendaOptimization from './agenda-optimization';
 import agendaConflicts from './agenda-conflicts';
 import { requireAuth } from '../middleware/auth';
+import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
 const router = Router();
 // Middleware para soportar token en query para SSE (EventSource no permite headers personalizados)
@@ -115,4 +116,33 @@ router.use('/agenda-optimization', agendaOptimization);
 router.use('/agenda-conflicts', agendaConflicts);
 // TODO: mount more routers as they are implemented
 
-export default router; // Ensure this matches the server import
+// Endpoint para métricas de conexiones SSE activas (requiere autenticación)
+router.get('/sse-connections', requireAuth, (req: Request, res: Response) => {
+	return res.json({ channels: getAllChannelSizes(), timestamp: new Date().toISOString() });
+});
+
+// Endpoint Prometheus - Protegido por IP whitelist o API key opcional
+router.get('/metrics', (req: Request, res: Response) => {
+	// Verificar API key si está configurada
+	const apiKey = process.env.METRICS_API_KEY;
+	if (apiKey && req.query.key !== apiKey) {
+		return res.status(401).json({ error: 'Invalid or missing API key' });
+	}
+	
+	// Verificar IP whitelist si está configurada
+	const allowedIPs = process.env.METRICS_ALLOWED_IPS?.split(',').map(ip => ip.trim()) || [];
+	if (allowedIPs.length > 0) {
+		const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
+		if (!allowedIPs.includes(clientIP)) {
+			return res.status(403).json({ error: 'IP not whitelisted for metrics access' });
+		}
+	}
+	
+	if (req.query.format === 'json') {
+		return res.json(getSSEMetrics());
+	}
+	res.setHeader('Content-Type','text/plain; version=0.0.4');
+	return res.send(renderPrometheusMetrics());
+});
+
+export default router;

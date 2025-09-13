@@ -1,5 +1,12 @@
 import pool from './pool';
 
+// Simple logger para bootstrap (evita dependencia circular con pino)
+const logger = {
+  info: (msg: string, extra?: any) => console.log(`[BOOTSTRAP] ${msg}`, extra || ''),
+  warn: (msg: string, extra?: any) => console.warn(`[BOOTSTRAP] ${msg}`, extra || ''),
+  error: (msg: string, extra?: any) => console.error(`[BOOTSTRAP] ${msg}`, extra || ''),
+};
+
 async function ensureRow(): Promise<void> {
   await pool.query("INSERT INTO system_settings (id) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM system_settings WHERE id = 1)");
 }
@@ -9,7 +16,6 @@ async function columnExists(table: string, column: string): Promise<boolean> {
     "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1",
     [table, column]
   );
-  // @ts-ignore
   return (rows as any[]).length > 0;
 }
 
@@ -19,12 +25,21 @@ async function ensureSystemSettingsColumns(): Promise<void> {
     { name: 'org_logo_url', ddl: 'ALTER TABLE system_settings ADD COLUMN `org_logo_url` varchar(255) NULL' },
     { name: 'org_timezone', ddl: "ALTER TABLE system_settings ADD COLUMN `org_timezone` varchar(64) NOT NULL DEFAULT 'America/Bogota'" },
   ];
+  
   for (const c of cols) {
     try {
       const exists = await columnExists('system_settings', c.name);
-      if (!exists) await pool.query(c.ddl);
-    } catch {
-      // ignore, keeps server running even if insufficient privileges
+      if (!exists) {
+        await pool.query(c.ddl);
+        logger.info(`Added column ${c.name} to system_settings`);
+      }
+    } catch (error: any) {
+      // Log específico para errores de permisos vs errores estructurales
+      if (error.code === 'ER_TABLEACCESS_DENIED_ERROR' || error.code === 'ER_ACCESS_DENIED_ERROR') {
+        logger.warn(`Insufficient privileges to add column ${c.name}, skipping`);
+      } else {
+        logger.error(`Failed to add column ${c.name}:`, error.message);
+      }
     }
   }
 }
@@ -274,13 +289,33 @@ export default async function bootstrap(): Promise<void> {
         `INSERT IGNORE INTO location_types (name, status) VALUES ${placeholders}` as any,
         defaults as any
       );
-    } catch { /* ignore creation seed errors */ }
-  // Índices recomendados para rendimiento de analíticas (best-effort)
-  try { await pool.query('ALTER TABLE appointments ADD KEY `idx_appt_scheduled_at` (`scheduled_at`)'); } catch { /* ignore */ }
-  try { await pool.query('ALTER TABLE appointments ADD KEY `idx_appt_specialty` (`specialty_id`)'); } catch { /* ignore */ }
-  try { await pool.query('ALTER TABLE appointments ADD KEY `idx_appt_location` (`location_id`)'); } catch { /* ignore */ }
-  try { await pool.query('ALTER TABLE locations ADD KEY `idx_loc_municipality` (`municipality_id`)'); } catch { /* ignore */ }
-  } catch {
-    // swallow errors; routes also have fallbacks
+      logger.info('Location types seeded successfully');
+    } catch (error: any) {
+      logger.error('Failed to create/seed location_types:', error.message);
+    }
+    
+    // Índices recomendados para rendimiento de analíticas (best-effort)
+    const indexes = [
+      { table: 'appointments', name: 'idx_appt_scheduled_at', sql: 'ALTER TABLE appointments ADD KEY `idx_appt_scheduled_at` (`scheduled_at`)' },
+      { table: 'appointments', name: 'idx_appt_specialty', sql: 'ALTER TABLE appointments ADD KEY `idx_appt_specialty` (`specialty_id`)' },
+      { table: 'appointments', name: 'idx_appt_location', sql: 'ALTER TABLE appointments ADD KEY `idx_appt_location` (`location_id`)' },
+      { table: 'locations', name: 'idx_loc_municipality', sql: 'ALTER TABLE locations ADD KEY `idx_loc_municipality` (`municipality_id`)' },
+    ];
+    
+    for (const idx of indexes) {
+      try {
+        await pool.query(idx.sql);
+        logger.info(`Added index ${idx.name} to ${idx.table}`);
+      } catch (error: any) {
+        if (error.code === 'ER_DUP_KEYNAME') {
+          // Index already exists, this is fine
+          continue;
+        }
+        logger.warn(`Failed to add index ${idx.name}:`, error.message);
+      }
+    }
+  } catch (error: any) {
+    logger.error('Bootstrap process failed:', error.message);
+    // Don't throw - let server start anyway
   }
 }

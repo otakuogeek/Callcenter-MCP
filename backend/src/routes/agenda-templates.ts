@@ -3,6 +3,23 @@ import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
 import { z } from 'zod';
 
+// Utilidades
+function parseJsonArray<T=any>(value:any, fallback:any[]=[]): T[] {
+  if (Array.isArray(value)) return value as T[];
+  if (typeof value === 'string') { try { const p = JSON.parse(value); return Array.isArray(p)? p : fallback; } catch { return fallback; } }
+  return fallback;
+}
+function validateTimeSlots(slots:any[]): { ok:boolean; error?:string } {
+  const norm = slots.map(s=> ({ start:s.start, end:s.end, capacity:Number(s.capacity)||1 }));
+  for (const s of norm) {
+    if (!/^\d{2}:\d{2}$/.test(s.start) || !/^\d{2}:\d{2}$/.test(s.end)) return { ok:false, error:'Formato de hora inválido'};
+    if (s.start >= s.end) return { ok:false, error:'Hora de inicio debe ser < hora fin'};
+  }
+  const sorted=[...norm].sort((a,b)=> a.start.localeCompare(b.start));
+  for (let i=1;i<sorted.length;i++) if (sorted[i].start < sorted[i-1].end) return { ok:false, error:'Horarios solapados'};
+  return { ok:true };
+}
+
 const router = Router();
 
 // Middleware de autenticación para todas las rutas
@@ -15,8 +32,8 @@ const templateSchema = z.object({
   doctor_id: z.number().optional(),
   specialty_id: z.number().optional(),
   location_id: z.number().optional(),
-  days_of_week: z.string(), // JSON array de días [1,2,3,4,5]
-  time_slots: z.string(), // JSON array de horarios [{"start":"08:00","end":"12:00","capacity":4}]
+  days_of_week: z.any(), // se normaliza
+  time_slots: z.any(),
   duration_minutes: z.number().min(15).max(240).default(30),
   break_between_slots: z.number().min(0).max(60).default(0),
   active: z.boolean().default(true)
@@ -29,68 +46,73 @@ const bulkGenerationSchema = z.object({
   exclude_holidays: z.boolean().default(true)
 });
 
-// Obtener todas las plantillas
+// Listado con filtros
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const [rows] = await pool.query(`
-      SELECT 
-        at.*,
-        d.name as doctor_name,
-        s.name as specialty_name,
-        l.name as location_name
+    const { doctor_id, specialty_id, location_id, active } = req.query;
+    const cond:string[]=[]; const params:any[]=[];
+    if (doctor_id) { cond.push('at.doctor_id = ?'); params.push(doctor_id); }
+    if (specialty_id) { cond.push('at.specialty_id = ?'); params.push(specialty_id); }
+    if (location_id) { cond.push('at.location_id = ?'); params.push(location_id); }
+    if (typeof active !== 'undefined') { cond.push('at.active = ?'); params.push(active === 'true' ? 1 : 0); }
+    const where = cond.length? 'WHERE '+cond.join(' AND ') : '';
+    const [rows] = await pool.query(`SELECT at.*, d.name as doctor_name, s.name as specialty_name, l.name as location_name
+       FROM agenda_templates at
+       LEFT JOIN doctors d ON at.doctor_id = d.id
+       LEFT JOIN specialties s ON at.specialty_id = s.id
+       LEFT JOIN locations l ON at.location_id = l.id
+       ${where}
+       ORDER BY at.created_at DESC`, params);
+    res.json({ success:true, data: rows });
+  } catch (e) {
+    console.error('Error getting agenda templates:', e);
+    res.status(500).json({ success:false, error:'Error al obtener plantillas' });
+  }
+});
+
+// Obtener una
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const [rows] = await pool.query(`SELECT at.*, d.name as doctor_name, s.name as specialty_name, l.name as location_name
       FROM agenda_templates at
       LEFT JOIN doctors d ON at.doctor_id = d.id
       LEFT JOIN specialties s ON at.specialty_id = s.id
       LEFT JOIN locations l ON at.location_id = l.id
-      ORDER BY at.created_at DESC
-    `);
-
-    res.json({ success: true, data: rows });
-  } catch (error) {
-    console.error('Error getting agenda templates:', error);
-    res.status(500).json({ success: false, error: 'Error al obtener plantillas' });
-  }
+      WHERE at.id = ?`, [id]) as any;
+    if (!rows.length) return res.status(404).json({ success:false, error:'Plantilla no encontrada' });
+    res.json({ success:true, data: rows[0] });
+  } catch { res.status(500).json({ success:false, error:'Error al obtener plantilla' }); }
 });
 
 // Crear nueva plantilla
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const data = templateSchema.parse(req.body);
-    
-    const [result] = await pool.query(
-      `INSERT INTO agenda_templates 
-       (name, description, doctor_id, specialty_id, location_id, days_of_week, 
-        time_slots, duration_minutes, break_between_slots, active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-      [
+    const body = { ...req.body };
+    body.days_of_week = parseJsonArray(body.days_of_week, []);
+    body.time_slots = parseJsonArray(body.time_slots, []);
+    const data = templateSchema.parse(body);
+    const validation = validateTimeSlots(data.time_slots);
+    if (!validation.ok) return res.status(400).json({ success:false, error: validation.error });
+    const [result] = await pool.query(`INSERT INTO agenda_templates
+      (name, description, doctor_id, specialty_id, location_id, days_of_week, time_slots, duration_minutes, break_between_slots, active, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?, NOW())`,[
         data.name,
         data.description || null,
         data.doctor_id || null,
         data.specialty_id || null,
         data.location_id || null,
-        data.days_of_week,
-        data.time_slots,
+        JSON.stringify(data.days_of_week),
+        JSON.stringify(data.time_slots),
         data.duration_minutes,
         data.break_between_slots,
         data.active
-      ]
-    ) as any;
-
-    res.json({ 
-      success: true, 
-      data: { id: result.insertId, ...data },
-      message: 'Plantilla creada exitosamente' 
-    });
+      ]) as any;
+    res.json({ success:true, data:{ id: result.insertId, ...data }, message:'Plantilla creada exitosamente' });
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Datos inválidos', 
-        details: error.errors 
-      });
-    }
+    if (error instanceof z.ZodError) return res.status(400).json({ success:false, error:'Datos inválidos', details:error.errors });
     console.error('Error creating agenda template:', error);
-    res.status(500).json({ success: false, error: 'Error al crear plantilla' });
+    res.status(500).json({ success:false, error:'Error al crear plantilla' });
   }
 });
 
@@ -99,7 +121,8 @@ router.post('/generate-bulk', async (req: Request, res: Response) => {
   const connection = await pool.getConnection();
   
   try {
-    const data = bulkGenerationSchema.parse(req.body);
+  const data = bulkGenerationSchema.parse(req.body);
+  const skipExisting = (req.body.skip_existing !== false); // default true
     
     await connection.beginTransaction();
 
@@ -127,7 +150,8 @@ router.post('/generate-bulk', async (req: Request, res: Response) => {
       holidays = holidayRows.map((h: any) => h.date);
     }
 
-    const generatedSlots = [];
+  const generatedSlots: any[] = [];
+  let skippedConflicts = 0;
     const currentDate = new Date(data.start_date);
     const endDate = new Date(data.end_date);
 
@@ -138,12 +162,16 @@ router.post('/generate-bulk', async (req: Request, res: Response) => {
       // Verificar si el día está en la plantilla y no es feriado
       if (daysOfWeek.includes(dayOfWeek) && !holidays.includes(dateStr)) {
         for (const slot of timeSlots) {
-          const [result] = await connection.query(
-            `INSERT INTO availability_slots 
-             (doctor_id, specialty_id, location_id, date, time_start, time_end, 
-              capacity, duration_minutes, created_from_template, template_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, ?)`,
-            [
+          if (skipExisting) {
+            const [existing] = await connection.query(`SELECT id FROM availability_slots
+              WHERE doctor_id <=> ? AND specialty_id <=> ? AND location_id <=> ?
+                AND date = ? AND time_start < ? AND time_end > ? LIMIT 1`,
+                [template.doctor_id, template.specialty_id, template.location_id, dateStr, slot.end, slot.start]) as any;
+            if (existing.length) { skippedConflicts++; continue; }
+          }
+          const [result] = await connection.query(`INSERT INTO availability_slots
+             (doctor_id, specialty_id, location_id, date, time_start, time_end, capacity, duration_minutes, created_from_template, template_id)
+             VALUES (?,?,?,?,?,?,?,?, true, ?)`,[
               template.doctor_id,
               template.specialty_id,
               template.location_id,
@@ -153,16 +181,8 @@ router.post('/generate-bulk', async (req: Request, res: Response) => {
               slot.capacity || 1,
               template.duration_minutes,
               template.id
-            ]
-          ) as any;
-
-          generatedSlots.push({
-            id: result.insertId,
-            date: dateStr,
-            time_start: slot.start,
-            time_end: slot.end,
-            capacity: slot.capacity || 1
-          });
+             ]) as any;
+          generatedSlots.push({ id: result.insertId, date: dateStr, time_start: slot.start, time_end: slot.end, capacity: slot.capacity || 1 });
         }
       }
 
@@ -171,14 +191,7 @@ router.post('/generate-bulk', async (req: Request, res: Response) => {
 
     await connection.commit();
 
-    res.json({
-      success: true,
-      data: {
-        generated_count: generatedSlots.length,
-        slots: generatedSlots
-      },
-      message: `Se generaron ${generatedSlots.length} disponibilidades exitosamente`
-    });
+  res.json({ success:true, data:{ generated_count: generatedSlots.length, skipped_conflicts: skippedConflicts, slots: generatedSlots }, message:`Se generaron ${generatedSlots.length} slots. Conflictos omitidos: ${skippedConflicts}` });
 
   } catch (error) {
     await connection.rollback();
@@ -203,47 +216,38 @@ router.post('/generate-bulk', async (req: Request, res: Response) => {
 router.put('/:id', async (req: Request, res: Response) => {
   try {
     const id = parseInt(req.params.id);
-    const data = templateSchema.parse(req.body);
-
-    const [result] = await pool.query(
-      `UPDATE agenda_templates 
-       SET name = ?, description = ?, doctor_id = ?, specialty_id = ?, location_id = ?, 
-           days_of_week = ?, time_slots = ?, duration_minutes = ?, break_between_slots = ?, 
-           active = ?, updated_at = NOW()
-       WHERE id = ?`,
-      [
-        data.name,
-        data.description || null,
-        data.doctor_id || null,
-        data.specialty_id || null,
-        data.location_id || null,
-        data.days_of_week,
-        data.time_slots,
-        data.duration_minutes,
-        data.break_between_slots,
-        data.active,
-        id
-      ]
-    ) as any;
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, error: 'Plantilla no encontrada' });
-    }
-
-    res.json({ 
-      success: true, 
-      message: 'Plantilla actualizada exitosamente' 
-    });
+    const body = { ...req.body };
+    body.days_of_week = parseJsonArray(body.days_of_week, []);
+    body.time_slots = parseJsonArray(body.time_slots, []);
+    const data = templateSchema.parse(body);
+    const validation = validateTimeSlots(data.time_slots);
+    if (!validation.ok) return res.status(400).json({ success:false, error: validation.error });
+    const [result] = await pool.query(`UPDATE agenda_templates SET name=?, description=?, doctor_id=?, specialty_id=?, location_id=?, days_of_week=?, time_slots=?, duration_minutes=?, break_between_slots=?, active=?, updated_at=NOW() WHERE id = ?`,[
+      data.name, data.description || null, data.doctor_id || null, data.specialty_id || null, data.location_id || null, JSON.stringify(data.days_of_week), JSON.stringify(data.time_slots), data.duration_minutes, data.break_between_slots, data.active, id
+    ]) as any;
+    if (result.affectedRows === 0) return res.status(404).json({ success:false, error:'Plantilla no encontrada' });
+    res.json({ success:true, message:'Plantilla actualizada exitosamente' });
   } catch (error) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Datos inválidos', 
-        details: error.errors 
-      });
-    }
+    if (error instanceof z.ZodError) return res.status(400).json({ success:false, error:'Datos inválidos', details:error.errors });
     console.error('Error updating agenda template:', error);
-    res.status(500).json({ success: false, error: 'Error al actualizar plantilla' });
+    res.status(500).json({ success:false, error:'Error al actualizar plantilla' });
+  }
+});
+
+// Duplicar
+router.post('/:id/duplicate', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const [rows] = await pool.query('SELECT * FROM agenda_templates WHERE id = ?', [id]) as any;
+    if (!rows.length) return res.status(404).json({ success:false, error:'Plantilla no encontrada' });
+    const tpl = rows[0];
+    const [result] = await pool.query(`INSERT INTO agenda_templates (name, description, doctor_id, specialty_id, location_id, days_of_week, time_slots, duration_minutes, break_between_slots, active, created_at) VALUES (?,?,?,?,?,?,?,?,?,?, NOW())`,[
+      tpl.name + ' (Copia)', tpl.description, tpl.doctor_id, tpl.specialty_id, tpl.location_id, tpl.days_of_week, tpl.time_slots, tpl.duration_minutes, tpl.break_between_slots, tpl.active
+    ]) as any;
+    res.json({ success:true, data:{ id: result.insertId }, message:'Plantilla duplicada' });
+  } catch (e) {
+    console.error('Duplicate template error', e);
+    res.status(500).json({ success:false, error:'Error al duplicar plantilla' });
   }
 });
 
@@ -268,45 +272,6 @@ router.delete('/:id', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error deleting agenda template:', error);
     res.status(500).json({ success: false, error: 'Error al eliminar plantilla' });
-  }
-});
-
-// Obtener estadísticas de uso de plantillas
-router.get('/usage-stats', async (req: Request, res: Response) => {
-  try {
-    const [stats] = await pool.query(`
-      SELECT 
-        at.id,
-        at.name,
-        COUNT(a.id) as total_availabilities,
-        COUNT(DISTINCT DATE(a.date)) as days_used,
-        AVG(a.capacity) as avg_capacity,
-        SUM(a.booked_slots) as total_booked,
-        MAX(a.created_at) as last_used
-      FROM agenda_templates at
-      LEFT JOIN availabilities a ON a.template_id = at.id
-      GROUP BY at.id, at.name
-      ORDER BY total_availabilities DESC
-    `);
-
-    const [totalStats] = await pool.query(`
-      SELECT 
-        COUNT(*) as total_templates,
-        COUNT(CASE WHEN active = 1 THEN 1 END) as active_templates,
-        AVG(duration_minutes) as avg_duration
-      FROM agenda_templates
-    `) as any;
-
-    res.json({ 
-      success: true, 
-      data: {
-        templates: stats,
-        summary: totalStats[0]
-      }
-    });
-  } catch (error) {
-    console.error('Error getting template usage stats:', error);
-    res.status(500).json({ success: false, error: 'Error al obtener estadísticas' });
   }
 });
 

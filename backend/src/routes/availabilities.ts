@@ -90,7 +90,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       }
     }
 
-    return res.status(201).json({ id: availabilityId, ...d, preallocation });
+  return res.status(201).json({ success: true, id: availabilityId, ...d, preallocation });
   } catch (e: any) {
     return res.status(500).json({ message: 'Server error' });
   }

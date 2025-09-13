@@ -87,56 +87,95 @@ const analyticsItems = [
 ];
 
 // Nuevos items para funcionalidades mejoradas
-const advancedItems = [
-  {
-    title: "Gestión Avanzada de Agenda",
-    url: "/agenda-management",
-    icon: Calendar,
-  },
-];
+// (advancedItems actualmente no renderizado; se puede habilitar cuando se requiera)
 
 export function AppSidebar() {
   const [queueCount, setQueueCount] = useState<number>(0);
   const [transferCount, setTransferCount] = useState<number>(0);
+  const [connectionMode, setConnectionMode] = useState<'SSE'|'POLL'>(() => (localStorage.getItem('connMode') as any) || 'SSE');
   const location = useLocation();
 
   // const currentDate = new Date(); // (no usado actualmente)
 
   // Helper: crea EventSource con token con manejo de errores mejorado
   function subscribe(path: string, onEvent: (ev: MessageEvent) => void) {
-    try {
-      const token = localStorage.getItem('token') || undefined;
-      const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
-      const url = `${base}${path}`;
-      const es = new EventSource(url + (token ? `?token=${encodeURIComponent(token)}` : ''));
-      
-      // Manejar eventos con mejor tolerancia a errores
-      es.onmessage = onEvent;
-      es.addEventListener('enqueue', onEvent as any);
-      es.addEventListener('assign', onEvent as any);
-      es.addEventListener('scheduled', onEvent as any);
-      es.addEventListener('cancelled', onEvent as any);
-      es.addEventListener('created', onEvent as any);
-      es.addEventListener('accepted', onEvent as any);
-      es.addEventListener('rejected', onEvent as any);
-      es.addEventListener('completed', onEvent as any);
-      
-      // Manejar errores de conexión
-      es.onerror = (error) => {
-        console.warn(`EventSource error for ${path}:`, error);
-        // No relanzar error para evitar spam en consola
-      };
-      
-      return es;
-    } catch (error) {
-      console.warn(`Failed to create EventSource for ${path}:`, error);
-      return null;
-    }
+    const token = localStorage.getItem('token') || undefined;
+    const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+    const url = `${base}${path}` + (token ? `?token=${encodeURIComponent(token)}` : '');
+    let es: EventSource | null = null;
+    let attempts = 0;
+    let closed = false;
+    let fallbackInterval: any = null;
+
+    const pollFallback = async () => {
+      try {
+        if (path.includes('queue')) {
+          const ovRes = await fetch(`${base}/queue/overview` + (token?`?token=${encodeURIComponent(token)}`:''), { headers: token?{ Authorization:`Bearer ${token}`}:undefined });
+          if (ovRes.ok) {
+            const ov = await ovRes.json();
+            // synth event
+            onEvent(new MessageEvent('poll', { data: JSON.stringify(ov) }));
+          }
+        } else if (path.includes('transfers')) {
+          const trRes = await fetch(`${base}/transfers?status=pending` + (token?`&token=${encodeURIComponent(token)}`:''), { headers: token?{ Authorization:`Bearer ${token}`}:undefined });
+          if (trRes.ok) {
+            const list = await trRes.json();
+            onEvent(new MessageEvent('poll', { data: JSON.stringify({ count: Array.isArray(list)?list.length:0 }) }));
+          }
+        }
+      } catch {}
+    };
+
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      fallbackInterval = setInterval(pollFallback, 10000);
+      pollFallback();
+      if (connectionMode !== 'POLL') {
+        setConnectionMode('POLL');
+        localStorage.setItem('connMode','POLL');
+      }
+    };
+    const stopFallback = () => { if (fallbackInterval) { clearInterval(fallbackInterval); fallbackInterval=null; } };
+
+    const connect = () => {
+      if (closed) return;
+      try {
+        es = new EventSource(url);
+  es.onopen = () => { attempts = 0; stopFallback(); if (connectionMode !== 'SSE') { setConnectionMode('SSE'); localStorage.setItem('connMode','SSE'); } };
+        es.onmessage = onEvent;
+        ['enqueue','assign','scheduled','cancelled','created','accepted','rejected','completed'].forEach(ev => es!.addEventListener(ev, onEvent as any));
+        es.onerror = (err) => {
+          console.warn(`EventSource error for ${path}:`, err);
+          try { es?.close(); } catch {}
+          es = null;
+          attempts += 1;
+          const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+          // Después de 3 intentos, activar fallback polling
+          if (attempts >= 3) startFallback();
+          if (!closed) setTimeout(connect, delay);
+        };
+      } catch (e) {
+        attempts += 1;
+        const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+        if (attempts >= 3) startFallback();
+        if (!closed) setTimeout(connect, delay);
+      }
+    };
+
+    connect();
+
+    return {
+      close() {
+        closed = true;
+        try { es?.close(); } catch {}
+        stopFallback();
+      }
+    };
   }
 
   useEffect(() => {
-    let esQueue: EventSource | null = null;
-    let esTransfers: EventSource | null = null;
+  let esQueue: any = null;
+  let esTransfers: any = null;
     
     const fetchInitial = async () => {
       try {
@@ -193,10 +232,11 @@ export function AppSidebar() {
     
     esQueue = subscribe('/queue/stream', onQueue);
     esTransfers = subscribe('/transfers/stream', onTransfers);
+
     
     return () => {
-      esQueue?.close();
-      esTransfers?.close();
+  esQueue?.close?.();
+  esTransfers?.close?.();
     };
   }, [location.pathname]);
 
@@ -210,6 +250,12 @@ export function AppSidebar() {
           <div>
             <h2 className="text-lg font-bold text-medical-800">Valeria</h2>
             <p className="text-xs text-medical-600">Sistema Médico Avanzado</p>
+            <p className="text-[10px] mt-1 font-mono tracking-wide inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-medical-100 text-medical-700 border border-medical-200">
+              <span className={connectionMode==='SSE' ? 'text-green-600' : 'text-orange-600'}>
+                {connectionMode === 'SSE' ? 'SSE' : 'POLL'}
+              </span>
+              <span className="text-[9px] text-medical-500">live</span>
+            </p>
           </div>
         </div>
       </SidebarHeader>
@@ -303,29 +349,6 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {analyticsItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton 
-                    asChild 
-                    className="hover:bg-medical-50 hover:text-medical-700 data-[active=true]:bg-medical-100 data-[active=true]:text-medical-800"
-                  >
-                    <Link to={item.url} className="flex items-center space-x-3">
-                      <item.icon className="w-4 h-4" />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarGroup>
-          <SidebarGroupLabel className="text-medical-700 font-semibold">
-            Herramientas Avanzadas
-          </SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {advancedItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton 
                     asChild 

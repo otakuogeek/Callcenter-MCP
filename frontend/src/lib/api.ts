@@ -181,17 +181,6 @@ export const api = {
     if (typeof params.exclude_id === 'number') p.set('exclude_id', String(params.exclude_id));
     return request<{ conflict: boolean; doctor_conflict?: boolean; patient_conflict?: boolean; room_conflict?: boolean; items: Array<{ id: number; patient_id: number; scheduled_at: string; duration_minutes: number }>}>(`/appointments/conflicts?${p.toString()}`);
   },
-  // Preallocation (distribución de cupos previos)
-  getPreallocation: (params: { availability_id?: number; doctor_id?: number; target_date?: string; from?: string; to?: string; include_details?: boolean }) => {
-    const p = new URLSearchParams();
-    if (typeof params.availability_id === 'number') p.set('availability_id', String(params.availability_id));
-    if (typeof params.doctor_id === 'number') p.set('doctor_id', String(params.doctor_id));
-    if (params.target_date) p.set('target_date', params.target_date);
-    if (params.from) p.set('from', params.from);
-    if (params.to) p.set('to', params.to);
-    if (params.include_details) p.set('include_details', 'true');
-    return request<any>(`/agenda-optimization/preallocation?${p.toString()}`);
-  },
   // Usuarios
   getUsers: () => request<any[]>(`/users`),
   createUser: (data: any) => request<any>(`/users`, { method: 'POST', body: data }),
@@ -489,72 +478,7 @@ export const api = {
     },
   },
 
-  // === NUEVAS MEJORAS DE AGENDA ===
-  
-  // Plantillas de Agenda
-  agendaTemplates: {
-    getAll: () => request<any[]>(`/agenda-templates`),
-    getById: (id: string) => request<any>(`/agenda-templates/${id}`),
-    create: (data: any) => request<any>(`/agenda-templates`, { method: 'POST', body: data }),
-    update: (id: string, data: any) => request<any>(`/agenda-templates/${id}`, { method: 'PUT', body: data }),
-    delete: (id: string) => request<void>(`/agenda-templates/${id}`, { method: 'DELETE' }),
-    apply: (data: { template_id: string; start_date: string; end_date: string; doctor_ids?: number[]; location_ids?: number[] }) => 
-      request<any>(`/agenda-templates/apply`, { method: 'POST', body: data }),
-    getUsageStats: () => request<any>(`/agenda-templates/usage-stats`),
-  },
-
-  // Optimización de Agenda
-  agendaOptimization: {
-    analyze: (params: { start_date: string; end_date: string; doctor_id?: number; location_id?: number }) => {
-      const p = new URLSearchParams();
-      p.set('start_date', params.start_date);
-      p.set('end_date', params.end_date);
-      if (params.doctor_id) p.set('doctor_id', params.doctor_id.toString());
-      if (params.location_id) p.set('location_id', params.location_id.toString());
-      return request<any>(`/agenda-optimization/analyze?${p.toString()}`);
-    },
-    getSuggestions: (params: { date: string; doctor_id?: number; location_id?: number }) => {
-      const p = new URLSearchParams();
-      p.set('date', params.date);
-      if (params.doctor_id) p.set('doctor_id', params.doctor_id.toString());
-      if (params.location_id) p.set('location_id', params.location_id.toString());
-      return request<any>(`/agenda-optimization/suggestions?${p.toString()}`);
-    },
-    applySuggestion: (data: { suggestion_id: string; apply_all?: boolean }) => 
-      request<any>(`/agenda-optimization/apply-suggestion`, { method: 'POST', body: data }),
-    getPerformanceMetrics: (params: { start_date: string; end_date: string }) => {
-      const p = new URLSearchParams();
-      p.set('start_date', params.start_date);
-      p.set('end_date', params.end_date);
-      return request<any>(`/agenda-optimization/performance?${p.toString()}`);
-    },
-    // Nueva distribución aleatoria previa a una fecha objetivo
-    randomDistribution: (payload: { target_date: string; total_slots: number; publish_date?: string; doctor_id?: number; location_id?: number; specialty_id?: number; apply?: boolean }) =>
-      request<{ success: boolean; data: { target_date: string; publish_date: string; working_days: number; distribution: { date: string; assigned: number }[]; stats: { total: number; average_per_day: number; std_deviation: number; max_assigned: number; min_assigned: number }; persisted: boolean; persisted_rows: number } }>(`/agenda-optimization/random-distribution`, { method: 'POST', body: payload }),
-  },
-
-  // Gestión de Conflictos de Agenda
-  agendaConflicts: {
-    detect: (params: { date?: string; doctor_id?: number; location_id?: number }) => {
-      const p = new URLSearchParams();
-      if (params.date) p.set('date', params.date);
-      if (params.doctor_id) p.set('doctor_id', params.doctor_id.toString());
-      if (params.location_id) p.set('location_id', params.location_id.toString());
-      return request<any>(`/agenda-conflicts/detect?${p.toString()}`);
-    },
-    resolve: (data: { conflict_id: string; resolution_type: string; new_time?: string; new_doctor_id?: number }) => 
-      request<any>(`/agenda-conflicts/resolve`, { method: 'POST', body: data }),
-    getHistory: (params?: { start_date?: string; end_date?: string; limit?: number }) => {
-      const p = new URLSearchParams();
-      if (params?.start_date) p.set('start_date', params.start_date);
-      if (params?.end_date) p.set('end_date', params.end_date);
-      if (params?.limit) p.set('limit', params.limit.toString());
-      return request<any>(`/agenda-conflicts/history?${p.toString()}`);
-    },
-    getStats: () => request<any>(`/agenda-conflicts/stats`),
-  },
-
-  // Plantillas de Disponibilidad (existente - mantener compatibilidad)
+  // Plantillas de Disponibilidad
   getAvailabilityTemplates: () => request<any[]>(`/availability-templates`),
   createAvailabilityTemplate: (data: any) => request<any>(`/availability-templates`, { method: 'POST', body: data }),
   updateAvailabilityTemplate: (id: string, data: any) => request<any>(`/availability-templates/${id}`, { method: 'PUT', body: data }),
@@ -562,6 +486,16 @@ export const api = {
   generateScheduleFromTemplate: (data: { template_id: string; start_date: string; end_date: string }) => 
     request<any>(`/availability-templates/generate-schedule`, { method: 'POST', body: data }),
   getTemplateAnalytics: () => request<any>(`/availability-templates/analytics`),
+
+  // Agenda Templates (backend: /agenda-templates)
+  getAgendaTemplates: () => request<{ success: boolean; data: any[] }>(`/agenda-templates`),
+  createAgendaTemplate: (data: any) => request<{ success: boolean; data: any }>(`/agenda-templates`, { method: 'POST', body: data }),
+  updateAgendaTemplate: (id: number, data: any) => request<{ success: boolean; message: string }>(`/agenda-templates/${id}`, { method: 'PUT', body: data }),
+  deleteAgendaTemplate: (id: number) => request<{ success: boolean; message: string }>(`/agenda-templates/${id}`, { method: 'DELETE' }),
+  generateFromAgendaTemplate: (data: { template_id: number; start_date: string; end_date: string; exclude_holidays?: boolean }) =>
+    request<{ success: boolean; data: { generated_count: number; slots: any[] } }>(`/agenda-templates/generate-bulk`, { method: 'POST', body: data }),
+  duplicateAgendaTemplate: (id: number) =>
+    request<{ success: boolean; data: any }>(`/agenda-templates/${id}/duplicate`, { method: 'POST' }),
 };
 
 export default api;

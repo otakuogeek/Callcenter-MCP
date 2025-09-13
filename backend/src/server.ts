@@ -36,7 +36,15 @@ const corsOptions: cors.CorsOptions = {
 };
 app.use(cors(corsOptions));
 app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
-app.use(compression());
+// Compresión: desactivar para streams SSE (causa errores HTTP2_PROTOCOL_ERROR si se comprimen)
+app.use(compression({
+  filter: (req, res) => {
+    const accept = req.headers.accept || '';
+    if (accept.includes('text/event-stream')) return false;
+    if (req.path.endsWith('/stream')) return false;
+    return compression.filter(req, res);
+  },
+}));
 app.use(pinoHttp({ logger }));
 if (process.env.NODE_ENV !== 'test') {
   app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));

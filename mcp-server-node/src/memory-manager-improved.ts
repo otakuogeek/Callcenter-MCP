@@ -183,8 +183,7 @@ export class ConversationMemoryManager {
     const expiredSessions: string[] = [];
     
     // Identificar sesiones expiradas
-    const entries = Array.from(this.memoryCache.entries());
-    for (const [sessionId, entry] of entries) {
+    for (const [sessionId, entry] of this.memoryCache.entries()) {
       if (now - entry.lastAccessed > this.CACHE_DURATION) {
         expiredSessions.push(sessionId);
       }
@@ -348,17 +347,14 @@ export class ConversationMemoryManager {
 
       // Guardar en base de datos
       const query = `
-        INSERT INTO conversation_memory (session_id, patient_document, conversation_data, status, created_at, last_updated)
-        VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO conversation_memory (session_id, conversation_data, status, created_at, last_updated)
+        VALUES (?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         ON DUPLICATE KEY UPDATE
         conversation_data = VALUES(conversation_data),
         last_updated = CURRENT_TIMESTAMP
       `;
       
-      // Usar el session_id como patient_document si no se proporciona uno específico
-      const patientDocument = sessionId.startsWith('patient_') ? sessionId.substring(8) : sessionId;
-      
-      await pool.execute(query, [sessionId, patientDocument, JSON.stringify(memoryData)]);
+      await pool.execute(query, [sessionId, JSON.stringify(memoryData)]);
 
       // Agregar al cache
       this.memoryCache.set(sessionId, {
@@ -686,9 +682,7 @@ export class ConversationMemoryManager {
       
       if (updates.purpose) validatedUpdates.purpose = updates.purpose;
       if (updates.current_step) validatedUpdates.current_step = updates.current_step;
-      if (updates.topics_discussed) {
-        validatedUpdates.topics_discussed = Array.from(new Set(updates.topics_discussed));
-      }
+      if (updates.topics_discussed) validatedUpdates.topics_discussed = [...new Set(updates.topics_discussed)];
       if (updates.medical_context) {
         validatedUpdates.medical_context = {
           ...memoryData.conversation_context.medical_context,

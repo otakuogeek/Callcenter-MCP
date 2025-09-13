@@ -329,7 +329,7 @@ const EnhancedAppointmentCalendar = ({
           )}
         </CardHeader>
         
-        <CardContent className="p-6">
+    <CardContent className="p-6 overflow-x-hidden">
           <Calendar
             mode="single"
             selected={date}
@@ -340,12 +340,13 @@ const EnhancedAppointmentCalendar = ({
             modifiers={modifiers as any}
             classNames={{
               ...classNames,
-              day: "h-16 w-16 text-center text-sm transition-all hover:bg-accent hover:text-accent-foreground focus-within:relative focus-within:z-20 rounded-md",
-              day_selected: "bg-medical-600 text-white hover:bg-medical-700 hover:text-white focus:bg-medical-600 focus:text-white",
-              day_today: "bg-accent text-accent-foreground font-semibold",
-              day_outside: "text-muted-foreground opacity-50",
-              day_disabled: "text-muted-foreground opacity-30 cursor-not-allowed pointer-events-none",
-              day_hidden: "invisible",
+      // Usar tamaños fluidos heredados del componente base para evitar desalineación.
+      // Eliminamos anchos/altos fijos que causaban overflow en layouts de 2/5 columnas.
+      day_selected: "bg-medical-600 text-white hover:bg-medical-700 hover:text-white focus:bg-medical-600 focus:text-white",
+      day_today: "bg-accent text-accent-foreground font-semibold",
+      day_outside: "text-muted-foreground opacity-50",
+      day_disabled: "text-muted-foreground opacity-30 cursor-not-allowed pointer-events-none",
+      day_hidden: "invisible",
             } as any}
             components={{
               DayContent: (props: any) => {
@@ -369,7 +370,7 @@ const EnhancedAppointmentCalendar = ({
       <TooltipProvider delayDuration={150}>
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <div className={`w-full h-full flex flex-col items-center justify-center gap-1 rounded-lg border-2 transition-all ${getStatusColor(appts, avails)} ${
+                        <div className={`w-full h-full flex flex-col items-center justify-center gap-1 rounded-md border transition-all ${getStatusColor(appts, avails)} ${
                           intensity === 'high' ? 'ring-2 ring-medical-500' :
                           intensity === 'medium' ? 'ring-1 ring-medical-300' : ''
                         } ${dateMid < todayMid ? 'opacity-40' : ''}`}>

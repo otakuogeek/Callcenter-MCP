@@ -11,7 +11,7 @@ import AISchedulingModal from "@/components/AISchedulingModal";
 
 const Agents = () => {
   const [incomingTransfers, setIncomingTransfers] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  // loading eliminado (ya no usado)
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [selected, setSelected] = useState<any | null>(null);
@@ -43,7 +43,7 @@ const Agents = () => {
       setError(e?.message || 'Error cargando transferencias');
       setIncomingTransfers([]); // Set empty array on error
     } finally {
-      setLoading(false);
+      /* no-op */
     }
   };
 
@@ -53,15 +53,38 @@ const Agents = () => {
     const token = localStorage.getItem('token') || undefined;
     const url = `${base}/transfers/stream` + (token ? `?token=${encodeURIComponent(token)}` : '');
     let es: EventSource | null = null;
-    try {
-      es = new EventSource(url);
-      const onAny = () => { refresh(); };
-      es.addEventListener('created', onAny as any);
-      es.addEventListener('accepted', onAny as any);
-      es.addEventListener('rejected', onAny as any);
-      es.addEventListener('completed', onAny as any);
-    } catch {}
-    return () => { es?.close(); };
+    let attempts = 0;
+    let closed = false;
+    let fallbackInterval: any = null;
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      fallbackInterval = setInterval(()=>{ refresh(); }, 10000);
+      refresh();
+    };
+    const stopFallback = () => { if (fallbackInterval) { clearInterval(fallbackInterval); fallbackInterval=null; } };
+    const onAny = () => { refresh(); };
+    const connect = () => {
+      if (closed) return;
+      try {
+        es = new EventSource(url);
+        es.onopen = () => { attempts = 0; stopFallback(); };
+        ['created','accepted','rejected','completed'].forEach(ev => es!.addEventListener(ev, onAny as any));
+        es.onerror = () => {
+          try { es?.close(); } catch {}
+          es = null; attempts += 1;
+          if (attempts >= 3) startFallback();
+          const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+          if (!closed) setTimeout(connect, delay);
+        };
+      } catch {
+        attempts += 1;
+        if (attempts >= 3) startFallback();
+        const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+        if (!closed) setTimeout(connect, delay);
+      }
+    };
+    connect();
+    return () => { closed = true; try { es?.close(); } catch {}; stopFallback(); };
   }, []);
 
   const handleAcceptTransfer = async (transferId: number) => {

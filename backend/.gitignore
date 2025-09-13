@@ -4,3 +4,30 @@ dist/
 npm-debug.log*
 yarn-error.log*
 .DS_Store
+
+# Windows Zone.Identifier files (from file transfers)
+*.Zone.Identifier
+*Zone.Identifier
+
+# Logs
+logs/
+*.log
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Runtime data
+pids/
+*.pid
+*.seed
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+Thumbs.db
+ehthumbs.db

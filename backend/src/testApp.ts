@@ -20,6 +20,16 @@ if (process.env.NODE_ENV !== 'test') {
 }
 app.use('/api/webhooks', express.raw({ type: 'application/json' }));
 app.use(express.json());
+
+// Bypass simple para token fijo en tests (antes de montar router)
+app.use((req, _res, next) => {
+	if (process.env.NODE_ENV === 'test' && req.headers.authorization === 'Bearer test-token') {
+		(req as any).user = { id: 1, role: 'admin', name: 'Test User', email: 'test@example.com' };
+	}
+	next();
+});
+
 app.use('/api', apiRouter);
 app.use((req,res,next)=>{ if (req.path.startsWith('/api/')) return res.status(404).json({success:false,error:'Not Found'}); next(); });
+
 export default app;

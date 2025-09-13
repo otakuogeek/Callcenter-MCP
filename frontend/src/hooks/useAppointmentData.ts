@@ -42,12 +42,12 @@ export interface AvailabilityForm {
   endTime: string;
   capacity: number;
   notes: string;
-  auto_preallocate?: boolean;
-  preallocation_publish_date?: string;
+  autoPreallocate?: boolean;
+  preallocationPublishDate?: string; // YYYY-MM-DD opcional
 }
 
 export const useAppointmentData = () => {
-  const { handleApiCall } = useErrorHandler();
+  const { handleApiCall, handleError } = useErrorHandler();
   const [locations, setLocations] = useState<Location[]>([]);
   const [availabilities, setAvailabilities] = useState<Availability[]>([]);
   const [calendarSummary, setCalendarSummary] = useState<Record<string, { appointments: number; availabilities: number }>>({});
@@ -168,6 +168,21 @@ export const useAppointmentData = () => {
   const getActiveLocations = () => locations.filter(l => l.status === 'Activa');
 
   const addAvailability = async (availabilityData: AvailabilityForm) => {
+    if (!availabilityData) {
+      console.error('[addAvailability] availabilityData undefined');
+      throw new Error('Formulario de disponibilidad no inicializado');
+    }
+    // Validación básica defensiva para evitar TypeError silencioso
+    const required: Array<keyof AvailabilityForm> = ['locationId','specialty','doctor','date','startTime','endTime'];
+    const missing = required.filter(k => !availabilityData[k] || (typeof availabilityData[k] === 'string' && (availabilityData[k] as any).trim() === ''));
+    if (missing.length) {
+      console.warn('[addAvailability] Campos faltantes:', missing);
+      throw new Error('Faltan campos obligatorios: ' + missing.join(', '));
+    }
+    if (Number.isNaN(Number(availabilityData.locationId))) {
+      console.error('[addAvailability] locationId inválido:', availabilityData.locationId);
+      throw new Error('Ubicación inválida');
+    }
     return handleApiCall(
       async () => {
         await api.createAvailability({
@@ -179,8 +194,8 @@ export const useAppointmentData = () => {
           end_time: availabilityData.endTime,
           capacity: availabilityData.capacity,
           notes: availabilityData.notes,
-          auto_preallocate: (availabilityData as any).auto_preallocate || false,
-          preallocation_publish_date: (availabilityData as any).preallocation_publish_date || undefined,
+          auto_preallocate: availabilityData.autoPreallocate || false,
+          preallocation_publish_date: availabilityData.preallocationPublishDate || undefined,
         });
         // Recargar las disponibilidades para la fecha especificada
         await loadAvailabilities(availabilityData.date);

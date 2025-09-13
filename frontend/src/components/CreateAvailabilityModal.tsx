@@ -36,16 +36,6 @@ const CreateAvailabilityModal = ({
   const isPastDate = availabilityForm.date ? (new Date(availabilityForm.date) < new Date(new Date().toDateString())) : false;
   const timeOrderInvalid = !!(availabilityForm.startTime && availabilityForm.endTime && availabilityForm.startTime >= availabilityForm.endTime);
   const capacityInvalid = availabilityForm.capacity < 1;
-  const [autoPreallocate, setAutoPreallocate] = useState(true);
-  const [publishDate, setPublishDate] = useState(todayStr);
-
-  // Cuando se abre el modal, reestablecer valores por defecto
-  useEffect(() => {
-    if (isOpen) {
-      setAutoPreallocate(true);
-      setPublishDate(todayStr);
-    }
-  }, [isOpen]);
 
   const dateError = isPastDate ? "No puede crear una agenda en una fecha pasada" : undefined;
   const startTimeError = timeOrderInvalid ? "La hora de inicio debe ser anterior a la hora de fin" : undefined;
@@ -82,10 +72,15 @@ const CreateAvailabilityModal = ({
             className="space-y-4 sm:space-y-6"
             onSubmit={(e) => { 
               e.preventDefault(); 
-              if (!disableSubmit) {
-                // inyectar flags en form antes de submit
-                setAvailabilityForm(prev => ({ ...prev, auto_preallocate: autoPreallocate, preallocation_publish_date: publishDate || undefined } as any));
-                setTimeout(() => onCreateAvailability(), 0);
+              try {
+                if (disableSubmit) return;
+                if (!availabilityForm) {
+                  console.error('[CreateAvailabilityModal] availabilityForm undefined al enviar');
+                  return;
+                }
+                onCreateAvailability(); 
+              } catch(err){
+                console.error('[CreateAvailabilityModal] Error onSubmit', err);
               }
             }}
           >
@@ -182,35 +177,6 @@ const CreateAvailabilityModal = ({
               />
             </div>
 
-            <div className="space-y-2 border rounded-lg p-3 bg-medical-50/60">
-              <label className="flex items-start gap-2 text-sm font-medium text-medical-700">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 h-4 w-4"
-                  checked={autoPreallocate}
-                  onChange={e => setAutoPreallocate(e.target.checked)}
-                />
-                <span>
-                  Generar distribución aleatoria de cupos automáticamente
-                  <span className="block text-xs font-normal text-medical-600">Marcado por defecto. Puedes desmarcarlo si no deseas pre-distribución.</span>
-                </span>
-              </label>
-              {autoPreallocate && (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-                  <AnimatedInputField
-                    label="Fecha Inicio Liberación"
-                    type="date"
-                    value={publishDate}
-                    onChange={(value) => setPublishDate(value)}
-                    inputProps={{ min: todayStr, max: availabilityForm.date || undefined }}
-                  />
-                  <div className="sm:col-span-2 text-xs text-medical-600 leading-snug">
-                    Se liberarán {availabilityForm.capacity} cupos (capacidad) de forma aleatoria entre días hábiles desde esta fecha hasta el día previo a la agenda ({availabilityForm.date || 'fecha no seleccionada'}). Ajusta la fecha si quieres iniciar antes.
-                  </div>
-                </div>
-              )}
-            </div>
-
             <AnimatedTextareaField
               label="Observaciones"
               placeholder="Información adicional sobre este horario..."
@@ -218,6 +184,40 @@ const CreateAvailabilityModal = ({
               onChange={(value) => setAvailabilityForm({...availabilityForm, notes: value})}
               rows={3}
             />
+
+            {/* Auto distribución de cupos aleatoria */}
+            <div className="p-4 border rounded-lg bg-gray-50 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex flex-col">
+                  <span className="font-medium text-sm">Distribuir cupos automáticamente</span>
+                  <span className="text-xs text-gray-600 max-w-sm">Si se activa, la capacidad se reparte aleatoriamente en los días hábiles desde la fecha de publicación hasta el día anterior a la fecha objetivo.</span>
+                </div>
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-300"
+                    checked={!!availabilityForm.autoPreallocate}
+                    onChange={(e) => setAvailabilityForm({ ...availabilityForm, autoPreallocate: e.target.checked })}
+                  />
+                  Activar
+                </label>
+              </div>
+              {availabilityForm.autoPreallocate && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <AnimatedInputField
+                    label="Fecha Publicación"
+                    type="date"
+                    value={availabilityForm.preallocationPublishDate || ''}
+                    onChange={(value) => setAvailabilityForm({ ...availabilityForm, preallocationPublishDate: value })}
+                    inputProps={{ min: todayStr, max: availabilityForm.date || undefined }}
+                    placeholder="Desde cuándo liberar"
+                  />
+                  <div className="sm:col-span-2 text-xs text-gray-600 flex items-center">
+                    Si no se indica, se usará la fecha actual. Solo se cuentan días hábiles (lun-vie) antes del día de la agenda.
+                  </div>
+                </div>
+              )}
+            </div>
 
             <div className="flex justify-end space-x-3 pt-4 relative z-50">
               <AnimatedButton

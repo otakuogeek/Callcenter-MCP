@@ -15,14 +15,12 @@ const Queue = () => {
   const [selectedQueueEntryId, setSelectedQueueEntryId] = useState<number | null>(null);
   const [selectedPatientId, setSelectedPatientId] = useState<number | null>(null);
   const [selectedSpecialtyId, setSelectedSpecialtyId] = useState<number | null>(null);
-  const [selectedSpecialtyPatients, setSelectedSpecialtyPatients] = useState<any[]>([]);
 
   const [overview, setOverview] = useState<{ waiting: number; avg_wait_hm?: string; max_wait_hm?: string; avg_wait_seconds?: number; max_wait_seconds?: number; agents_available: number } | null>(null);
   const [grouped, setGrouped] = useState<Array<{ specialty_id: number; specialty_name: string; count: number; items: Array<{ id: number; position: number; priority: 'Alta'|'Normal'|'Baja'; wait_seconds: number; patient: { id: number; name: string; phone?: string } }> }>>([]);
   const [specialties, setSpecialties] = useState<Array<{ id: number; name: string }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [loadingSpecialty, setLoadingSpecialty] = useState<string | null>(null);
   const [loadingItemId, setLoadingItemId] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -51,20 +49,44 @@ const Queue = () => {
 
   useEffect(() => {
     refresh();
-    // Suscripción SSE para cola
+    // Suscripción SSE con retry/backoff + fallback polling
     const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
     const token = localStorage.getItem('token') || undefined;
     const url = `${base}/queue/stream` + (token ? `?token=${encodeURIComponent(token)}` : '');
     let es: EventSource | null = null;
-    try {
-      es = new EventSource(url);
-      const onAny = () => { refresh(); };
-      es.addEventListener('enqueue', onAny as any);
-      es.addEventListener('assign', onAny as any);
-      es.addEventListener('scheduled', onAny as any);
-      es.addEventListener('cancelled', onAny as any);
-    } catch {}
-    return () => { es?.close(); };
+    let attempts = 0;
+    let closed = false;
+    let fallbackInterval: any = null;
+
+    const startFallback = () => {
+      if (fallbackInterval) return;
+      fallbackInterval = setInterval(()=>{ refresh(); }, 10000);
+      refresh();
+    };
+    const stopFallback = () => { if (fallbackInterval) { clearInterval(fallbackInterval); fallbackInterval=null; } };
+    const onAny = () => { refresh(); };
+    const connect = () => {
+      if (closed) return;
+      try {
+        es = new EventSource(url);
+        es.onopen = () => { attempts = 0; stopFallback(); };
+        ['enqueue','assign','scheduled','cancelled'].forEach(ev => es!.addEventListener(ev, onAny as any));
+        es.onerror = () => {
+          try { es?.close(); } catch {}
+          es = null; attempts += 1;
+          if (attempts >= 3) startFallback();
+          const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+            if (!closed) setTimeout(connect, delay);
+        };
+      } catch {
+        attempts += 1;
+        if (attempts >= 3) startFallback();
+        const delay = Math.min(30000, 1000 * Math.pow(2, attempts));
+        if (!closed) setTimeout(connect, delay);
+      }
+    };
+    connect();
+    return () => { closed = true; try { es?.close(); } catch {}; stopFallback(); };
   }, []);
 
   // Adaptar grupos a estructura de UI

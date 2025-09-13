@@ -509,8 +509,9 @@ const UNIFIED_TOOLS = [
         session_id: { type: 'string', description: 'ID de la sesión' },
         current_step: { type: 'string', description: 'Paso actual de la conversación' },
         purpose: { type: 'string', description: 'Propósito actualizado' },
-        completed_steps: { type: 'array', items: { type: 'string' }, description: 'Pasos completados' },
-        pending_questions: { type: 'array', items: { type: 'string' }, description: 'Preguntas pendientes' }
+        topics_discussed: { type: 'array', items: { type: 'string' }, description: 'Temas discutidos' },
+        voice_preferences: { type: 'object', description: 'Preferencias de voz' },
+        medical_context: { type: 'object', description: 'Contexto médico actualizado' }
       },
       required: ['session_id']
     }
@@ -525,6 +526,28 @@ const UNIFIED_TOOLS = [
         reason: { type: 'string', description: 'Razón del cierre', default: 'completed' }
       },
       required: ['session_id']
+    }
+  },
+  {
+    name: 'searchMemory',
+    description: 'Buscar información específica en la memoria de conversación',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'ID de la sesión' },
+        query: { type: 'string', description: 'Término de búsqueda' },
+        type: { type: 'string', description: 'Tipo específico de interacción (opcional)' }
+      },
+      required: ['session_id', 'query']
+    }
+  },
+  {
+    name: 'getMemoryStats',
+    description: 'Obtener estadísticas de rendimiento del sistema de memoria',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false
     }
   }
 ];
@@ -614,7 +637,7 @@ async function executeToolCall(name: string, args: any): Promise<any> {
       // === MEMORIA CONVERSACIONAL ===
       case 'initializeMemory':
         const { ConversationMemoryManager } = await import('./memory-manager.js');
-        return await ConversationMemoryManager.initializeMemory(args.patient_document, args.session_id, args.purpose);
+        return await ConversationMemoryManager.initializeMemory(args.session_id || args.patient_document, args.purpose || 'patient_consultation');
       
       case 'addToMemory':
         const { ConversationMemoryManager: CMM1 } = await import('./memory-manager.js');
@@ -633,13 +656,22 @@ async function executeToolCall(name: string, args: any): Promise<any> {
         return await CMM4.updateContext(args.session_id, {
           current_step: args.current_step,
           purpose: args.purpose,
-          completed_steps: args.completed_steps,
-          pending_questions: args.pending_questions
+          topics_discussed: args.topics_discussed || [],
+          voice_preferences: args.voice_preferences,
+          medical_context: args.medical_context
         });
       
       case 'closeMemory':
         const { ConversationMemoryManager: CMM5 } = await import('./memory-manager.js');
         return await CMM5.closeMemory(args.session_id, args.reason);
+      
+      case 'searchMemory':
+        const { ConversationMemoryManager: CMM6 } = await import('./memory-manager.js');
+        return await CMM6.searchMemory(args.session_id, args.query, args.type);
+      
+      case 'getMemoryStats':
+        const { ConversationMemoryManager: CMM7 } = await import('./memory-manager.js');
+        return await CMM7.getMemoryStats();
       
       default:
         throw new Error(`Herramienta no implementada: ${name}`);

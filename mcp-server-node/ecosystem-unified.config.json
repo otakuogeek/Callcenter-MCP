@@ -2,8 +2,7 @@
   "apps": [
     {
       "name": "mcp-unified",
-      "script": "ts-node",
-      "args": ["server-unified.ts"],
+      "script": "dist/server-unified.js",
       "cwd": "/home/ubuntu/app/mcp-server-node",
       "instances": 1,
       "exec_mode": "fork",
@@ -12,11 +11,11 @@
       "max_memory_restart": "1G",
       "env": {
         "NODE_ENV": "production",
-        "PORT": "8976",
-        "DB_HOST": "localhost",
+        "PORT": "8977",
+        "DB_HOST": "127.0.0.1",
         "DB_PORT": "3306",
-        "DB_USER": "root",
-        "DB_PASSWORD": "",
+        "DB_USER": "biosanar_user",
+        "DB_PASSWORD": "/6Tx0eXqFQONTFuoc7aqPicNlPhmuINU",
         "DB_NAME": "biosanar"
       },
       "error_file": "/home/ubuntu/app/mcp-server-node/logs/unified-error.log",
