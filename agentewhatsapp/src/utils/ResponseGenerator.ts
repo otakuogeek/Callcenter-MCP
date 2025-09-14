@@ -158,7 +158,7 @@ export class ResponseGenerator {
         message += `📅 **Fecha:** ${appointment.fecha || 'Por confirmar'}\n`;
         message += `🕐 **Hora:** ${appointment.hora || 'Por confirmar'}\n`;
         message += `👨‍⚕️ **Doctor:** ${appointment.doctor || 'Por asignar'}\n`;
-        message += `🏥 **Especialidad:** ${appointment.especialidad || 'Medicina General'}\n\n`;
+        message += `🏥 **Especialidad:** ${appointment.especialidad || 'Por asignar'}\n\n`;
         message += "Recibirá un mensaje de confirmación 24 horas antes de su cita.";
       }
       

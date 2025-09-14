@@ -21,7 +21,7 @@ Agente inteligente de WhatsApp para atención médica automatizada que integra T
 |----------|--------|-----|
 | **Agente WhatsApp** | ✅ Online | `https://whatsapp.biosanarcall.site` |
 | **Health Check** | ✅ Healthy | `https://whatsapp.biosanarcall.site/health` |
-| **Servidor MCP** | ✅ 34 Tools | `https://biosanarcall.site/mcp-inspector` |
+| **Servidor MCP** | ✅ 41 Tools | `http://localhost:8977/mcp-unified` |
 | **ChatGPT Integration** | ✅ GPT-4 | Configurado |
 | **Twilio WhatsApp** | ⚙️ Ready | Requiere configuración |
 
@@ -105,7 +105,7 @@ sudo tail -f /var/log/nginx/whatsapp.biosanarcall.site.error.log
 - ✅ Resúmenes diarios de consultas
 
 ### **Integración MCP**
-El agente utiliza **34 herramientas médicas** del servidor MCP:
+El agente utiliza **41 herramientas médicas** del servidor MCP unificado:
 - Gestión de pacientes y doctores
 - Sistema de citas y disponibilidad
 - Memoria conversacional avanzada
@@ -134,7 +134,7 @@ TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886
 OPENAI_API_KEY=[your_openai_api_key]
 
 # MCP Server
-MCP_SERVER_URL=https://biosanarcall.site/mcp-inspector
+MCP_SERVER_URL=http://localhost:8977/mcp-unified
 
 # Configuración
 PORT=3001
@@ -204,7 +204,7 @@ agentewhatsapp/
 
 3. **Error de conexión MCP**:
    ```bash
-   curl https://biosanarcall.site/mcp-inspector
+   curl http://localhost:8977/mcp-unified
    ```
 
 ### **Contacto de Emergencia**
@@ -272,7 +272,7 @@ OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4
 
 # MCP Server
-MCP_SERVER_URL=http://127.0.0.1:8977
+MCP_SERVER_URL=http://localhost:8977/mcp-unified
 
 # Logs
 LOG_LEVEL=info

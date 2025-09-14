@@ -99,6 +99,14 @@ var ELEVENLABS_TOOLS = [
                 date: { type: 'string', description: 'Fecha YYYY-MM-DD (opcional, hoy por defecto)' }
             }
         }
+    },
+    {
+        name: 'getLocations',
+        description: 'Obtener ubicaciones/sedes disponibles',
+        inputSchema: {
+            type: 'object',
+            properties: {}
+        }
     }
 ];
 // Simple tools (9 tools for general MCP)
@@ -153,8 +161,9 @@ function executeTool(name, args) {
                         case 'getDaySummary': return [3 /*break*/, 8];
                         case 'getDoctors': return [3 /*break*/, 10];
                         case 'getStats': return [3 /*break*/, 12];
+                        case 'getLocations': return [3 /*break*/, 14];
                     }
-                    return [3 /*break*/, 14];
+                    return [3 /*break*/, 16];
                 case 2:
                     query = (_b = args.q) === null || _b === void 0 ? void 0 : _b.trim();
                     if (!query)
@@ -198,9 +207,17 @@ function executeTool(name, args) {
                 case 13:
                     dbConnected = _c.sent();
                     return [2 /*return*/, "Base de datos: ".concat(dbConnected ? 'Conectada' : 'Desconectada', ". Servidor funcionando correctamente.")];
-                case 14: throw new Error("Tool '".concat(name, "' not found"));
-                case 15: return [3 /*break*/, 17];
-                case 16:
+                case 14: return [4 /*yield*/, (0, queries_1.getLocations)()];
+                case 15:
+                    var locations = _c.sent();
+                    if (locations.length === 0)
+                        return [2 /*return*/, "No hay ubicaciones disponibles"];
+                    return [2 /*return*/, "".concat(locations.length, " ubicaciones disponibles: ").concat(locations.map(function (l) {
+                            return "".concat(l.name, " en ").concat(l.address, " - ").concat(l.hours || 'Horarios por confirmar');
+                        }).join(', '))];
+                case 16: throw new Error("Tool '".concat(name, "' not found"));
+                case 17: return [3 /*break*/, 19];
+                case 18:
                     error_1 = _c.sent();
                     logger_mysql_1.default.error("Tool execution failed: ".concat(name), { error: error_1 instanceof Error ? error_1.message : error_1 });
                     throw error_1;

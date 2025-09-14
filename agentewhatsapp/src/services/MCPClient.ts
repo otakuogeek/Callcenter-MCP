@@ -23,9 +23,11 @@ export class MCPClient {
   private logger: Logger;
   private baseUrl: string;
   private requestId: number = 1;
+  private apiKey: string;
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, apiKey?: string) {
     this.baseUrl = baseUrl;
+    this.apiKey = apiKey || process.env.MCP_API_KEY || 'mcp-key-biosanarcall-2025';
     this.logger = Logger.getInstance();
     
     this.client = axios.create({
@@ -33,7 +35,8 @@ export class MCPClient {
       timeout: 30000,
       headers: {
         'Content-Type': 'application/json',
-        'User-Agent': 'Biosanarcall-WhatsApp-Agent/1.0.0'
+        'User-Agent': 'Biosanarcall-WhatsApp-Agent/1.0.0',
+        'X-API-Key': this.apiKey
       }
     });
 
@@ -43,6 +46,7 @@ export class MCPClient {
         this.logger.debug('MCP Request', { 
           url: config.url, 
           method: config.method,
+          hasApiKey: !!config.headers['X-API-Key'],
           data: config.data 
         });
         return config;
@@ -152,13 +156,18 @@ export class MCPClient {
   }
 
   async checkMemory(sessionId: string, field: string): Promise<any> {
-    return this.callTool('checkMemory', {
-      session_id: sessionId,
-      field: field
+    return this.callTool('checkMemory', { 
+      session_id: sessionId, 
+      field: field 
     });
   }
 
-  // === MÉTODOS DE PACIENTES ===
+  async updateContext(sessionId: string, context: any): Promise<any> {
+    return this.callTool('updateContext', { 
+      session_id: sessionId, 
+      context: context 
+    });
+  }  // === MÉTODOS DE PACIENTES ===
   async searchPatients(query: string, limit: number = 5): Promise<any> {
     try {
       const result = await this.callTool('searchPatients', {
@@ -190,19 +199,32 @@ export class MCPClient {
     return this.callTool('createPatient', patientData);
   }
 
+  async getPatientHistory(patientId: number, limit: number = 5): Promise<any> {
+    return this.callTool('getPatientHistory', { patient_id: patientId, limit });
+  }
+
   // === MÉTODOS DE CITAS ===
-  async searchAvailabilities(date?: string, doctorId?: number, limit: number = 10): Promise<any> {
+  async getAvailabilities(date?: string, doctorId?: number, specialtyId?: number, locationId?: number, status?: string): Promise<any> {
     try {
-      const params: any = { limit };
+      const params: any = {};
       if (date) params.date = date;
       if (doctorId) params.doctor_id = doctorId;
+      if (specialtyId) params.specialty_id = specialtyId;
+      if (locationId) params.location_id = locationId;
+      if (status) params.status = status;
       
-      const result = await this.callTool('searchAvailabilities', params);
-      return JSON.parse(result?.content?.[0]?.text || '[]');
+      const result = await this.callTool('getAvailabilities', params);
+      return JSON.parse(result?.content?.[0]?.text || '{"availabilities": [], "total": 0}');
     } catch (error) {
-      this.logger.error('Error buscando disponibilidades', { error });
-      return [];
+      this.logger.error('Error obteniendo disponibilidades', { error });
+      return { availabilities: [], total: 0 };
     }
+  }
+
+  // Función legacy para compatibilidad
+  async searchAvailabilities(date?: string, doctorId?: number, limit: number = 10): Promise<any> {
+    const result = await this.getAvailabilities(date, doctorId);
+    return result.availabilities || [];
   }
 
   async createAppointment(appointmentData: any): Promise<any> {
@@ -235,10 +257,20 @@ export class MCPClient {
   async getSpecialties(): Promise<any> {
     try {
       const result = await this.callTool('getSpecialties', {});
-      return JSON.parse(result?.content?.[0]?.text || '[]');
+      return JSON.parse(result?.content?.[0]?.text || '{"specialties": []}');
     } catch (error) {
       this.logger.error('Error obteniendo especialidades', { error });
-      return [];
+      return { specialties: [] };
+    }
+  }
+
+  async getLocations(): Promise<any> {
+    try {
+      const result = await this.callTool('getLocations', {});
+      return JSON.parse(result?.content?.[0]?.text || '{"locations": []}');
+    } catch (error) {
+      this.logger.error('Error obteniendo ubicaciones', { error });
+      return { locations: [] };
     }
   }
 
@@ -280,6 +312,91 @@ export class MCPClient {
         arguments: arguments_ 
       });
       throw error;
+    }
+  }
+
+  // === NUEVAS FUNCIONES MCP ===
+  async createAvailability(availabilityData: any): Promise<any> {
+    return this.callTool('createAvailability', availabilityData);
+  }
+
+  async updateAvailability(availabilityId: number, updateData: any): Promise<any> {
+    return this.callTool('updateAvailability', { 
+      availability_id: availabilityId, 
+      ...updateData 
+    });
+  }
+
+  async assignSpecialtyToDoctor(doctorId: number, specialtyId: number): Promise<any> {
+    return this.callTool('assignSpecialtyToDoctor', { 
+      doctor_id: doctorId, 
+      specialty_id: specialtyId 
+    });
+  }
+
+  async removeSpecialtyFromDoctor(doctorId: number, specialtyId: number): Promise<any> {
+    return this.callTool('removeSpecialtyFromDoctor', { 
+      doctor_id: doctorId, 
+      specialty_id: specialtyId 
+    });
+  }
+
+  async getDashboardStats(dateFrom?: string, dateTo?: string): Promise<any> {
+    const params: any = {};
+    if (dateFrom) params.date_from = dateFrom;
+    if (dateTo) params.date_to = dateTo;
+    
+    try {
+      const result = await this.callTool('getDashboardStats', params);
+      return JSON.parse(result?.content?.[0]?.text || '{}');
+    } catch (error) {
+      this.logger.error('Error obteniendo estadísticas del dashboard', { error });
+      return {};
+    }
+  }
+
+  async getAppointmentStats(dateFrom: string, dateTo: string, doctorId?: number, specialtyId?: number): Promise<any> {
+    const params: any = { date_from: dateFrom, date_to: dateTo };
+    if (doctorId) params.doctor_id = doctorId;
+    if (specialtyId) params.specialty_id = specialtyId;
+    
+    try {
+      const result = await this.callTool('getAppointmentStats', params);
+      return JSON.parse(result?.content?.[0]?.text || '{"stats": [], "total_records": 0}');
+    } catch (error) {
+      this.logger.error('Error obteniendo estadísticas de citas', { error });
+      return { stats: [], total_records: 0 };
+    }
+  }
+
+  // === MÉTODOS DE DATOS DE REFERENCIA ===
+  async getEPS(): Promise<any> {
+    try {
+      const result = await this.callTool('getEPS', {});
+      return JSON.parse(result?.content?.[0]?.text || '{"eps": []}');
+    } catch (error) {
+      this.logger.error('Error obteniendo EPS', { error });
+      return { eps: [] };
+    }
+  }
+
+  async getDocumentTypes(): Promise<any> {
+    try {
+      const result = await this.callTool('getDocumentTypes', {});
+      return JSON.parse(result?.content?.[0]?.text || '[]');
+    } catch (error) {
+      this.logger.error('Error obteniendo tipos de documento', { error });
+      return [];
+    }
+  }
+
+  async getMunicipalities(): Promise<any> {
+    try {
+      const result = await this.callTool('getMunicipalities', {});
+      return JSON.parse(result?.content?.[0]?.text || '[]');
+    } catch (error) {
+      this.logger.error('Error obteniendo municipios', { error });
+      return [];
     }
   }
 

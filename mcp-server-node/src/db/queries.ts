@@ -118,3 +118,19 @@ export async function getDaySummary(date: string) {
     return null;
   }
 }
+
+export async function getLocations() {
+  try {
+    const query = `
+      SELECT id, name, address, phone, type, status, capacity, current_patients, hours, emergency_hours
+      FROM locations 
+      WHERE status = 'Activa'
+      ORDER BY name
+    `;
+    const [rows] = await pool.execute(query);
+    return rows;
+  } catch (error) {
+    console.error('Error getting locations:', error);
+    return [];
+  }
+}

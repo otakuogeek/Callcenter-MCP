@@ -77,7 +77,114 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Verificación del webhook (GET request)
+app.get('/webhook', (req, res) => {
+  logger.info('Verificación webhook recibida', { 
+    query: req.query, 
+    headers: req.headers 
+  });
+  res.status(200).send('Webhook verificado correctamente');
+});
+
+app.get('/webhook/whatsapp', (req, res) => {
+  logger.info('Verificación webhook WhatsApp recibida', { 
+    query: req.query, 
+    headers: req.headers 
+  });
+  res.status(200).send('Webhook WhatsApp verificado correctamente');
+});
+
+// Webhook específico para status de entrega de Twilio
+app.post('/webhook/status', (req, res) => {
+  logger.info('Status de entrega recibido', { 
+    status: req.body.MessageStatus || req.body.SmsStatus,
+    messageId: req.body.MessageSid,
+    to: req.body.To
+  });
+  res.status(200).send('OK');
+});
+
 // Webhook de Twilio para mensajes entrantes de WhatsApp
+app.post('/webhook', async (req, res): Promise<void> => {
+  try {
+    logger.info('Webhook WhatsApp recibido', { body: req.body });
+    
+    const { 
+      From, 
+      Body, 
+      MessageSid, 
+      ProfileName,
+      NumMedia,
+      MediaUrl0,
+      MediaContentType0,
+      MessageStatus,
+      SmsStatus
+    } = req.body;
+    
+    // Filtrar webhooks de status de entrega (sent, delivered, read) - NO "received"
+    // "received" indica mensaje entrante, no status de entrega
+    if ((MessageStatus && MessageStatus !== 'received') || 
+        (SmsStatus && SmsStatus !== 'received' && SmsStatus !== 'queued')) {
+      logger.info('Webhook de status de entrega recibido - redirigiendo', { 
+        status: MessageStatus || SmsStatus,
+        from: From,
+        messageId: MessageSid
+      });
+      res.status(200).send('OK');
+      return;
+    }
+    
+    if (!From || !Body) {
+      logger.warn('Webhook incompleto - falta remitente o mensaje', { body: req.body });
+      res.status(400).send('Datos incompletos');
+      return;
+    }
+
+    // Verificar que el From no sea nuestro propio número (evitar loops)
+    if (From === process.env.TWILIO_WHATSAPP_NUMBER) {
+      logger.info('Mensaje de nuestro propio número - ignorando para evitar loop');
+      res.status(200).send('OK');
+      return;
+    }
+
+    // Detectar tipo de mensaje
+    const hasMedia = NumMedia && parseInt(NumMedia) > 0;
+    const isVoiceMessage = hasMedia && MediaContentType0 && 
+      (MediaContentType0.includes('audio') || MediaContentType0.includes('ogg'));
+    
+    logger.info('Tipo de mensaje detectado', {
+      from: From,
+      hasMedia,
+      isVoiceMessage,
+      mediaType: MediaContentType0,
+      bodyLength: Body?.length || 0
+    });
+
+    // Procesar mensaje con el agente
+    const response = await whatsappAgent.processIncomingMessage({
+      from: From,
+      body: Body,
+      messageId: MessageSid,
+      profileName: ProfileName || 'Usuario',
+      timestamp: new Date(),
+      isVoiceMessage: isVoiceMessage,
+      mediaUrl: MediaUrl0,
+      mediaContentType: MediaContentType0
+    });
+
+    logger.info('Respuesta enviada', { 
+      from: From, 
+      responseLength: response?.length || 0 
+    });
+
+    res.status(200).send('OK');
+  } catch (error) {
+    logger.error('Error procesando webhook WhatsApp', { error });
+    res.status(500).send('Error interno');
+  }
+});
+
+// Webhook de Twilio para mensajes entrantes de WhatsApp (alternativo)
 app.post('/webhook/whatsapp', async (req, res): Promise<void> => {
   try {
     logger.info('Webhook WhatsApp recibido', { body: req.body });
@@ -95,7 +202,11 @@ app.post('/webhook/whatsapp', async (req, res): Promise<void> => {
       from: From,
       body: Body,
       messageId: MessageSid,
-      profileName: ProfileName || 'Usuario'
+      profileName: ProfileName || 'Usuario',
+      timestamp: new Date(),
+      isVoiceMessage: false,
+      mediaUrl: undefined,
+      mediaContentType: undefined
     });
 
     logger.info('Respuesta enviada', { 
@@ -138,6 +249,23 @@ app.post('/send-message', async (req, res): Promise<void> => {
       details: error instanceof Error ? error.message : 'Error desconocido'
     });
   }
+});
+
+// Endpoint de status para callbacks de Twilio
+app.get('/status', (req, res) => {
+  logger.info('Status callback recibido', { 
+    query: req.query, 
+    headers: req.headers 
+  });
+  res.status(200).send('Status callback procesado');
+});
+
+app.post('/status', (req, res) => {
+  logger.info('Status callback POST recibido', { 
+    body: req.body, 
+    headers: req.headers 
+  });
+  res.status(200).send('Status callback procesado');
 });
 
 // Endpoint para estadísticas del agente

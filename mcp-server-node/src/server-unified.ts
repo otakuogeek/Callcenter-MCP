@@ -549,6 +549,105 @@ const UNIFIED_TOOLS = [
       properties: {},
       additionalProperties: false
     }
+  },
+  // === DISPONIBILIDADES ===
+  {
+    name: 'getAvailabilities',
+    description: 'Obtener disponibilidades de médicos por fecha y filtros',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date: { type: 'string', description: 'Fecha YYYY-MM-DD (opcional)' },
+        doctor_id: { type: 'number', description: 'ID del médico (opcional)' },
+        specialty_id: { type: 'number', description: 'ID de la especialidad (opcional)' },
+        location_id: { type: 'number', description: 'ID de la ubicación (opcional)' },
+        status: { type: 'string', enum: ['Activa', 'Cancelada', 'Completa'], description: 'Estado (opcional)' }
+      }
+    }
+  },
+  {
+    name: 'createAvailability',
+    description: 'Crear nueva disponibilidad para un médico',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doctor_id: { type: 'number', description: 'ID del médico' },
+        specialty_id: { type: 'number', description: 'ID de la especialidad' },
+        location_id: { type: 'number', description: 'ID de la ubicación' },
+        date: { type: 'string', description: 'Fecha YYYY-MM-DD' },
+        start_time: { type: 'string', description: 'Hora inicio HH:MM' },
+        end_time: { type: 'string', description: 'Hora fin HH:MM' },
+        capacity: { type: 'number', description: 'Capacidad de pacientes' },
+        duration_minutes: { type: 'number', description: 'Duración por cita en minutos', default: 30 },
+        notes: { type: 'string', description: 'Notas adicionales (opcional)' }
+      },
+      required: ['doctor_id', 'specialty_id', 'location_id', 'date', 'start_time', 'end_time', 'capacity']
+    }
+  },
+  {
+    name: 'updateAvailability',
+    description: 'Actualizar disponibilidad existente',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        availability_id: { type: 'number', description: 'ID de la disponibilidad' },
+        capacity: { type: 'number', description: 'Nueva capacidad' },
+        status: { type: 'string', enum: ['Activa', 'Cancelada', 'Completa'], description: 'Nuevo estado' },
+        notes: { type: 'string', description: 'Notas actualizadas' }
+      },
+      required: ['availability_id']
+    }
+  },
+  // === RELACIONES MÉDICO-ESPECIALIDAD ===
+  {
+    name: 'assignSpecialtyToDoctor',
+    description: 'Asignar especialidad a un médico',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doctor_id: { type: 'number', description: 'ID del médico' },
+        specialty_id: { type: 'number', description: 'ID de la especialidad' }
+      },
+      required: ['doctor_id', 'specialty_id']
+    }
+  },
+  {
+    name: 'removeSpecialtyFromDoctor',
+    description: 'Remover especialidad de un médico',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        doctor_id: { type: 'number', description: 'ID del médico' },
+        specialty_id: { type: 'number', description: 'ID de la especialidad' }
+      },
+      required: ['doctor_id', 'specialty_id']
+    }
+  },
+  // === ESTADÍSTICAS AVANZADAS ===
+  {
+    name: 'getDashboardStats',
+    description: 'Obtener estadísticas completas del dashboard',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', description: 'Fecha inicio YYYY-MM-DD (opcional)' },
+        date_to: { type: 'string', description: 'Fecha fin YYYY-MM-DD (opcional)' }
+      }
+    }
+  },
+  {
+    name: 'getAppointmentStats',
+    description: 'Estadísticas detalladas de citas por período',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        date_from: { type: 'string', description: 'Fecha inicio YYYY-MM-DD' },
+        date_to: { type: 'string', description: 'Fecha fin YYYY-MM-DD' },
+        doctor_id: { type: 'number', description: 'ID del médico (opcional)' },
+        specialty_id: { type: 'number', description: 'ID de la especialidad (opcional)' }
+      },
+      required: ['date_from', 'date_to']
+    }
   }
 ];
 
@@ -672,6 +771,30 @@ async function executeToolCall(name: string, args: any): Promise<any> {
       case 'getMemoryStats':
         const { ConversationMemoryManager: CMM7 } = await import('./memory-manager.js');
         return await CMM7.getMemoryStats();
+      
+      // === DISPONIBILIDADES ===
+      case 'getAvailabilities':
+        return await getAvailabilities(args);
+      
+      case 'createAvailability':
+        return await createAvailability(args);
+      
+      case 'updateAvailability':
+        return await updateAvailability(args.availability_id, args);
+      
+      // === RELACIONES MÉDICO-ESPECIALIDAD ===
+      case 'assignSpecialtyToDoctor':
+        return await assignSpecialtyToDoctor(args.doctor_id, args.specialty_id);
+      
+      case 'removeSpecialtyFromDoctor':
+        return await removeSpecialtyFromDoctor(args.doctor_id, args.specialty_id);
+      
+      // === ESTADÍSTICAS AVANZADAS ===
+      case 'getDashboardStats':
+        return await getDashboardStats(args);
+      
+      case 'getAppointmentStats':
+        return await getAppointmentStats(args);
       
       default:
         throw new Error(`Herramienta no implementada: ${name}`);
@@ -1485,6 +1608,252 @@ app.get('/test-db', async (req, res) => {
     });
   }
 });
+
+// === IMPLEMENTACIONES DE NUEVAS FUNCIONES ===
+
+async function getAvailabilities(args: any) {
+  let query = `
+    SELECT 
+      av.id,
+      av.date,
+      av.start_time,
+      av.end_time,
+      av.capacity,
+      av.booked_slots,
+      av.status,
+      av.notes,
+      av.duration_minutes,
+      d.name as doctor_name,
+      s.name as specialty_name,
+      l.name as location_name
+    FROM availabilities av
+    LEFT JOIN doctors d ON av.doctor_id = d.id
+    LEFT JOIN specialties s ON av.specialty_id = s.id
+    LEFT JOIN locations l ON av.location_id = l.id
+  `;
+  
+  const filters: string[] = [];
+  const values: any[] = [];
+  
+  if (args.date) {
+    filters.push('av.date = ?');
+    values.push(args.date);
+  }
+  
+  if (args.doctor_id) {
+    filters.push('av.doctor_id = ?');
+    values.push(args.doctor_id);
+  }
+  
+  if (args.specialty_id) {
+    filters.push('av.specialty_id = ?');
+    values.push(args.specialty_id);
+  }
+  
+  if (args.location_id) {
+    filters.push('av.location_id = ?');
+    values.push(args.location_id);
+  }
+  
+  if (args.status) {
+    filters.push('av.status = ?');
+    values.push(args.status);
+  }
+  
+  if (filters.length > 0) {
+    query += ' WHERE ' + filters.join(' AND ');
+  }
+  
+  query += ' ORDER BY av.date ASC, av.start_time ASC';
+  
+  const [rows] = await pool.query(query, values);
+  return {
+    availabilities: rows,
+    total: (rows as any[]).length,
+    filters: args
+  };
+}
+
+async function createAvailability(args: any) {
+  const [result] = await pool.query(
+    'INSERT INTO availabilities (doctor_id, specialty_id, location_id, date, start_time, end_time, capacity, duration_minutes, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [args.doctor_id, args.specialty_id, args.location_id, args.date, args.start_time, args.end_time, args.capacity, args.duration_minutes || 30, args.notes || '']
+  );
+  
+  const insertId = (result as any).insertId;
+  const [availability] = await pool.query('SELECT * FROM availabilities WHERE id = ?', [insertId]);
+  
+  return {
+    success: true,
+    availability: (availability as any[])[0],
+    message: 'Disponibilidad creada exitosamente'
+  };
+}
+
+async function updateAvailability(availabilityId: number, args: any) {
+  const updates: string[] = [];
+  const values: any[] = [];
+  
+  if (args.capacity !== undefined) {
+    updates.push('capacity = ?');
+    values.push(args.capacity);
+  }
+  
+  if (args.status) {
+    updates.push('status = ?');
+    values.push(args.status);
+  }
+  
+  if (args.notes !== undefined) {
+    updates.push('notes = ?');
+    values.push(args.notes);
+  }
+  
+  if (updates.length === 0) {
+    throw new Error('No hay campos para actualizar');
+  }
+  
+  values.push(availabilityId);
+  
+  await pool.query(
+    `UPDATE availabilities SET ${updates.join(', ')} WHERE id = ?`,
+    values
+  );
+  
+  const [updated] = await pool.query('SELECT * FROM availabilities WHERE id = ?', [availabilityId]);
+  
+  return {
+    success: true,
+    availability: (updated as any[])[0],
+    message: 'Disponibilidad actualizada exitosamente'
+  };
+}
+
+async function assignSpecialtyToDoctor(doctorId: number, specialtyId: number) {
+  // Verificar si ya existe la relación
+  const [existing] = await pool.query(
+    'SELECT * FROM doctor_specialties WHERE doctor_id = ? AND specialty_id = ?',
+    [doctorId, specialtyId]
+  );
+  
+  if ((existing as any[]).length > 0) {
+    return {
+      success: false,
+      message: 'El médico ya tiene asignada esta especialidad'
+    };
+  }
+  
+  await pool.query(
+    'INSERT INTO doctor_specialties (doctor_id, specialty_id) VALUES (?, ?)',
+    [doctorId, specialtyId]
+  );
+  
+  return {
+    success: true,
+    message: 'Especialidad asignada exitosamente al médico'
+  };
+}
+
+async function removeSpecialtyFromDoctor(doctorId: number, specialtyId: number) {
+  const [result] = await pool.query(
+    'DELETE FROM doctor_specialties WHERE doctor_id = ? AND specialty_id = ?',
+    [doctorId, specialtyId]
+  );
+  
+  if ((result as any).affectedRows === 0) {
+    return {
+      success: false,
+      message: 'No se encontró la relación médico-especialidad'
+    };
+  }
+  
+  return {
+    success: true,
+    message: 'Especialidad removida exitosamente del médico'
+  };
+}
+
+async function getDashboardStats(args: any) {
+  const dateFrom = args.date_from || new Date().toISOString().split('T')[0];
+  const dateTo = args.date_to || new Date().toISOString().split('T')[0];
+  
+  // Estadísticas de citas
+  const [appointmentStats] = await pool.query(`
+    SELECT 
+      COUNT(*) as total_appointments,
+      SUM(CASE WHEN status = 'Pendiente' THEN 1 ELSE 0 END) as pending,
+      SUM(CASE WHEN status = 'Confirmada' THEN 1 ELSE 0 END) as confirmed,
+      SUM(CASE WHEN status = 'Completada' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN status = 'Cancelada' THEN 1 ELSE 0 END) as cancelled
+    FROM appointments 
+    WHERE DATE(scheduled_at) BETWEEN ? AND ?
+  `, [dateFrom, dateTo]);
+  
+  // Estadísticas de pacientes
+  const [patientStats] = await pool.query(`
+    SELECT COUNT(*) as total_patients
+    FROM patients 
+    WHERE DATE(created_at) BETWEEN ? AND ?
+  `, [dateFrom, dateTo]);
+  
+  // Disponibilidades
+  const [availabilityStats] = await pool.query(`
+    SELECT 
+      COUNT(*) as total_slots,
+      SUM(capacity) as total_capacity,
+      SUM(booked_slots) as total_booked
+    FROM availabilities 
+    WHERE date BETWEEN ? AND ?
+  `, [dateFrom, dateTo]);
+  
+  return {
+    period: { from: dateFrom, to: dateTo },
+    appointments: (appointmentStats as any[])[0],
+    patients: (patientStats as any[])[0],
+    availabilities: (availabilityStats as any[])[0],
+    generated_at: new Date().toISOString()
+  };
+}
+
+async function getAppointmentStats(args: any) {
+  let query = `
+    SELECT 
+      DATE(a.scheduled_at) as date,
+      COUNT(*) as total_appointments,
+      SUM(CASE WHEN a.status = 'Pendiente' THEN 1 ELSE 0 END) as pending,
+      SUM(CASE WHEN a.status = 'Confirmada' THEN 1 ELSE 0 END) as confirmed,
+      SUM(CASE WHEN a.status = 'Completada' THEN 1 ELSE 0 END) as completed,
+      SUM(CASE WHEN a.status = 'Cancelada' THEN 1 ELSE 0 END) as cancelled,
+      s.name as specialty_name,
+      d.name as doctor_name
+    FROM appointments a
+    LEFT JOIN specialties s ON a.specialty_id = s.id
+    LEFT JOIN doctors d ON a.doctor_id = d.id
+    WHERE DATE(a.scheduled_at) BETWEEN ? AND ?
+  `;
+  
+  const values = [args.date_from, args.date_to];
+  
+  if (args.doctor_id) {
+    query += ' AND a.doctor_id = ?';
+    values.push(args.doctor_id);
+  }
+  
+  if (args.specialty_id) {
+    query += ' AND a.specialty_id = ?';
+    values.push(args.specialty_id);
+  }
+  
+  query += ' GROUP BY DATE(a.scheduled_at), a.specialty_id, a.doctor_id ORDER BY date DESC';
+  
+  const [rows] = await pool.query(query, values);
+  
+  return {
+    period: { from: args.date_from, to: args.date_to },
+    stats: rows,
+    total_records: (rows as any[]).length
+  };
+}
 
 // Iniciar servidor
 app.listen(PORT, () => {
