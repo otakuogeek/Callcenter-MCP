@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays } from "lucide-react";
+import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { motion, AnimatePresence } from "framer-motion";
@@ -14,6 +14,7 @@ import ViewAvailabilityModal from "./ViewAvailabilityModal";
 import EditAvailabilityModal from "./EditAvailabilityModal";
 import TransferAvailabilityModal from "./TransferAvailabilityModal";
 import ManualAppointmentModal from "./ManualAppointmentModal";
+import QuickAppointmentModal from "./QuickAppointmentModal";
 
 interface AvailabilityListProps {
   date: Date | undefined;
@@ -29,6 +30,7 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
   const [isTransferModalOpen, setIsTransferModalOpen] = useState(false);
   const [expandedCard, setExpandedCard] = useState<number | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [isQuickAppointmentModalOpen, setIsQuickAppointmentModalOpen] = useState(false);
   const [manualDefaults, setManualDefaults] = useState<{
     availabilityId?: number;
     locationId?: number;
@@ -108,6 +110,27 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
   const handleCloseTransferModal = () => {
     setIsTransferModalOpen(false);
     setSelectedAvailability(null);
+  };
+
+  const handleQuickAppointment = (availability: Availability) => {
+    setSelectedAvailability(availability);
+    setIsQuickAppointmentModalOpen(true);
+  };
+
+  const handleCloseQuickAppointmentModal = () => {
+    setIsQuickAppointmentModalOpen(false);
+    setSelectedAvailability(null);
+  };
+
+  const handleQuickAppointmentSuccess = () => {
+    // Recargar las disponibilidades para reflejar los cambios
+    if (date) {
+      const dateStr = date.toISOString().split('T')[0];
+      // Usar el hook loadAvailabilities que ya está disponible
+      if (typeof window !== 'undefined') {
+        window.location.reload();
+      }
+    }
   };
 
   const handleTransferSuccess = (id: number, newDate: string) => {
@@ -211,6 +234,36 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                       onClick={() => setExpandedCard(expandedCard === availability.id ? null : availability.id)}
                     >
                       <CardContent className="p-6">
+                        {/* Banner de acción rápida para agendas activas con cupos */}
+                        {availability.status === 'Activa' && availability.bookedSlots < availability.capacity && (
+                          <div className="mb-4 -mx-6 -mt-6 bg-gradient-to-r from-green-500 to-green-600 text-white p-4">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <div className="bg-white text-green-600 rounded-full p-2">
+                                  <UserPlus className="w-5 h-5" />
+                                </div>
+                                <div>
+                                  <h4 className="font-bold text-lg">¡Cupos Disponibles!</h4>
+                                  <p className="text-green-100">
+                                    {availability.capacity - availability.bookedSlots} de {availability.capacity} cupos libres
+                                  </p>
+                                </div>
+                              </div>
+                              <Button
+                                size="lg"
+                                className="bg-white text-green-600 hover:bg-green-50 font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleQuickAppointment(availability);
+                                }}
+                              >
+                                <UserPlus className="w-5 h-5 mr-2" />
+                                Registrar Cita
+                              </Button>
+                            </div>
+                          </div>
+                        )}
+                        
                         <div className="space-y-4">
                           {/* Header principal */}
                           <div className="flex items-start justify-between">
@@ -232,6 +285,25 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                 {getStatusIcon(availability.status)}
                                 {availability.status}
                               </Badge>
+                              {availability.status === 'Activa' && availability.bookedSlots < availability.capacity && (
+                                <Badge className="bg-green-500 text-white border-green-600 flex items-center gap-1 animate-pulse">
+                                  <UserPlus className="w-3 h-3" />
+                                  {availability.capacity - availability.bookedSlots} disponibles
+                                </Badge>
+                              )}
+                              {availability.status === 'Activa' && availability.bookedSlots < availability.capacity && (
+                                <Button
+                                  size="sm"
+                                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold shadow-lg hover:shadow-xl transition-all duration-200"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleQuickAppointment(availability);
+                                  }}
+                                >
+                                  <UserPlus className="w-4 h-4" />
+                                  Registrar Cita
+                                </Button>
+                              )}
                               <div className="text-right">
                                 <div className="flex items-center gap-1 text-sm font-bold text-gray-700">
                                   <Clock className="w-4 h-4" />
@@ -285,6 +357,26 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                               </div>
                             </div>
                           </div>
+
+                          {/* Barra de acciones rápidas */}
+                          {availability.status === "Activa" && availability.bookedSlots < availability.capacity && (
+                            <div className="flex items-center justify-center pt-4">
+                              <Button
+                                size="lg"
+                                className="flex items-center gap-3 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleQuickAppointment(availability);
+                                }}
+                              >
+                                <UserPlus className="w-5 h-5" />
+                                Registrar Cita Ahora
+                                <span className="bg-white text-green-700 px-2 py-1 rounded-full text-sm font-semibold">
+                                  {availability.capacity - availability.bookedSlots} cupos
+                                </span>
+                              </Button>
+                            </div>
+                          )}
 
                           {/* Información expandida */}
                           <AnimatePresence>
@@ -348,6 +440,21 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                     <Button
                                       size="sm"
                                       className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleQuickAppointment(availability);
+                                      }}
+                                    >
+                                      <UserPlus className="w-4 h-4" />
+                                      Registrar Cita
+                                    </Button>
+                                  )}
+
+                                  {availability.status === "Activa" && availability.bookedSlots < availability.capacity && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="flex items-center gap-2 bg-orange-50 border-orange-300 text-orange-700 hover:bg-orange-100"
                                       onClick={async (e) => {
                                         e.stopPropagation();
                                         // Resolver IDs de especialidad y doctor
@@ -368,7 +475,7 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                       }}
                                     >
                                       <User className="w-4 h-4" />
-                                      Agendar cita
+                                      Cita Manual
                                     </Button>
                                   )}
                                   
@@ -439,6 +546,27 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
         onClose={() => { setIsManualModalOpen(false); setManualDefaults(null); }}
         onSuccess={() => { setIsManualModalOpen(false); setManualDefaults(null); }}
         defaults={manualDefaults || undefined}
+      />
+
+      {/* Quick Appointment Modal */}
+      <QuickAppointmentModal
+        isOpen={isQuickAppointmentModalOpen}
+        onClose={handleCloseQuickAppointmentModal}
+        onSuccess={handleQuickAppointmentSuccess}
+        availabilityData={selectedAvailability ? {
+          id: selectedAvailability.id,
+          date: selectedAvailability.date,
+          startTime: selectedAvailability.startTime,
+          endTime: selectedAvailability.endTime,
+          doctor: selectedAvailability.doctor,
+          specialty: selectedAvailability.specialty,
+          locationName: selectedAvailability.locationName,
+          locationId: selectedAvailability.locationId,
+          doctorId: selectedAvailability.doctorId,
+          specialtyId: selectedAvailability.specialtyId,
+          capacity: selectedAvailability.capacity,
+          bookedSlots: selectedAvailability.bookedSlots
+        } : null}
       />
     </>
   );

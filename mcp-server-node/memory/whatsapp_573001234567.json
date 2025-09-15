@@ -1,0 +1,135 @@
+{
+  "session_id": "whatsapp_573001234567",
+  "conversation_context": {
+    "user_preferences": {},
+    "topics_discussed": [],
+    "purpose": "whatsapp_consultation",
+    "medical_context": {
+      "patient_references": [],
+      "discussed_symptoms": [],
+      "mentioned_procedures": [],
+      "doctor_instructions": [],
+      "urgency_level": "low",
+      "medical_specialty": []
+    },
+    "voice_preferences": {
+      "language": "es",
+      "tone": "professional",
+      "speed": 1,
+      "voice_model": "elevenlabs",
+      "emotional_state": "neutral"
+    },
+    "performance_metrics": {
+      "response_times": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "interaction_quality": [],
+      "user_satisfaction": []
+    }
+  },
+  "collected_data": {
+    "personal_info": {},
+    "medical_info": {},
+    "appointment_info": {}
+  },
+  "patient_info": {},
+  "interaction_history": [
+    {
+      "timestamp": "2025-09-15T02:19:04.526Z",
+      "type": "message",
+      "content": "Hola, quiero registrarme como paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:09.285Z",
+      "type": "response",
+      "content": "¡Hola! Claro que sí, estaré encantada de ayudarte a registrarte como paciente en Biosanar. Para hacerlo, necesito tu nombre completo y tu número de documento. ¿Podrías proporcionármelos, por favor? 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:11.311Z",
+      "type": "message",
+      "content": "Mi nombre es Juan Carlos Pérez",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:16.937Z",
+      "type": "response",
+      "content": "¡Hola Juan Carlos Pérez! 😊 Es un placer ayudarte con tu registro en Biosanar. Para completarlo necesito tu número de documento. ¿Podrías proporcionármelo, por favor?",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:18.959Z",
+      "type": "message",
+      "content": "Mi cédula es 1234567890",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:24.018Z",
+      "type": "response",
+      "content": "¡Perfecto, Juan Carlos Pérez! Con tu cédula 1234567890, voy a proceder a registrarte como paciente en nuestro sistema de Biosanar. 😊 Una vez registrado, podré ayudarte a agendar una cita con alguno de nuestros especialistas. ¿Hay alguna especialidad médica en particular que te interese? Tenemos 12 especialidades disponibles en nuestras dos sedes de San Gil y Socorro.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:55.429Z",
+      "type": "message",
+      "content": "Hola, quiero registrarme como paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:19:59.012Z",
+      "type": "response",
+      "content": "¡Hola! 😊 Es un placer ayudarte con tu registro en Biosanar. Para completarlo necesito tu nombre completo y tu número de documento. ¿Podrías proporcionármelos, por favor?",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    }
+  ],
+  "metadata": {
+    "created_at": "2025-09-15T02:19:04.517Z",
+    "last_activity": "2025-09-15T02:19:59.012Z",
+    "total_interactions": 8,
+    "session_duration": 0,
+    "memory_size": 3294,
+    "compression_ratio": 1,
+    "last_optimized": "2025-09-15T02:19:04.517Z",
+    "start_time": "2025-09-15T02:19:04.517Z"
+  },
+  "cache": {
+    "frequent_queries": {},
+    "user_patterns": {
+      "message": 4,
+      "response": 4
+    },
+    "quick_access": {}
+  }
+}

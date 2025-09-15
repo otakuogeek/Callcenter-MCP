@@ -64,6 +64,9 @@ export class ResponseGenerator {
       case 'schedule_appointment':
         return this.generateAppointmentResponse(parsedMessage, context, mcpResponse);
       
+      case 'patient_registration':
+        return this.generatePatientRegistrationResponse(parsedMessage, context, mcpResponse);
+      
       case 'cancel_appointment':
         return this.generateCancelAppointmentResponse(parsedMessage, context, mcpResponse);
       
@@ -203,6 +206,77 @@ export class ResponseGenerator {
       mcpToolsUsed,
       requiresFollowUp: !mcpResponse?.success,
       confidence: 0.85
+    };
+  }
+
+  private static generatePatientRegistrationResponse(
+    parsedMessage: ParsedMessage,
+    context: ResponseContext,
+    mcpResponse?: any
+  ): GeneratedResponse {
+    let message = '';
+    let followUpQuestions: string[] = [];
+    let suggestedActions: string[] = [];
+    let mcpToolsUsed: string[] = [];
+
+    if (mcpResponse && mcpResponse.success) {
+      // Registro exitoso
+      message = "✅ **¡Registro Completado!**\n\n";
+      message += `¡Perfecto! Ya estás registrado en nuestro sistema.\n\n`;
+      message += "📋 **Información registrada:**\n";
+      message += `• **Nombre:** ${mcpResponse.data?.name || 'Registrado'}\n`;
+      message += `• **Documento:** ${mcpResponse.data?.document || 'Registrado'}\n\n`;
+      message += "✨ Ahora puedes:\n";
+      message += "• Agendar citas médicas\n";
+      message += "• Consultar tus citas\n";
+      message += "• Hacer consultas médicas\n\n";
+      message += "¿Te gustaría agendar una cita ahora? 📅";
+      
+      suggestedActions = [
+        'Agendar cita médica',
+        'Consultar especialidades disponibles',
+        'Información de sedes'
+      ];
+      
+      mcpToolsUsed = ['createSimplePatient'];
+      
+    } else {
+      // Necesita información para registro
+      message = "📝 **Registro de Nuevo Paciente**\n\n";
+      message += "¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\n";
+      message += "Para registrarte, solo necesito 2 datos básicos:\n\n";
+      
+      const needsName = !parsedMessage.entities.patientName && !context.patientName;
+      const needsDocument = !parsedMessage.entities.documentNumber;
+      
+      if (needsName) {
+        message += "👤 **Tu nombre completo**\n";
+        followUpQuestions.push("¿Cuál es tu nombre completo?");
+      }
+      
+      if (needsDocument) {
+        message += "🆔 **Tu número de documento**\n";
+        followUpQuestions.push("¿Cuál es tu número de cédula?");
+      }
+      
+      if (!needsName && !needsDocument) {
+        // Tenemos todos los datos, deberíamos haber llamado createSimplePatient
+        message += "⏳ Procesando tu registro...\n\n";
+        message += "Un momento por favor mientras confirmo tu información en el sistema.";
+      }
+      
+      if (followUpQuestions.length === 0) {
+        suggestedActions = ['Confirmar registro'];
+      }
+    }
+
+    return {
+      message,
+      followUpQuestions,
+      suggestedActions,
+      mcpToolsUsed,
+      requiresFollowUp: !mcpResponse?.success && followUpQuestions.length > 0,
+      confidence: 0.90
     };
   }
 

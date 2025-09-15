@@ -139,6 +139,62 @@
         0,
         0,
         0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
         0
       ],
       "interaction_quality": [],
@@ -1222,14 +1278,518 @@
       "validated": false,
       "confidence_score": 0.5,
       "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T00:03:52.424Z",
+      "type": "message",
+      "content": "pudes registarme como paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T00:03:58.307Z",
+      "type": "response",
+      "content": "¡Por supuesto! Me encantaría ayudarte a registrarte como paciente en Biosanar. Para ello, necesito algunos datos importantes:\n\n1. Tu nombre completo\n2. Tipo y número de documento\n3. Fecha de nacimiento\n4. Dirección de residencia\n5. Número de contacto\n6. Correo electrónico\n\nUna vez que me proporciones esta información, podré proceder con tu registro. 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T00:05:06.462Z",
+      "type": "message",
+      "content": "Dave Bastidas\nCedula 17265900\n02/04/1984\nLa felcha sector el paramo\n04263774021\nbastidasdaveusa@gmail.com",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T00:05:12.712Z",
+      "type": "response",
+      "content": "¡Perfecto, Dave Bastidas! Con los datos que me has proporcionado, puedo proceder con tu registro como paciente en Biosanar. \n\nUna vez completado tu registro, podrás agendar citas con nuestros médicos especialistas en nuestras sedes de San Gil y Socorro. \n\n¿Hay alguna especialidad médica en particular que te interese para tu próxima cita? Tenemos 12 especialidades disponibles, desde Medicina General hasta Dermatología. 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T00:05:48.578Z",
+      "type": "message",
+      "content": "agreme como paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T00:05:54.687Z",
+      "type": "response",
+      "content": "¡Claro, Dave Bastidas! Ya te he registrado como paciente en Biosanar con los datos que me proporcionaste. Ahora puedes agendar citas con nuestros médicos especialistas en nuestras sedes de San Gil y Socorro. \n\n¿Hay alguna especialidad médica en particular que te interese para tu próxima cita? Tenemos 12 especialidades disponibles, desde Medicina General hasta Dermatología. 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T01:49:19.147Z",
+      "type": "message",
+      "content": "registrame un nuevo paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T01:49:25.723Z",
+      "type": "response",
+      "content": "¡Claro! Para registrar un nuevo paciente, necesito los siguientes datos:\n\n1. Nombre completo\n2. Número de documento\n3. Teléfono de contacto (opcional)\n4. Correo electrónico (opcional)\n5. Fecha de nacimiento (opcional)\n\nPor favor, proporciona esta información para proceder con tu registro. 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T01:50:15.779Z",
+      "type": "message",
+      "content": "Vicrotia Bastidas\n12345678\n312123245",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T01:50:21.471Z",
+      "type": "response",
+      "content": "¡Perfecto! Ya he registrado a Victoria Bastidas con el número de documento 12345678 y el teléfono de contacto 312123245 en nuestro sistema Biosanar. 😊\n\nAhora puedes agendar citas con nuestros médicos especialistas en nuestras sedes de San Gil y Socorro. \n\n¿Hay alguna especialidad médica en particular que te interese para tu próxima cita? Tenemos 12 especialidades disponibles, desde Medicina General hasta Dermatología.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:10:52.215Z",
+      "type": "message",
+      "content": "registrame un nuevo paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:10:58.478Z",
+      "type": "response",
+      "content": "¡Claro! Para registrar un nuevo paciente, necesito los siguientes datos:\n\n1. Nombre completo\n2. Número de documento\n3. Teléfono de contacto (opcional)\n4. Correo electrónico (opcional)\n5. Fecha de nacimiento (opcional)\n\nPor favor, proporciona esta información para proceder con tu registro. 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:11:05.377Z",
+      "type": "message",
+      "content": "Vicrotia Bastidas\n12345678\n312123245",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:11:11.264Z",
+      "type": "response",
+      "content": "¡Perfecto! Ya he registrado a Victoria Bastidas con el número de documento 12345678 y el teléfono de contacto 312123245 en nuestro sistema Biosanar. 😊\n\nAhora puedes agendar citas con nuestros médicos especialistas en nuestras sedes de San Gil y Socorro. \n\n¿Hay alguna especialidad médica en particular que te interese para tu próxima cita? Tenemos 12 especialidades disponibles, desde Medicina General hasta Dermatología.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:23:24.973Z",
+      "type": "message",
+      "content": "registrame un nuevo paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:23:29.116Z",
+      "type": "response",
+      "content": "¡Claro! Para registrar un nuevo paciente, necesito los siguientes datos:\n\n1. Nombre completo\n2. Número de documento\n\nPor favor, proporciona esta información para proceder con tu registro. 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:23:50.409Z",
+      "type": "message",
+      "content": "Pedro Pascal, 12121212",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:23:55.067Z",
+      "type": "response",
+      "content": "¡Perfecto! He registrado a Pedro Pascal con el número de documento 12121212 en nuestro sistema Biosanar. 😊\n\nAhora puedes agendar citas con nuestros médicos especialistas en nuestras sedes de San Gil y Socorro. \n\n¿Hay alguna especialidad médica en particular que te interese para tu próxima cita? Tenemos 12 especialidades disponibles, desde Medicina General hasta Dermatología.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:49:58.847Z",
+      "type": "message",
+      "content": "Hola, quiero registrarme como paciente nuevo",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:50:02.701Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:51:45.581Z",
+      "type": "message",
+      "content": "Mi nombre es Carlos Rodríguez",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:51:49.980Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:52:22.829Z",
+      "type": "message",
+      "content": "Mi cédula es 87654321",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:52:28.458Z",
+      "type": "patient_data",
+      "content": "{\"patient_document\":\"87654321\"}",
+      "field": "patient_info",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T02:52:28.702Z",
+      "type": "response",
+      "content": "👤 **Necesito tu Nombre**\n\nYa tengo tu número de documento: **87654321**\n\nSolo me falta tu nombre completo para completar el registro.\n\n¿Cuál es tu nombre completo?",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:38:54.996Z",
+      "type": "message",
+      "content": "Hola, necesito registrarme como paciente nuevo",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:38:59.104Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:41:02.424Z",
+      "type": "message",
+      "content": "Hola, quiero registrarme como paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:41:06.472Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 1
+    },
+    {
+      "timestamp": "2025-09-15T03:46:35.332Z",
+      "type": "message",
+      "content": "Hola, necesito registrarme como paciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:46:40.636Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:46:45.662Z",
+      "type": "message",
+      "content": "Mi nombre es Carlos Martinez y mi cedula es 98765432",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:46:50.800Z",
+      "type": "patient_data",
+      "content": "{\"patient_name\":\"Carlos Martinez\",\"patient_document\":\"98765432\"}",
+      "field": "patient_info",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:46:51.052Z",
+      "type": "response",
+      "content": "✅ **¡Registro Completado!**\n\n¡Perfecto! He registrado exitosamente a **Carlos Martinez** con el número de documento **98765432** en nuestro sistema Biosanar. 😊\n\n📋 **Información registrada:**\n• **Nombre:** Carlos Martinez\n• **Documento:** 98765432\n• **ID del paciente:** Asignado\n\n✨ **Ahora puedes:**\n• Agendar citas médicas\n• Consultar tus citas programadas  \n• Hacer consultas médicas con nuestros especialistas\n\n🏥 **Disponemos de:**\n• 12 especialidades médicas\n• Sedes en San Gil y Socorro\n• Horarios flexibles\n\n¿Te gustaría agendar una cita médica ahora? 📅",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:48:17.384Z",
+      "type": "message",
+      "content": "hola ouedes registarar un paciente nuevo",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:48:22.006Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:49:10.840Z",
+      "type": "message",
+      "content": "Mariajose Delgado 17265009",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:49:18.184Z",
+      "type": "patient_data",
+      "content": "{\"patient_document\":\"17265009\"}",
+      "field": "patient_info",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:49:18.412Z",
+      "type": "response",
+      "content": "👤 **Necesito tu Nombre**\n\nYa tengo tu número de documento: **17265009**\n\nSolo me falta tu nombre completo para completar el registro.\n\n¿Cuál es tu nombre completo?",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:49:38.234Z",
+      "type": "message",
+      "content": "Mariajsoe Delgado",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T03:49:41.312Z",
+      "type": "response",
+      "content": "📝 **Registro de Nuevo Paciente**\n\n¡Excelente! Te ayudo a registrarte en nuestro sistema.\n\nPara completar tu registro, solo necesito 2 datos básicos:\n\n👤 **Tu nombre completo**\n🆔 **Tu número de documento**\n\nPor favor compártelos conmigo.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:00:36.704Z",
+      "type": "message",
+      "content": "hola quiero registrarme como paciente nuevo",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:00:41.276Z",
+      "type": "patient_data",
+      "content": "{\"patient_name\":\"Hola Quiero Registrarme Como Paciente Nuevo\"}",
+      "field": "patient_info",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:00:41.539Z",
+      "type": "response",
+      "content": "🆔 **Necesito tu Documento**\n\nYa tengo tu nombre: **Hola Quiero Registrarme Como Paciente Nuevo**\n\nSolo me falta tu número de cédula para completar el registro.\n\n¿Cuál es tu número de documento?",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:00:44.563Z",
+      "type": "message",
+      "content": "Ana Garcia 98765432",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:00:49.015Z",
+      "type": "patient_data",
+      "content": "{\"patient_name\":\"Ana Garcia\",\"patient_document\":\"98765432\"}",
+      "field": "patient_info",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:00:49.282Z",
+      "type": "response",
+      "content": "❌ **Error Técnico**\n\nLo siento, no pude completar tu registro en este momento debido a un error técnico.\n\nPor favor, intenta nuevamente en unos minutos o contacta con nuestro soporte.",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:02.558Z",
+      "type": "message",
+      "content": "hola",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:06.966Z",
+      "type": "response",
+      "content": "¡Hola! Bienvenido a Biosanarcall. ¿Cómo puedo ayudarte hoy? ¿Necesitas programar una cita médica, información sobre nuestras especialidades o tal vez buscas a un médico en particular? 🏥👩‍⚕️👨‍⚕️",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:24.266Z",
+      "type": "message",
+      "content": "quiero registarar comopaciente",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:29.014Z",
+      "type": "patient_data",
+      "content": "{\"patient_name\":\"Quiero Registarar Comopaciente\"}",
+      "field": "patient_info",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:29.228Z",
+      "type": "response",
+      "content": "🆔 **Necesito tu Documento**\n\nYa tengo tu nombre: **Quiero Registarar Comopaciente**\n\nSolo me falta tu número de cédula para completar el registro.\n\n¿Cuál es tu número de documento?",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:46.416Z",
+      "type": "message",
+      "content": "11111111111",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:02:51.682Z",
+      "type": "response",
+      "content": "¡Perfecto! Con tu número de documento 11111111111, ya puedo registrarte en nuestro sistema. ¿Podrías por favor confirmarme tu nombre completo para completar el registro? 📝",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:03:08.993Z",
+      "type": "message",
+      "content": "pepe ahilar",
+      "field": "user_input",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
+    },
+    {
+      "timestamp": "2025-09-15T04:03:15.392Z",
+      "type": "response",
+      "content": "¡Hola, Pepe Ahilar! Bienvenido a Biosanar. Ya te tengo registrado con el número de documento 11111111111. ¿En qué puedo ayudarte hoy? ¿Te gustaría agendar una cita con alguno de nuestros especialistas o tienes alguna otra consulta? 😊",
+      "field": "agent_response",
+      "validated": false,
+      "confidence_score": 0.5,
+      "processing_time": 0
     }
   ],
   "metadata": {
     "created_at": "2025-09-13T22:11:25.868Z",
-    "last_activity": "2025-09-14T22:54:22.837Z",
-    "total_interactions": 119,
+    "last_activity": "2025-09-15T04:03:15.392Z",
+    "total_interactions": 175,
     "session_duration": 0,
-    "memory_size": 37149,
+    "memory_size": 54181,
     "compression_ratio": 1,
     "last_optimized": "2025-09-13T22:11:25.868Z",
     "start_time": "2025-09-13T22:11:25.868Z"
@@ -1255,8 +1815,9 @@
       "q especilidades tienen": 1
     },
     "user_patterns": {
-      "message": 71,
-      "response": 48
+      "message": 96,
+      "response": 73,
+      "patient_data": 6
     },
     "quick_access": {}
   }

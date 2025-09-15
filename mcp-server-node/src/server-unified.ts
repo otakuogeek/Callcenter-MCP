@@ -193,6 +193,22 @@ const UNIFIED_TOOLS = [
       required: ['patient_id']
     }
   },
+  {
+    name: 'createSimplePatient',
+    description: 'Crear nuevo paciente con datos ultra-mínimos (solo documento y nombre)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: { type: 'string', description: 'Documento de identidad (mínimo 3 caracteres)' },
+        name: { type: 'string', description: 'Nombre completo (mínimo 2 caracteres)' },
+        phone: { type: 'string', description: 'Teléfono principal (opcional)' },
+        email: { type: 'string', description: 'Email (opcional)' },
+        birth_date: { type: 'string', description: 'Fecha nacimiento DD/MM/YYYY (opcional)' },
+        gender: { type: 'string', description: 'Género (opcional, se infiere del nombre)' }
+      },
+      required: ['document', 'name']
+    }
+  },
 
   // === CITAS ===
   {
@@ -664,6 +680,9 @@ async function executeToolCall(name: string, args: any): Promise<any> {
       case 'createPatient':
         return await createPatient(args);
       
+      case 'createSimplePatient':
+        return await createSimplePatient(args);
+      
       case 'updatePatient':
         return await updatePatient(args.patient_id, args);
       
@@ -928,6 +947,104 @@ async function createPatient(data: any) {
     id: (result as any).insertId,
     ...data,
     status: 'Activo'
+  };
+}
+
+async function createSimplePatient(data: any) {
+  // Validar campos mínimos requeridos - SOLO nombre y documento
+  const requiredFields = ['document', 'name'];
+  const missingFields = requiredFields.filter(field => !data[field] || String(data[field]).trim() === '');
+  
+  if (missingFields.length > 0) {
+    throw new Error(`Campos obligatorios faltantes: ${missingFields.join(', ')}`);
+  }
+
+  // Limpiar y validar datos
+  const document = String(data.document).trim();
+  const name = String(data.name).trim();
+  
+  if (document.length < 3) {
+    throw new Error('El documento debe tener al menos 3 caracteres');
+  }
+  
+  if (name.length < 2) {
+    throw new Error('El nombre debe tener al menos 2 caracteres');
+  }
+
+  // Convertir fecha de nacimiento si viene en formato DD/MM/YYYY (opcional)
+  let birthDate = null;
+  if (data.birth_date) {
+    if (data.birth_date.includes('/')) {
+      const parts = data.birth_date.split('/');
+      if (parts.length === 3) {
+        // Convertir DD/MM/YYYY a YYYY-MM-DD
+        birthDate = `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(data.birth_date)) {
+      birthDate = data.birth_date;
+    }
+  }
+
+  // Inferir género si no se proporciona (opcional)
+  let gender = 'No especificado';
+  if (data.gender) {
+    gender = data.gender;
+  } else {
+    gender = inferGenderFromName(name);
+  }
+
+  // Validar email si se proporciona (opcional)
+  let email = null;
+  if (data.email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
+    email = data.email;
+  }
+
+  // Validar teléfono si se proporciona (opcional)
+  let phone = null;
+  if (data.phone && String(data.phone).trim().length >= 7) {
+    phone = String(data.phone).trim();
+  }
+
+  // Crear paciente con datos ultra-mínimos
+  const patientData = {
+    document: document,
+    name: name,
+    phone: phone,
+    email: email,
+    birth_date: birthDate,
+    gender: gender,
+    status: 'Activo',
+    notes: 'Registro ultra-simple desde WhatsApp'
+  };
+
+  const [result] = await pool.query(
+    `INSERT INTO patients (document, name, phone, email, birth_date, gender, status, has_disability, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+    [
+      patientData.document, 
+      patientData.name, 
+      patientData.phone, 
+      patientData.email, 
+      patientData.birth_date, 
+      patientData.gender, 
+      patientData.status, 
+      patientData.notes
+    ]
+  );
+
+  const patientId = (result as any).insertId;
+  
+  return {
+    id: patientId,
+    document: patientData.document,
+    name: patientData.name,
+    phone: patientData.phone,
+    email: patientData.email,
+    birth_date: patientData.birth_date,
+    gender: patientData.gender,
+    notes: patientData.notes,
+    status: patientData.status,
+    message: 'Paciente registrado exitosamente con datos ultra-mínimos'
   };
 }
 

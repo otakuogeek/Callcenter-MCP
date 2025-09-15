@@ -256,6 +256,7 @@ Intenciones posibles:
 - greeting: Saludo inicial
 - appointment_request: Solicitar cita médica
 - appointment_modify: Modificar cita existente
+- patient_registration: Registrar nuevo paciente o completar datos personales
 - specialty_inquiry: Consulta sobre especialidades médicas
 - doctor_availability: Consulta de disponibilidad médica
 - eps_inquiry: Información sobre EPS y seguros
@@ -318,8 +319,13 @@ IMPORTANTE: Responde de manera inmediata y útil. No uses frases como "permítem
       let aiResponse = response.choices[0]?.message?.content?.trim() || 'Lo siento, no pude procesar tu mensaje. ¿Podrías reformularlo?';
 
       // Post-procesar respuesta para intenciones específicas
+      this.logger.info('Intent detectado:', { intent });
+      
       if (intent === 'appointment_request') {
         aiResponse = await this.enhanceAppointmentResponse(aiResponse, sessionId);
+      } else if (intent === 'patient_registration') {
+        this.logger.info('🔍 Procesando registro de paciente', { message, sessionId });
+        aiResponse = await this.handlePatientRegistration(message, sessionId, memoryData);
       } else if (intent === 'symptom_inquiry') {
         aiResponse = await this.enhanceSymptomResponse(aiResponse, sessionId);
       } else if (intent === 'location_inquiry') {
@@ -368,6 +374,213 @@ IMPORTANTE: Responde de manera inmediata y útil. No uses frases como "permítem
     } catch (error) {
       this.logger.error('Error mejorando respuesta de síntomas', { error });
       return response;
+    }
+  }
+
+  private async handlePatientRegistration(message: string, sessionId: string, memoryData: any): Promise<string> {
+    try {
+      // Extraer información del mensaje (nombre y documento) - VERSIÓN MEJORADA
+      const nameMatch = message.match(/(?:soy|llamo|nombre es|me llamo)\s+([A-Za-z\sáéíóúñü]+?)(?:\s*,|\s*y|\s*con|\s*c[eé]dula|\s*documento|\s*el|\s*mi|\s*$)/i);
+      const documentMatch = message.match(/(?:c[eé]dula|documento|cedula|cc|identificaci[oó]n)?\s*:?\s*(\d{7,12})/i);
+      
+      // Patrones mejorados para diferentes formatos
+      const formats = [
+        // "Nombre Apellido 12345678" (nombre seguido de números)
+        { pattern: /^([A-Za-z\sáéíóúñü]+?)\s+(\d{7,12})$/i, nameGroup: 1, docGroup: 2 },
+        // "12345678 Nombre Apellido" (documento seguido de nombre)  
+        { pattern: /^(\d{7,12})\s+([A-Za-z\sáéíóúñü]+)$/i, nameGroup: 2, docGroup: 1 },
+        // "Nombre, 12345678" (con coma)
+        { pattern: /^([A-Za-z\sáéíóúñü]+),\s*(\d{7,12})$/i, nameGroup: 1, docGroup: 2 },
+        // "12345678, Nombre" (documento con coma)
+        { pattern: /^(\d{7,12}),\s*([A-Za-z\sáéíóúñü]+)$/i, nameGroup: 2, docGroup: 1 }
+      ];
+      
+      let extractedName = '';
+      let extractedDocument = '';
+      
+      // Probar todos los patrones
+      for (const format of formats) {
+        const match = message.match(format.pattern);
+        if (match) {
+          extractedName = match[format.nameGroup].trim();
+          extractedDocument = match[format.docGroup].trim();
+          console.log(`✅ Patrón detectado: ${format.pattern}`, { extractedName, extractedDocument });
+          break;
+        }
+      }
+      
+      // Si no encontramos con patrones combinados, buscar individualmente
+      if (!extractedName && !extractedDocument) {
+        if (nameMatch) extractedName = nameMatch[1].trim();
+        if (documentMatch) extractedDocument = documentMatch[1].trim();
+        
+        // Buscar solo nombre si es texto sin números
+        if (!extractedName && /^[A-Za-z\sáéíóúñü]+$/.test(message.trim())) {
+          extractedName = message.trim();
+          console.log('✅ Solo nombre detectado:', extractedName);
+        }
+        
+        // Buscar solo documento si es solo números
+        if (!extractedDocument && /^\d{7,12}$/.test(message.trim())) {
+          extractedDocument = message.trim();
+          console.log('✅ Solo documento detectado:', extractedDocument);
+        }
+      }
+      
+      // Limpiar y normalizar nombre
+      if (extractedName) {
+        extractedName = extractedName.replace(/[^\w\sáéíóúñü]/gi, '').trim();
+        extractedName = extractedName.replace(/\s+/g, ' '); // Normalizar espacios
+        // Capitalizar primera letra de cada palabra
+        extractedName = extractedName.split(' ').map(word => 
+          word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
+        ).join(' ');
+      }
+      
+      // Limpiar documento (solo números)
+      if (extractedDocument) {
+        extractedDocument = extractedDocument.replace(/\D/g, '');
+      }
+      
+      console.log('📝 Datos extraídos del mensaje:', { extractedName, extractedDocument });
+      
+      // Revisar memoria para ver si tenemos información previa
+      let storedName = '';
+      let storedDocument = '';
+      
+      if (memoryData && memoryData.conversation_data) {
+        try {
+          const conversation = JSON.parse(memoryData.conversation_data);
+          storedName = conversation.patient_name || '';
+          storedDocument = conversation.patient_document || '';
+        } catch (e) {
+          // Si no se puede parsear, continuar sin memoria
+        }
+      }
+      
+      // Combinar información actual con la almacenada
+      const finalName = extractedName || storedName;
+      const finalDocument = extractedDocument || storedDocument;
+      
+      // Actualizar memoria con nueva información
+      const memoryUpdate: any = {};
+      if (extractedName) memoryUpdate.patient_name = extractedName;
+      if (extractedDocument) memoryUpdate.patient_document = extractedDocument;
+      
+      if (Object.keys(memoryUpdate).length > 0) {
+        await this.mcpClient.addToMemory(
+          sessionId,
+          'patient_data',
+          JSON.stringify(memoryUpdate),
+          'patient_info'
+        );
+      }
+      
+      // Si tenemos nombre y documento, proceder con el registro
+      if (finalName && finalDocument) {
+        this.logger.info('Intentando registrar paciente', { 
+          name: finalName, 
+          document: finalDocument,
+          sessionId 
+        });
+        
+        try {
+          const registrationResult = await this.mcpClient.createSimplePatient({
+            name: finalName,
+            document: finalDocument
+          });
+          
+          if (registrationResult && !registrationResult.error) {
+            this.logger.info('Paciente registrado exitosamente', { 
+              patientId: registrationResult.id,
+              name: finalName,
+              document: finalDocument 
+            });
+            
+            return `✅ **¡Registro Completado!**
+
+¡Perfecto! He registrado exitosamente a **${finalName}** con el número de documento **${finalDocument}** en nuestro sistema Biosanar. 😊
+
+📋 **Información registrada:**
+• **Nombre:** ${finalName}
+• **Documento:** ${finalDocument}
+• **ID del paciente:** ${registrationResult.id || 'Asignado'}
+
+✨ **Ahora puedes:**
+• Agendar citas médicas
+• Consultar tus citas programadas  
+• Hacer consultas médicas con nuestros especialistas
+
+🏥 **Disponemos de:**
+• 12 especialidades médicas
+• Sedes en San Gil y Socorro
+• Horarios flexibles
+
+¿Te gustaría agendar una cita médica ahora? 📅`;
+          } else {
+            this.logger.error('Error en el registro de paciente', { 
+              error: registrationResult?.error,
+              name: finalName,
+              document: finalDocument 
+            });
+            
+            return `❌ **Error en el Registro**
+
+Lo siento, hubo un problema al registrarte en el sistema:
+${registrationResult?.error || 'Error desconocido'}
+
+Por favor, intenta nuevamente o contacta con nuestro soporte.`;
+          }
+        } catch (error) {
+          this.logger.error('Excepción durante el registro de paciente', { 
+            error: error,
+            name: finalName,
+            document: finalDocument 
+          });
+          
+          return `❌ **Error Técnico**
+
+Lo siento, no pude completar tu registro en este momento debido a un error técnico.
+
+Por favor, intenta nuevamente en unos minutos o contacta con nuestro soporte.`;
+        }
+      } else {
+        // Solicitar información faltante
+        if (!finalName && !finalDocument) {
+          return `📝 **Registro de Nuevo Paciente**
+
+¡Excelente! Te ayudo a registrarte en nuestro sistema.
+
+Para completar tu registro, solo necesito 2 datos básicos:
+
+👤 **Tu nombre completo**
+🆔 **Tu número de documento**
+
+Por favor compártelos conmigo.`;
+        } else if (!finalName) {
+          return `👤 **Necesito tu Nombre**
+
+Ya tengo tu número de documento: **${finalDocument}**
+
+Solo me falta tu nombre completo para completar el registro.
+
+¿Cuál es tu nombre completo?`;
+        } else if (!finalDocument) {
+          return `🆔 **Necesito tu Documento**
+
+Ya tengo tu nombre: **${finalName}**
+
+Solo me falta tu número de cédula para completar el registro.
+
+¿Cuál es tu número de documento?`;
+        }
+      }
+      
+      return 'Por favor proporciona tu nombre completo y número de documento para registrarte.';
+      
+    } catch (error) {
+      this.logger.error('Error manejando registro de paciente', { error, sessionId });
+      return 'Lo siento, hubo un error procesando tu registro. Por favor intenta nuevamente.';
     }
   }
 
@@ -599,9 +812,21 @@ EJEMPLOS INCORRECTOS (NUNCA USES):
 ACCIONES DISPONIBLES (SOLO DATOS REALES):
 - Programar citas: Usa searchAvailabilities del MCP para obtener horarios específicos REALES
 - Buscar pacientes: Usa searchPatients del MCP  
+- Registrar pacientes nuevos: Usa createSimplePatient del MCP (ULTRA-SIMPLE: solo nombre completo y documento)
 - Consultar médicos: Usa getDoctors del MCP (incluye nombres, especialidades, sedes) - SOLO datos verificados
 - Verificar disponibilidad: Usa getAvailabilities para horarios detallados (start_time, end_time, doctor_name, specialty_name, location_name)
 - Si no hay datos disponibles: Informa claramente que no hay médicos registrados en esa especialidad
+
+IMPORTANTE PARA REGISTRO DE PACIENTES:
+- SIEMPRE usa createSimplePatient (NO createPatient) para registro desde WhatsApp
+- ULTRA-SIMPLE: Solo requiere 2 campos OBLIGATORIOS: nombre completo y número de documento
+- NO pidas teléfono, email, fecha nacimiento, ni otros datos - son INNECESARIOS
+- El sistema auto-completa todos los demás campos automáticamente
+- Después del registro exitoso, confirma al paciente que ya está registrado en el sistema
+
+EJEMPLO DE USO:
+Usuario: "Quiero registrarme, soy Juan Pérez, cédula 12345678"
+Agente: Usa createSimplePatient con {document: "12345678", name: "Juan Pérez"}
 
 PROTOCOLO DE VERIFICACIÓN DE DATOS:
 1. ANTES de mencionar un médico, VERIFICA que existe en los datos del MCP

@@ -199,6 +199,10 @@ export class MCPClient {
     return this.callTool('createPatient', patientData);
   }
 
+  async createSimplePatient(patientData: any): Promise<any> {
+    return this.callTool('createSimplePatient', patientData);
+  }
+
   async getPatientHistory(patientId: number, limit: number = 5): Promise<any> {
     return this.callTool('getPatientHistory', { patient_id: patientId, limit });
   }
