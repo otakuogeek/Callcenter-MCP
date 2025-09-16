@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asistente de Voz - Biosanarcall</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            text-align: center;
+        }
+        .call-widget {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            margin: 20px 0;
+            backdrop-filter: blur(10px);
+        }
+        .status {
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            font-weight: bold;
+        }
+        .status.idle { background: rgba(108, 117, 125, 0.3); }
+        .status.ringing { background: rgba(255, 193, 7, 0.3); }
+        .status.connected { background: rgba(40, 167, 69, 0.3); }
+        .status.error { background: rgba(220, 53, 69, 0.3); }
+        
+        button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 5px;
+        }
+        button:hover { background: #218838; }
+        button.danger { background: #dc3545; }
+        button.danger:hover { background: #c82333; }
+        
+        #audioContainer {
+            margin: 20px 0;
+        }
+        audio {
+            width: 100%;
+            margin: 10px 0;
+        }
+        
+        .transcript {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            text-align: left;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Asistente de Voz Biosanarcall</h1>
+        <p>Sistema integrado con Zadarma WebRTC y ElevenLabs</p>
+        
+        <div class="call-widget">
+            <div id="callStatus" class="status idle">
+                💤 Esperando llamadas...
+            </div>
+            
+            <div id="audioContainer">
+                <audio id="remoteAudio" autoplay></audio>
+                <audio id="localAudio" muted></audio>
+            </div>
+            
+            <div id="controls">
+                <button onclick="initializeWebRTC()">🎧 Inicializar Audio</button>
+                <button onclick="testVoiceAssistant()">🤖 Probar Asistente</button>
+                <button onclick="endCall()" class="danger">📞 Colgar</button>
+            </div>
+            
+            <div id="transcript" class="transcript">
+                <strong>Conversación:</strong><br>
+                <div id="conversationLog"></div>
+            </div>
+        </div>
+        
+        <div id="debugInfo" style="background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; margin-top: 20px;">
+            <h3>🔧 Estado del Sistema</h3>
+            <div id="systemStatus">Cargando...</div>
+        </div>
+    </div>
+
+    <!-- Zadarma WebRTC SDK -->
+    <script src="https://webrtc.zadarma.com/sdk/js/zadarma-webrtc.js"></script>
+    
+    <script>
+        class VoiceAssistantWidget {
+            constructor() {
+                this.webrtc = null;
+                this.currentCall = null;
+                this.mediaRecorder = null;
+                this.audioChunks = [];
+                this.isRecording = false;
+                
+                this.initializeWidget();
+            }
+            
+            async initializeWidget() {
+                try {
+                    // Inicializar estado
+                    this.updateStatus('idle', '💤 Inicializando sistema...');
+                    
+                    // Configurar WebRTC de Zadarma
+                    this.setupZadarmaWebRTC();
+                    
+                    // Verificar estado del backend
+                    await this.checkBackendStatus();
+                    
+                    this.updateStatus('idle', '✅ Sistema listo para recibir llamadas');
+                    
+                } catch (error) {
+                    console.error('Error inicializando widget:', error);
+                    this.updateStatus('error', '❌ Error inicializando sistema');
+                }
+            }
+            
+            setupZadarmaWebRTC() {
+                // Configuración del WebRTC de Zadarma
+                this.webrtc = new ZadarmaWebRTC({
+                    domain: 'biosanarcall.site',
+                    server: 'wss://webrtc.zadarma.com',
+                    port: 443,
+                    
+                    // Eventos de llamada
+                    onIncoming: (call) => this.handleIncomingCall(call),
+                    onConnected: (call) => this.handleCallConnected(call),
+                    onDisconnected: (call) => this.handleCallDisconnected(call),
+                    onError: (error) => this.handleError(error),
+                    
+                    // Configuración de audio
+                    audio: {
+                        autoAnswer: true,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+            }
+            
+            async handleIncomingCall(call) {
+                console.log('📞 Llamada entrante:', call);
+                this.currentCall = call;
+                this.updateStatus('ringing', `📞 Llamada entrante de ${call.caller_id}`);
+                
+                // Auto-responder después de 2 segundos
+                setTimeout(() => {
+                    this.answerCall();
+                }, 2000);
+            }
+            
+            async answerCall() {
+                if (!this.currentCall) return;
+                
+                try {
+                    // Responder llamada en Zadarma
+                    await this.webrtc.answer(this.currentCall);
+                    
+                    // Notificar al backend que inicie el asistente
+                    await this.startVoiceAssistant();
+                    
+                } catch (error) {
+                    console.error('Error respondiendo llamada:', error);
+                    this.updateStatus('error', '❌ Error respondiendo llamada');
+                }
+            }
+            
+            async handleCallConnected(call) {
+                console.log('🎉 Llamada conectada:', call);
+                this.updateStatus('connected', '🎉 Llamada conectada - Asistente activado');
+                
+                // Iniciar grabación para transcripción
+                this.startRecording();
+                
+                // Reproducir saludo inicial
+                await this.playGreeting();
+            }
+            
+            async handleCallDisconnected(call) {
+                console.log('📴 Llamada terminada:', call);
+                this.updateStatus('idle', '📴 Llamada terminada');
+                
+                this.currentCall = null;
+                this.stopRecording();
+                
+                // Notificar al backend
+                await this.endVoiceAssistant(call.id);
+            }
+            
+            handleError(error) {
+                console.error('❌ Error WebRTC:', error);
+                this.updateStatus('error', `❌ Error: ${error.message}`);
+            }
+            
+            async startVoiceAssistant() {
+                try {
+                    const response = await fetch('/voice/start-conversation', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            call_id: this.currentCall.id,
+                            caller_number: this.currentCall.caller_id
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    console.log('🤖 Asistente iniciado:', result);
+                    
+                } catch (error) {
+                    console.error('Error iniciando asistente:', error);
+                }
+            }
+            
+            async playGreeting() {
+                const greeting = "Hola, te has comunicado con Biosanar Call, tu asistente médico virtual. Estoy aquí para ayudarte a agendar citas, consultar información médica o resolver tus dudas. ¿En qué puedo ayudarte hoy?";
+                
+                this.addToConversation('Asistente', greeting);
+                
+                // Usar Web Speech API para síntesis de voz
+                if ('speechSynthesis' in window) {
+                    const utterance = new SpeechSynthesisUtterance(greeting);
+                    utterance.lang = 'es-ES';
+                    utterance.rate = 0.9;
+                    speechSynthesis.speak(utterance);
+                }
+            }
+            
+            startRecording() {
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(stream => {
+                        this.mediaRecorder = new MediaRecorder(stream);
+                        this.audioChunks = [];
+                        
+                        this.mediaRecorder.ondataavailable = (event) => {
+                            this.audioChunks.push(event.data);
+                        };
+                        
+                        this.mediaRecorder.onstop = () => {
+                            this.processRecording();
+                        };
+                        
+                        // Grabar en chunks de 3 segundos para transcripción continua
+                        this.mediaRecorder.start(3000);
+                        this.isRecording = true;
+                        
+                    })
+                    .catch(error => {
+                        console.error('Error accediendo al micrófono:', error);
+                    });
+            }
+            
+            stopRecording() {
+                if (this.mediaRecorder && this.isRecording) {
+                    this.mediaRecorder.stop();
+                    this.isRecording = false;
+                }
+            }
+            
+            async processRecording() {
+                if (this.audioChunks.length === 0) return;
+                
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
+                const audioBase64 = await this.blobToBase64(audioBlob);
+                
+                // Enviar al backend para transcripción y procesamiento
+                try {
+                    const response = await fetch('/voice/process-speech', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            call_id: this.currentCall?.id,
+                            audio_data: audioBase64
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    if (result.response) {
+                        this.addToConversation('Asistente', result.response);
+                    }
+                    
+                } catch (error) {
+                    console.error('Error procesando audio:', error);
+                }
+                
+                // Continuar grabando si la llamada sigue activa
+                if (this.currentCall && this.isRecording) {
+                    this.audioChunks = [];
+                    this.mediaRecorder.start(3000);
+                }
+            }
+            
+            async endVoiceAssistant(callId) {
+                try {
+                    await fetch('/voice/end-conversation', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            call_id: callId,
+                            reason: 'call_ended'
+                        })
+                    });
+                } catch (error) {
+                    console.error('Error finalizando asistente:', error);
+                }
+            }
+            
+            async checkBackendStatus() {
+                try {
+                    const response = await fetch('/stats');
+                    const data = await response.json();
+                    
+                    document.getElementById('systemStatus').innerHTML = `
+                        ✅ Backend conectado<br>
+                        🔊 WebRTC: ${this.webrtc ? 'Inicializado' : 'No disponible'}<br>
+                        📞 Estado: ${this.currentCall ? 'En llamada' : 'Disponible'}<br>
+                        🕒 Última actualización: ${new Date().toLocaleTimeString()}
+                    `;
+                    
+                } catch (error) {
+                    document.getElementById('systemStatus').innerHTML = `❌ Error conectando al backend`;
+                }
+            }
+            
+            updateStatus(type, message) {
+                const statusElement = document.getElementById('callStatus');
+                statusElement.className = `status ${type}`;
+                statusElement.textContent = message;
+            }
+            
+            addToConversation(speaker, message) {
+                const log = document.getElementById('conversationLog');
+                const timestamp = new Date().toLocaleTimeString();
+                log.innerHTML += `<div><strong>[${timestamp}] ${speaker}:</strong> ${message}</div>`;
+                log.scrollTop = log.scrollHeight;
+            }
+            
+            blobToBase64(blob) {
+                return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                        const base64 = reader.result.split(',')[1];
+                        resolve(base64);
+                    };
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+            }
+        }
+        
+        // Funciones globales para los botones
+        let voiceWidget;
+        
+        window.onload = () => {
+            voiceWidget = new VoiceAssistantWidget();
+        };
+        
+        function initializeWebRTC() {
+            if (voiceWidget) {
+                voiceWidget.initializeWidget();
+            }
+        }
+        
+        function testVoiceAssistant() {
+            voiceWidget.addToConversation('Sistema', 'Prueba de asistente iniciada');
+            voiceWidget.playGreeting();
+        }
+        
+        function endCall() {
+            if (voiceWidget.currentCall) {
+                voiceWidget.webrtc.hangup(voiceWidget.currentCall);
+            }
+        }
+        
+        // Actualizar estado cada 30 segundos
+        setInterval(() => {
+            if (voiceWidget) {
+                voiceWidget.checkBackendStatus();
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

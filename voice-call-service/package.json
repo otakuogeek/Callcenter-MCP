@@ -1,0 +1,60 @@
+{
+  "name": "biosanarcall-voice-service",
+  "version": "1.0.0",
+  "description": "Servicio de llamadas de voz que integra Zadarma con el agente de WhatsApp existente usando STT/TTS",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "jest",
+    "test:call": "node dist/test-call.js"
+  },
+  "dependencies": {
+    "asterisk-manager": "^0.2.0",
+    "axios": "^1.6.8",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.2",
+    "drachtio-client": "^0.1.4",
+    "drachtio-srf": "^5.0.12",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.2.0",
+    "ffmpeg-static": "^5.2.0",
+    "helmet": "^7.1.0",
+    "jssip": "^3.10.1",
+    "mysql2": "^3.9.7",
+    "node-opus": "^0.3.3",
+    "node-webrtc": "^0.0.0",
+    "openai": "^4.47.1",
+    "rtpengine-client": "^0.4.12",
+    "sip": "^0.0.6",
+    "ws": "^8.18.3",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/fs-extra": "^11.0.4",
+    "@types/jest": "^29.5.8",
+    "@types/morgan": "^1.9.9",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.19.14",
+    "@types/node-cron": "^3.0.11",
+    "@types/ws": "^8.18.1",
+    "jest": "^29.7.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.2"
+  },
+  "keywords": [
+    "voice",
+    "calls",
+    "zadarma",
+    "stt",
+    "tts",
+    "medical",
+    "whatsapp",
+    "agent"
+  ],
+  "author": "BiosanarCall",
+  "license": "MIT"
+}

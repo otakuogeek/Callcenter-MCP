@@ -39,6 +39,7 @@ import webhooks from './webhooks';
 import agendaTemplates from './agenda-templates';
 import agendaOptimization from './agenda-optimization';
 import agendaConflicts from './agenda-conflicts';
+import voiceAgent from './voiceAgent';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -114,6 +115,8 @@ router.use('/webhooks', webhooks);
 router.use('/agenda-templates', agendaTemplates);
 router.use('/agenda-optimization', agendaOptimization);
 router.use('/agenda-conflicts', agendaConflicts);
+// Ruta del agente de voz para procesamiento de llamadas
+router.use('/voice-agent', voiceAgent);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)
