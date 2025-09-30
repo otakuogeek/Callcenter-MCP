@@ -67,7 +67,10 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       [st]
     );
     return res.json(rows);
-  } catch (e) {
+  } catch (e: any) {
+    if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
+      return res.json([]);
+    }
     return res.status(500).json({ message: 'Server error' });
   }
 });

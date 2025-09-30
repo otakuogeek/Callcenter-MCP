@@ -202,7 +202,7 @@ async function validatePatientScheduleConflicts(data: any): Promise<{
 
   const [rows] = await pool.query(
     `SELECT a.id, a.scheduled_at, a.duration_minutes, a.status,
-            d.name as doctor_name, s.name as specialty_name
+      d.name as doctor_name, s.name as specialty_name
      FROM appointments a
      JOIN doctors d ON d.id = a.doctor_id
      JOIN specialties s ON s.id = a.specialty_id
@@ -239,7 +239,7 @@ async function validateRoomConflicts(data: any): Promise<{
 
   const [rows] = await pool.query(
     `SELECT a.id, a.scheduled_at, a.duration_minutes, a.status,
-            p.name as patient_name, d.name as doctor_name
+      p.name as patient_name, d.name as doctor_name
      FROM appointments a
      JOIN patients p ON p.id = a.patient_id
      JOIN doctors d ON d.id = a.doctor_id

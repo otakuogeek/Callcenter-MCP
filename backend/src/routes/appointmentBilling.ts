@@ -61,7 +61,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   const allowedSort: Record<string,string> = {
     created_at: 'ab.created_at',
     service_name: 's.name',
-    doctor_name: 'd.name',
+    doctor_name: "d.name",
     base_price: 'ab.base_price',
     doctor_price: 'ab.doctor_price',
     final_price: 'ab.final_price',
@@ -77,7 +77,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   if (patientId) { filters.push('a.patient_id = ?'); values.push(patientId); }
   if (dateFrom) { filters.push('ab.created_at >= ?'); values.push(dateFrom + ' 00:00:00'); }
   if (dateTo) { filters.push('ab.created_at <= ?'); values.push(dateTo + ' 23:59:59'); }
-  if (q && q.length >= 2) { filters.push('(s.name LIKE ? OR d.name LIKE ?)'); values.push(`%${q}%`, `%${q}%`); }
+  if (q && q.length >= 2) { filters.push(`(s.name LIKE ? OR d.name LIKE ?)`); values.push(`%${q}%`, `%${q}%`); }
   const where = filters.length ? 'WHERE ' + filters.join(' AND ') : '';
   try {
     // total count
@@ -246,7 +246,7 @@ router.get('/metrics', requireAuth, async (req: Request, res: Response) => {
        FROM appointment_billing ab
        LEFT JOIN doctors d ON d.id = ab.doctor_id
        ${where}
-       GROUP BY ab.doctor_id, d.name
+       GROUP BY ab.doctor_id, doctor_name
        ORDER BY avg_final DESC
        LIMIT 50`, values
     );
@@ -280,7 +280,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response) => {
     let selectPart = '';
     let groupPart = '';
     if (group === 'day') { selectPart = 'DATE(ab.created_at) AS label'; groupPart = 'DATE(ab.created_at)'; }
-    else if (group === 'doctor') { selectPart = 'ab.doctor_id AS label, d.name AS doctor_name'; groupPart = 'ab.doctor_id'; }
+  else if (group === 'doctor') { selectPart = "ab.doctor_id AS label, d.name AS doctor_name"; groupPart = 'ab.doctor_id'; }
     else { selectPart = 'ab.service_id AS label, s.name AS service_name'; groupPart = 'ab.service_id'; }
     const [rows] = await pool.query(
       `SELECT ${selectPart}, COUNT(*) AS count_bills, SUM(ab.final_price) AS total_final, SUM(ab.base_price) AS total_base,
@@ -312,7 +312,7 @@ router.get('/export.csv', requireAuth, requireRole(['admin','supervisor']), asyn
   const where = 'WHERE ' + filters.join(' AND ');
   try {
     const [rows] = await pool.query(
-      `SELECT ab.id, ab.appointment_id, ab.service_id, s.name AS service_name, ab.doctor_id, d.name AS doctor_name,
+  `SELECT ab.id, ab.appointment_id, ab.service_id, s.name AS service_name, ab.doctor_id, d.name AS doctor_name,
               ab.base_price, ab.doctor_price, ab.final_price, ab.currency, ab.status, ab.created_at
        FROM appointment_billing ab
        JOIN services s ON s.id = ab.service_id

@@ -28,8 +28,10 @@ const CreateAvailabilityModal = ({
   getLocationSpecialties,
   locations
 }: CreateAvailabilityModalProps) => {
-  const { doctors, fetchLocationSpecialties, getLocationSpecialtyOptions } = useAppointmentData();
+  const { doctors, fetchLocationSpecialties, getLocationSpecialtyOptions, getDoctorsBySpecialty } = useAppointmentData();
   const [loadingSpecs, setLoadingSpecs] = useState(false);
+  const [loadingDoctors, setLoadingDoctors] = useState(false);
+  const [filteredDoctors, setFilteredDoctors] = useState<Array<{ id: number; name: string }>>([]);
   
   // Validaciones locales y restricciones nativas
   const todayStr = new Date().toISOString().split('T')[0];
@@ -44,7 +46,7 @@ const CreateAvailabilityModal = ({
 
   const isFormIncomplete = !availabilityForm.locationId || !availabilityForm.specialty || !availabilityForm.doctor || !availabilityForm.date || !availabilityForm.startTime || !availabilityForm.endTime;
   const isFormInvalid = isPastDate || timeOrderInvalid || capacityInvalid;
-  const disableSubmit = isFormIncomplete || isFormInvalid;
+  const disableSubmit = isFormIncomplete || isFormInvalid || loadingSpecs || loadingDoctors;
 
   useEffect(() => {
     const locId = Number(availabilityForm.locationId);
@@ -53,6 +55,34 @@ const CreateAvailabilityModal = ({
     setLoadingSpecs(true);
     fetchLocationSpecialties(locId).finally(() => setLoadingSpecs(false));
   }, [availabilityForm.locationId]);
+
+  // Cargar doctores cuando se selecciona una especialidad
+  useEffect(() => {
+    const specialtyId = Number(availabilityForm.specialty);
+    if (!specialtyId) {
+      setFilteredDoctors([]);
+      return;
+    }
+
+    setLoadingDoctors(true);
+    getDoctorsBySpecialty(specialtyId)
+      .then(setFilteredDoctors)
+      .catch((error) => {
+        console.error('Error loading doctors by specialty:', error);
+        setFilteredDoctors([]);
+      })
+      .finally(() => setLoadingDoctors(false));
+  }, [availabilityForm.specialty]);
+
+  // Limpiar doctor seleccionado cuando cambia la especialidad
+  useEffect(() => {
+    if (availabilityForm.specialty && availabilityForm.doctor) {
+      const doctorExists = filteredDoctors.some(d => d.id.toString() === availabilityForm.doctor);
+      if (!doctorExists) {
+        setAvailabilityForm(prev => ({ ...prev, doctor: "" }));
+      }
+    }
+  }, [filteredDoctors, availabilityForm.specialty, availabilityForm.doctor]);
 
   return (
     <EnhancedAnimatedPresenceWrapper>
@@ -123,13 +153,14 @@ const CreateAvailabilityModal = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <AnimatedSelectField
                 label="Doctor/Profesional"
-                placeholder="Selecciona doctor"
+                placeholder={loadingDoctors ? "Cargando doctores..." : !availabilityForm.specialty ? "Selecciona especialidad primero" : "Selecciona doctor"}
                 value={availabilityForm.doctor}
                 onChange={(value) => setAvailabilityForm({ ...availabilityForm, doctor: value })}
-                options={doctors.map((d) => ({
+                options={filteredDoctors.map((d) => ({
                   value: String(d.id),
                   label: d.name
                 }))}
+                disabled={!availabilityForm.specialty || loadingDoctors}
                 required
               />
 
@@ -190,30 +221,48 @@ const CreateAvailabilityModal = ({
               <div className="flex items-center justify-between flex-wrap gap-3">
                 <div className="flex flex-col">
                   <span className="font-medium text-sm">Distribuir cupos automáticamente</span>
-                  <span className="text-xs text-gray-600 max-w-sm">Si se activa, la capacidad se reparte aleatoriamente en los días hábiles desde la fecha de publicación hasta el día anterior a la fecha objetivo.</span>
+                  <span className="text-xs text-gray-600 max-w-sm">Si se activa, la capacidad se reparte aleatoriamente en los días hábiles desde la fecha de inicio hasta la fecha de fin especificadas.</span>
                 </div>
                 <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
                   <input
                     type="checkbox"
                     className="h-4 w-4 rounded border-gray-300"
-                    checked={!!availabilityForm.autoPreallocate}
-                    onChange={(e) => setAvailabilityForm({ ...availabilityForm, autoPreallocate: e.target.checked })}
+                    checked={!!availabilityForm.autoDistribute}
+                    onChange={(e) => setAvailabilityForm({ ...availabilityForm, autoDistribute: e.target.checked })}
                   />
                   Activar
                 </label>
               </div>
-              {availabilityForm.autoPreallocate && (
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {availabilityForm.autoDistribute && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <AnimatedInputField
-                    label="Fecha Publicación"
+                    label="Fecha de Inicio"
                     type="date"
-                    value={availabilityForm.preallocationPublishDate || ''}
-                    onChange={(value) => setAvailabilityForm({ ...availabilityForm, preallocationPublishDate: value })}
-                    inputProps={{ min: todayStr, max: availabilityForm.date || undefined }}
-                    placeholder="Desde cuándo liberar"
+                    value={availabilityForm.distributionStartDate || ''}
+                    onChange={(value) => setAvailabilityForm({ ...availabilityForm, distributionStartDate: value })}
+                    inputProps={{ min: todayStr }}
+                    placeholder="Fecha desde cuando distribuir"
+                    required={availabilityForm.autoDistribute}
                   />
-                  <div className="sm:col-span-2 text-xs text-gray-600 flex items-center">
-                    Si no se indica, se usará la fecha actual. Solo se cuentan días hábiles (lun-vie) antes del día de la agenda.
+                  <AnimatedInputField
+                    label="Fecha de Fin"
+                    type="date"
+                    value={availabilityForm.distributionEndDate || ''}
+                    onChange={(value) => setAvailabilityForm({ ...availabilityForm, distributionEndDate: value })}
+                    inputProps={{ min: availabilityForm.distributionStartDate || todayStr }}
+                    placeholder="Fecha hasta cuando distribuir"
+                    required={availabilityForm.autoDistribute}
+                  />
+                  <div className="sm:col-span-2 flex items-center gap-2">
+                    <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-gray-300"
+                        checked={!!availabilityForm.excludeWeekends}
+                        onChange={(e) => setAvailabilityForm({ ...availabilityForm, excludeWeekends: e.target.checked })}
+                      />
+                      Excluir fines de semana
+                    </label>
                   </div>
                 </div>
               )}

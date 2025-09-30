@@ -103,6 +103,7 @@ export const api = {
   getEPS: () => request<any>(`/lookups/eps`),
   // Doctores
   getDoctors: () => request<any[]>(`/doctors`),
+  getDoctorsBySpecialty: (specialtyId: number) => request<any[]>(`/doctors/by-specialty/${specialtyId}`),
   createDoctor: (data: any) => request<any>(`/doctors`, { method: 'POST', body: data }),
   updateDoctor: (id: number, data: any) => request<any>(`/doctors/${id}`, { method: 'PUT', body: data }),
   deleteDoctor: (id: number) => request<void>(`/doctors/${id}`, { method: 'DELETE' }),
@@ -158,6 +159,24 @@ export const api = {
   createAvailability: (data: any) => request<any>(`/availabilities`, { method: 'POST', body: data }),
   updateAvailability: (id: number, data: any) => request<any>(`/availabilities/${id}`, { method: 'PUT', body: data }),
   deleteAvailability: (id: number) => request<void>(`/availabilities/${id}`, { method: 'DELETE' }),
+  // Distribución de disponibilidades
+  getAvailabilityDistribution: (availabilityId: number) => request<any>(`/availabilities/${availabilityId}/distribution`),
+  getAllDistributions: () => request<any>(`/availabilities/distributions`),
+  getDistributionsByRange: (params: { start_date?: string; end_date?: string; doctor_id?: number; specialty_id?: number; location_id?: number }) => {
+    const queryParams = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') {
+        queryParams.append(key, value.toString());
+      }
+    });
+    const queryString = queryParams.toString();
+    return request<any>(`/availabilities/distributions/range${queryString ? `?${queryString}` : ''}`);
+  },
+  getDistributionStats: () => request<any>(`/availabilities/distributions/stats`),
+  updateDistributionAssigned: (distributionId: number, assigned: number) => 
+    request<any>(`/availabilities/distributions/${distributionId}/assigned`, { method: 'PUT', body: { assigned } }),
+  getActiveAvailabilities: () => request<any>(`/availabilities/active`),
+  regenerateDistribution: (availabilityId: number) => request<any>(`/availabilities/${availabilityId}/regenerate-distribution`, { method: 'POST' }),
   // Citas
   getAppointments: (status?: string, date?: string, availability_id?: number) => {
     const params = new URLSearchParams();
@@ -496,6 +515,16 @@ export const api = {
     request<{ success: boolean; data: { generated_count: number; slots: any[] } }>(`/agenda-templates/generate-bulk`, { method: 'POST', body: data }),
   duplicateAgendaTemplate: (id: number) =>
     request<{ success: boolean; data: any }>(`/agenda-templates/${id}/duplicate`, { method: 'POST' }),
+
+  // Opciones para filtros de distribución
+  getFilterOptions: () => request<{ 
+    success: boolean; 
+    data: { 
+      doctors: Array<{ id: number; name: string }>; 
+      specialties: Array<{ id: number; name: string }>; 
+      locations: Array<{ id: number; name: string }> 
+    } 
+  }>(`/availabilities/filters/options`),
 };
 
 export default api;

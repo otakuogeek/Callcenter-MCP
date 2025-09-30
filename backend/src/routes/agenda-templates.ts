@@ -56,7 +56,7 @@ router.get('/', async (req: Request, res: Response) => {
     if (location_id) { cond.push('at.location_id = ?'); params.push(location_id); }
     if (typeof active !== 'undefined') { cond.push('at.active = ?'); params.push(active === 'true' ? 1 : 0); }
     const where = cond.length? 'WHERE '+cond.join(' AND ') : '';
-    const [rows] = await pool.query(`SELECT at.*, d.name as doctor_name, s.name as specialty_name, l.name as location_name
+  const [rows] = await pool.query(`SELECT at.*, d.name as doctor_name, s.name as specialty_name, l.name as location_name
        FROM agenda_templates at
        LEFT JOIN doctors d ON at.doctor_id = d.id
        LEFT JOIN specialties s ON at.specialty_id = s.id

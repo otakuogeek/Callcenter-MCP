@@ -44,7 +44,10 @@ router.get('/overview', requireAuth, async (_req: Request, res: Response) => {
       max_wait_hm: fmt(max_wait_seconds),
       agents_available: agentsAvailable,
     });
-  } catch (e) {
+  } catch (e: any) {
+    if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
+      return res.json({ waiting: 0, avg_wait_seconds: 0, avg_wait_hm: '00:00', max_wait_seconds: 0, max_wait_hm: '00:00', agents_available: 0 });
+    }
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -63,7 +66,10 @@ router.get('/', requireAuth, async (_req: Request, res: Response) => {
        ORDER BY s.name ASC, q.created_at ASC`
     );
     return res.json(rows);
-  } catch {
+  } catch (e: any) {
+    if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
+      return res.json([]);
+    }
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -104,7 +110,10 @@ router.get('/grouped', requireAuth, async (_req: Request, res: Response) => {
       });
     }
     return res.json(Object.values(groups));
-  } catch (e) {
+  } catch (e: any) {
+    if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
+      return res.json([]);
+    }
     return res.status(500).json({ message: 'Server error' });
   }
 });

@@ -348,7 +348,7 @@ router.get('/resolutions', async (req: Request, res: Response) => {
         a.date as slot_date,
         a.start_time,
         a.end_time,
-        d.name as doctor_name
+  d.name as doctor_name
       FROM conflict_resolutions cr
       LEFT JOIN users u ON cr.resolved_by = u.id
       LEFT JOIN availabilities a ON cr.slot_id = a.id

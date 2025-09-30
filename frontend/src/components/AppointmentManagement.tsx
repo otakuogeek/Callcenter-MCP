@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from "@/components/ui/button";
-import { Plus, Calendar, Users, Filter, Search, X } from "lucide-react";
+import { Plus, Calendar, Filter, Search, X, Zap } from "lucide-react";
 import { useAppointmentData, type AvailabilityForm } from "@/hooks/useAppointmentData";
 import AppointmentFilters from "./AppointmentFilters";
 import AppointmentCalendar from "./AppointmentCalendar";
@@ -8,6 +8,8 @@ import EnhancedAppointmentCalendar from "./EnhancedAppointmentCalendar";
 import AvailabilityList from "./AvailabilityList";
 import CreateAvailabilityModal from "./CreateAvailabilityModal";
 import ViewAppointmentsModal from "./ViewAppointmentsModal";
+import DistributionCalendar from "./DistributionCalendar";
+import SmartAppointmentModal from "./SmartAppointmentModal";
 import { useToast } from "@/hooks/use-toast";
 import api from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -23,12 +25,13 @@ const AppointmentManagement = () => {
   const [date, setDate] = useState<Date | undefined>(new Date());
   const [isCreateAvailabilityOpen, setIsCreateAvailabilityOpen] = useState(false);
   const [isViewAppointmentsOpen, setIsViewAppointmentsOpen] = useState(false);
+  const [isSmartAppointmentOpen, setIsSmartAppointmentOpen] = useState(false);
   const [viewAppointmentsDate, setViewAppointmentsDate] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedLocation, setSelectedLocation] = useState("all");
   const [selectedSpecialty, setSelectedSpecialty] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
-  const [viewMode, setViewMode] = useState<"calendar" | "list">("calendar");
+  const [viewMode, setViewMode] = useState<"calendar" | "distribution">("calendar");
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [enhancedMode] = useState(true);
   const [enhancedFilters, setEnhancedFilters] = useState({
@@ -77,7 +80,11 @@ const AppointmentManagement = () => {
     capacity: 1,
   notes: "",
   autoPreallocate: false,
-  preallocationPublishDate: ''
+  preallocationPublishDate: '',
+  autoDistribute: false,
+  distributionStartDate: '',
+  distributionEndDate: '',
+  excludeWeekends: true
   });
 
   const validateAvailabilityForm = (form: AvailabilityForm): string[] => {
@@ -345,19 +352,30 @@ const AppointmentManagement = () => {
               Administra y supervisa las disponibilidades de consultas médicas
             </p>
           </div>
-          <div className="flex items-center gap-4">
-            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "calendar" | "list")} className="bg-white/80 backdrop-blur-sm rounded-xl p-1 shadow-lg border border-white/20">
+          <div className="flex items-center gap-3">
+            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "calendar" | "distribution")} className="bg-white/80 backdrop-blur-sm rounded-xl p-1 shadow-lg border border-white/20">
               <TabsList className="grid w-full grid-cols-2 gap-1">
                 <TabsTrigger value="calendar" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
                   <Calendar className="w-4 h-4" />
                   <span className="hidden sm:inline">Calendario</span>
                 </TabsTrigger>
-                <TabsTrigger value="list" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
-                  <Users className="w-4 h-4" />
-                  <span className="hidden sm:inline">Lista</span>
+                <TabsTrigger value="distribution" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
+                  <Calendar className="w-4 h-4" />
+                  <span className="hidden sm:inline">Distribución</span>
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            
+            <Button 
+              onClick={() => setIsSmartAppointmentOpen(true)}
+              className="bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 shadow-xl hover:shadow-2xl transform hover:scale-105 transition-all duration-200 flex items-center gap-2"
+              size="lg"
+            >
+              <Zap className="w-5 h-5" />
+              <span className="hidden sm:inline">Nueva Cita</span>
+              <span className="sm:hidden">Cita</span>
+            </Button>
+            
             <Button 
               onClick={() => {
                 console.log('Opening create availability modal...');
@@ -368,7 +386,7 @@ const AppointmentManagement = () => {
             >
               <Plus className="w-5 h-5" />
               <span className="hidden sm:inline">Crear Agenda</span>
-              <span className="sm:hidden">Crear</span>
+              <span className="sm:hidden">Agenda</span>
             </Button>
           </div>
         </div>
@@ -521,12 +539,21 @@ const AppointmentManagement = () => {
             </div>
           </TabsContent>
 
-          <TabsContent value="list" className="space-y-6">
-            {/* Vista de lista completa sin calendario */}
-            <AvailabilityList 
-              date={date} 
-              filteredAvailabilities={filteredAvailabilities} 
-            />
+          <TabsContent value="distribution" className="space-y-6">
+            {/* Vista de distribución de cupos */}
+            <Card className="border-0 shadow-xl bg-white/95 backdrop-blur-sm">
+              <CardHeader>
+                <CardTitle className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                  Distribución de Cupos
+                </CardTitle>
+                <p className="text-gray-600">
+                  Visualiza la distribución automática de cupos por día y doctor
+                </p>
+              </CardHeader>
+              <CardContent>
+                <DistributionCalendar />
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
 
@@ -550,6 +577,31 @@ const AppointmentManagement = () => {
           isOpen={isViewAppointmentsOpen}
           onClose={() => setIsViewAppointmentsOpen(false)}
           date={viewAppointmentsDate}
+        />
+
+        {/* Modal Asignación Inteligente de Citas */}
+        <SmartAppointmentModal
+          isOpen={isSmartAppointmentOpen}
+          onClose={() => setIsSmartAppointmentOpen(false)}
+          onSuccess={(result) => {
+            // Recargar datos después de crear una cita o agregar a cola
+            loadAvailabilities();
+            loadCalendarSummary();
+            
+            if (result.assignmentType === 'appointment') {
+              toast({
+                title: "¡Cita creada exitosamente!",
+                description: result.message,
+                variant: "default",
+              });
+            } else {
+              toast({
+                title: "Agregado a cola de espera",
+                description: result.message,
+                variant: "default",
+              });
+            }
+          }}
         />
 
         {/* Confirmación de auto-cancelación */}

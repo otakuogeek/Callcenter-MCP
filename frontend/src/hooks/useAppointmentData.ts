@@ -44,6 +44,11 @@ export interface AvailabilityForm {
   notes: string;
   autoPreallocate?: boolean;
   preallocationPublishDate?: string; // YYYY-MM-DD opcional
+  // Nuevos campos para distribución automática
+  autoDistribute?: boolean;
+  distributionStartDate?: string; // YYYY-MM-DD
+  distributionEndDate?: string; // YYYY-MM-DD
+  excludeWeekends?: boolean;
 }
 
 export const useAppointmentData = () => {
@@ -167,6 +172,16 @@ export const useAppointmentData = () => {
 
   const getActiveLocations = () => locations.filter(l => l.status === 'Activa');
 
+  const getDoctorsBySpecialty = async (specialtyId: number) => {
+    try {
+      const doctors = await api.getDoctorsBySpecialty(specialtyId);
+      return (doctors || []).map((d: any) => ({ id: d.id, name: d.name }));
+    } catch (error) {
+      console.error('Error fetching doctors by specialty:', error);
+      return [];
+    }
+  };
+
   const addAvailability = async (availabilityData: AvailabilityForm) => {
     if (!availabilityData) {
       console.error('[addAvailability] availabilityData undefined');
@@ -196,6 +211,11 @@ export const useAppointmentData = () => {
           notes: availabilityData.notes,
           auto_preallocate: availabilityData.autoPreallocate || false,
           preallocation_publish_date: availabilityData.preallocationPublishDate || undefined,
+          // Campos de distribución automática
+          auto_distribute: availabilityData.autoDistribute || false,
+          distribution_start_date: availabilityData.distributionStartDate || undefined,
+          distribution_end_date: availabilityData.distributionEndDate || undefined,
+          exclude_weekends: availabilityData.excludeWeekends ?? true,
         });
         // Recargar las disponibilidades para la fecha especificada
         await loadAvailabilities(availabilityData.date);
@@ -249,6 +269,7 @@ export const useAppointmentData = () => {
     getActiveLocations,
     doctors,
     specialtiesAll,
+    getDoctorsBySpecialty,
     addAvailability,
     updateAvailabilityStatus,
     updateAvailability

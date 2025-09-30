@@ -23,62 +23,11 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
   disabled,
   ...props
 }) => {
-  const animations = {
-    bounce: {
-      whileHover: { scale: 1.05, y: -2 },
-      whileTap: { scale: 0.95 },
-      transition: { type: "spring", stiffness: 400, damping: 10 }
-    },
-    pulse: {
-      whileHover: { scale: 1.02 },
-      whileTap: { scale: 0.98 },
-      animate: loading ? { scale: [1, 1.02, 1] } : {},
-      transition: loading ? { duration: 1, repeat: Infinity } : { duration: 0.2 }
-    },
-    shake: {
-      whileHover: { x: [0, -1, 1, 0] },
-      whileTap: { scale: 0.95 },
-      transition: { duration: 0.2 }
-    },
-    glow: {
-      whileHover: { 
-        boxShadow: "0 0 20px rgba(59, 130, 246, 0.5)",
-        scale: 1.02 
-      },
-      whileTap: { scale: 0.98 },
-      transition: { duration: 0.2 }
-    },
-    scale: {
-      whileHover: { scale: 1.02 },
-      whileTap: { scale: 0.98 },
-      transition: { duration: 0.1 }
-    }
-  };
-
-  const successVariants = {
-    initial: { scale: 1 },
-    success: { 
-      scale: [1, 1.1, 1],
-      backgroundColor: "#10b981",
-      transition: { duration: 0.6 }
-    }
-  };
-
-  const loadingVariants = {
-    animate: {
-      rotate: 360,
-      transition: { duration: 1, repeat: Infinity, ease: "linear" }
-    }
-  };
-
-  const currentAnimation = animations[animation];
-
   return (
     <motion.div
-      {...currentAnimation}
-      animate={success ? "success" : currentAnimation.animate}
-      variants={success ? successVariants : undefined}
-      initial={success ? "initial" : undefined}
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+      transition={{ type: "spring", stiffness: 400, damping: 17 }}
     >
       <Button
         variant={variant}
@@ -94,8 +43,8 @@ export const AnimatedButton: React.FC<AnimatedButtonProps> = ({
       >
         {loading && (
           <motion.div
-            variants={loadingVariants}
-            animate="animate"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
             className="absolute inset-0 flex items-center justify-center"
           >
             <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
@@ -267,9 +216,9 @@ export const AnimatedToggle: React.FC<AnimatedToggleProps> = ({
   size = 'md'
 }) => {
   const sizes = {
-    sm: { track: 'w-8 h-4', thumb: 'w-3 h-3' },
-    md: { track: 'w-10 h-5', thumb: 'w-4 h-4' },
-    lg: { track: 'w-12 h-6', thumb: 'w-5 h-5' }
+    sm: { track: 'w-8 h-4', thumb: 'w-3 h-3', offset: 16 },
+    md: { track: 'w-10 h-5', thumb: 'w-4 h-4', offset: 20 },
+    lg: { track: 'w-12 h-6', thumb: 'w-5 h-5', offset: 24 }
   };
 
   const currentSize = sizes[size];
@@ -299,13 +248,12 @@ export const AnimatedToggle: React.FC<AnimatedToggleProps> = ({
         whileTap={!disabled ? { scale: 0.95 } : {}}
       >
         <motion.span
-          layout
           className={cn(
             "inline-block rounded-full bg-white shadow-md",
             currentSize.thumb
           )}
           animate={{
-            x: checked ? (currentSize.track.includes('8') ? 16 : currentSize.track.includes('10') ? 20 : 24) : 2
+            x: checked ? currentSize.offset : 2
           }}
           transition={{ type: "spring", stiffness: 500, damping: 30 }}
         />

@@ -65,7 +65,10 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       values
     );
     return res.json(rows);
-  } catch (e) {
+  } catch (e: any) {
+    if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
+      return res.json([]);
+    }
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -201,8 +204,8 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     if (d.manual) {
       try {
         const [rows] = await pool.query(
-          `SELECT p.email AS patient_email, p.name AS patient_name,
-                  d.name AS doctor_name, s.name AS specialty_name, l.name AS location_name
+    `SELECT p.email AS patient_email, p.name AS patient_name,
+      d.name AS doctor_name, s.name AS specialty_name, l.name AS location_name
            FROM patients p, doctors d, specialties s, locations l
            WHERE p.id = ? AND d.id = ? AND s.id = ? AND l.id = ?
            LIMIT 1`,

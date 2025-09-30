@@ -120,8 +120,8 @@ async function processVoiceMessage(message: string, from: string, context?: any)
     message: response.message,
     followUpQuestions: response.followUpQuestions || [],
     suggestedActions: response.suggestedActions || [],
-    requiresHumanIntervention: response.requiresHumanIntervention || false,
-    mcpToolsUsed: response.mcpToolsUsed || [],
+    requiresHumanIntervention: (response as any).requiresHumanIntervention || false,
+    mcpToolsUsed: (response as any).mcpToolsUsed || [],
     confidence: response.confidence || 0.8,
     extractedData,
     intent
@@ -234,7 +234,7 @@ async function generateContextualResponse(intent: string, message: string, extra
     }
   };
 
-  let response = responses[intent] || {
+  let response = responses[intent as keyof typeof responses] || {
     message: 'He recibido su mensaje. ¿Podría especificar cómo puedo ayudarle? Puede solicitar citas, registrarse como paciente o consultar información.',
     followUpQuestions: ['¿Desea agendar una cita médica?', '¿Es nuevo paciente?', '¿Necesita información sobre servicios?'],
     suggestedActions: ['clarify_intent'],
@@ -250,7 +250,7 @@ async function generateContextualResponse(intent: string, message: string, extra
       
       if (registrationResult.success) {
         response.message = `Perfecto, ${extractedData.name}. Su registro ha sido completado exitosamente con el documento ${extractedData.document}. ¿Desea agendar una cita?`;
-        response.mcpToolsUsed = ['createSimplePatient'];
+        (response as any).mcpToolsUsed = ['createSimplePatient'];
         response.confidence = 0.95;
         response.followUpQuestions = ['¿Para qué especialidad desea la cita?', '¿Qué fecha prefiere?'];
       }
@@ -361,7 +361,7 @@ async function checkDoctorAvailability(params: any) {
     
     // Simulación básica de disponibilidad
     const [rows] = await pool.execute(
-      `SELECT d.id, d.name, s.name as specialty_name
+      `SELECT d.id, d.name AS name, s.name as specialty_name
        FROM doctors d 
        JOIN specialties s ON d.specialty_id = s.id
        WHERE s.name LIKE ?

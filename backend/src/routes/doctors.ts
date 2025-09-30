@@ -17,31 +17,52 @@ const doctorSchema = z.object({
 
 router.get('/', requireAuth, async (_req: Request, res: Response) => {
   try {
+    // Corregido: usar campo 'name' que existe en la tabla
     const [doctors] = await pool.query<any[]>(
-      'SELECT * FROM doctors ORDER BY name ASC'
+      `SELECT 
+         id,
+         name,
+         email,
+         phone,
+         license_number,
+         CASE WHEN active IS NULL THEN 1 ELSE active END AS active
+       FROM doctors
+       ORDER BY name ASC`
     );
-    const [specRows] = await pool.query<any[]>(
-      `SELECT ds.doctor_id, s.id, s.name
-       FROM doctor_specialties ds
-       JOIN specialties s ON s.id = ds.specialty_id`
-    );
-    const [locRows] = await pool.query<any[]>(
-      `SELECT dl.doctor_id, l.id, l.name
-       FROM doctor_locations dl
-       JOIN locations l ON l.id = dl.location_id`
-    );
+
+    // Intentar cargar especialidades/ubicaciones si existen las tablas, si no, devolver vacíos
+    let specRows: any[] = [];
+    let locRows: any[] = [];
+    try {
+      const [specs] = await pool.query<any[]>(
+        `SELECT ds.doctor_id, s.id, s.name
+         FROM doctor_specialties ds
+         JOIN specialties s ON s.id = ds.specialty_id`
+      );
+      specRows = Array.isArray(specs) ? specs : [];
+    } catch {}
+    try {
+      const [locs] = await pool.query<any[]>(
+        `SELECT dl.doctor_id, l.id, l.name
+         FROM doctor_locations dl
+         JOIN locations l ON l.id = dl.location_id`
+      );
+      locRows = Array.isArray(locs) ? locs : [];
+    } catch {}
+
     const map = new Map<number, any[]>();
-    for (const r of specRows as any[]) {
+    for (const r of specRows) {
       const arr = map.get(Number(r.doctor_id)) || [];
       arr.push({ id: Number(r.id), name: r.name });
       map.set(Number(r.doctor_id), arr);
     }
     const locMap = new Map<number, any[]>();
-    for (const r of locRows as any[]) {
+    for (const r of locRows) {
       const arr = locMap.get(Number(r.doctor_id)) || [];
       arr.push({ id: Number(r.id), name: r.name });
       locMap.set(Number(r.doctor_id), arr);
     }
+
     const withSpecs = (doctors as any[]).map((d) => ({
       ...d,
       specialties: map.get(Number(d.id)) || [],
@@ -58,7 +79,14 @@ router.get('/search/q', requireAuth, async (req: Request, res: Response) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.json([]);
   try {
-    const [rows] = await pool.query('SELECT id, name FROM doctors WHERE name LIKE ? ORDER BY name ASC LIMIT 20', ['%'+q+'%']);
+    const [rows] = await pool.query(
+      `SELECT id, CONCAT(first_name,' ',last_name) AS name
+       FROM doctors
+       WHERE CONCAT(first_name,' ',last_name) LIKE ?
+       ORDER BY first_name ASC, last_name ASC
+       LIMIT 20`,
+      ['%' + q + '%']
+    );
     return res.json(rows);
   } catch { return res.status(500).json({ message: 'Server error' }); }
 });
@@ -217,6 +245,36 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     return res.status(500).json({ message: 'Server error' });
   } finally {
     conn.release();
+  }
+});
+
+// Nuevo endpoint: obtener doctores por especialidad
+router.get('/by-specialty/:specialtyId', requireAuth, async (req: Request, res: Response) => {
+  const specialtyId = Number(req.params.specialtyId);
+  if (Number.isNaN(specialtyId)) {
+    return res.status(400).json({ message: 'Invalid specialty ID' });
+  }
+
+  try {
+    const [doctors] = await pool.query<any[]>(
+      `SELECT DISTINCT 
+         d.id,
+         d.name,
+         d.email,
+         d.phone,
+         d.license_number,
+         CASE WHEN d.active IS NULL THEN 1 ELSE d.active END AS active
+       FROM doctors d
+       INNER JOIN doctor_specialties ds ON ds.doctor_id = d.id
+       WHERE ds.specialty_id = ? AND (d.active IS NULL OR d.active = 1)
+       ORDER BY d.name ASC`,
+      [specialtyId]
+    );
+
+    return res.json(doctors || []);
+  } catch (error) {
+    console.error('Error fetching doctors by specialty:', error);
+    return res.status(500).json({ message: 'Server error' });
   }
 });
 

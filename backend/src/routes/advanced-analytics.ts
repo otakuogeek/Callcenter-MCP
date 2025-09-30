@@ -110,7 +110,7 @@ router.get('/doctor-performance', requireAuth, async (req: Request, res: Respons
       FROM appointments a
       JOIN doctors d ON d.id = a.doctor_id
       ${whereClause}
-      GROUP BY d.id, d.name
+      GROUP BY d.id, doctor_name
       ORDER BY total_appointments DESC
       LIMIT 20
     `);

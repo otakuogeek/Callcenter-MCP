@@ -52,6 +52,7 @@ interface PatientDetailsModalProps {
 const PatientDetailsModal = ({ patient, isOpen, onClose, onSave }: PatientDetailsModalProps) => {
   const [isEditMode, setIsEditMode] = useState(false);
   const [municipalities, setMunicipalities] = useState<any[]>([]);
+  const [documentTypes, setDocumentTypes] = useState<any[]>([]);
   const [fullPatientData, setFullPatientData] = useState<PatientDetail | null>(null);
   const { toast } = useToast();
 
@@ -76,7 +77,32 @@ const PatientDetailsModal = ({ patient, isOpen, onClose, onSave }: PatientDetail
 
   useEffect(() => {
     if (patient && isOpen) {
-      loadFullPatientData(patient.id);
+      loadFullPatientData(String(patient.id));
+      
+      // Cargar datos de referencia
+      const loadReferenceData = async () => {
+        try {
+          // Cargar municipios
+          const municipalitiesResponse = await api.getMunicipalities();
+          setMunicipalities(municipalitiesResponse || []);
+          
+          // Cargar tipos de documento
+          const docTypesResponse = await api.getDocumentTypes();
+          setDocumentTypes(docTypesResponse || []);
+        } catch (error) {
+          console.error('Error loading reference data:', error);
+          // Datos por defecto en caso de error
+          setMunicipalities([]);
+          setDocumentTypes([
+            { id: 'CC', nombre: 'Cédula de Ciudadanía' },
+            { id: 'TI', nombre: 'Tarjeta de Identidad' },
+            { id: 'CE', nombre: 'Cédula de Extranjería' },
+            { id: 'PA', nombre: 'Pasaporte' }
+          ]);
+        }
+      };
+      
+      loadReferenceData();
     }
   }, [patient, isOpen]);
 
@@ -163,7 +189,7 @@ const PatientDetailsModal = ({ patient, isOpen, onClose, onSave }: PatientDetail
     if (!displayPatient) return;
 
     try {
-      await api.updatePatientV2(displayPatient.id, data);
+      await api.updatePatientV2(String(displayPatient.id), data);
       toast({
         title: "Paciente actualizado",
         description: "Los datos del paciente han sido actualizados exitosamente.",

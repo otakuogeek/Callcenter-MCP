@@ -10,6 +10,7 @@ import apiRouter from './routes';
 import bootstrap from './db/bootstrap';
 import path from 'path';
 import fs from 'fs';
+import { initializeOutboundCallManager, shutdownOutboundCallManager } from './config/outbound';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim().length < 16) {
@@ -46,8 +47,32 @@ app.use(compression({
   },
 }));
 app.use(pinoHttp({ logger }));
+// Rate limiting con configuración mejorada para trust proxy
 if (process.env.NODE_ENV !== 'test') {
-  app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 1000 }));
+  app.use(rateLimit({ 
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 1000, // límite por ventana de tiempo
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Deshabilitar validación permisiva de trust proxy
+    validate: {
+      trustProxy: false,
+    },
+    // Key generator personalizado para manejar IPs detrás de proxy
+    keyGenerator: (req) => {
+      // Usar IP del header X-Forwarded-For si está disponible
+      const forwarded = req.headers['x-forwarded-for'];
+      if (forwarded && typeof forwarded === 'string') {
+        return forwarded.split(',')[0].trim();
+      }
+      // Fallback a la IP de conexión directa
+      return req.socket.remoteAddress || 'unknown';
+    },
+    skip: (req) => {
+      // Omitir rate limiting para endpoints de salud y webhooks
+      return req.path === '/health' || req.path === '/ready' || req.path.startsWith('/api/webhooks');
+    }
+  }));
 }
 // Responder preflight usando las mismas reglas
 app.options('*', cors(corsOptions));
@@ -67,9 +92,35 @@ if (!fs.existsSync(uploadsDir)) {
 }
 app.use('/uploads', express.static(uploadsDir));
 
+// Servir archivos estáticos del dashboard
+const publicDir = path.resolve(__dirname, '../public');
+if (!fs.existsSync(publicDir)) {
+  fs.mkdirSync(publicDir, { recursive: true });
+}
+app.use('/dashboard', express.static(publicDir));
+
 // Inicializaciones DB ligeras (no bloqueantes si fallan)
 // Montar rutas inmediatamente
 app.use('/api', apiRouter);
+// Fallback endpoints returning empty responses
+app.get('/api/especialidades', (_req, res) => res.json([]));
+app.get('/api/ubicaciones', (_req, res) => res.json([]));
+app.get('/api/zonas', (_req, res) => res.json([]));
+app.get('/api/municipios', (_req, res) => res.json([]));
+app.get('/api/servicios', (_req, res) => res.json([]));
+app.get('/api/eps', (_req, res) => res.json([]));
+
+// Inicializar OutboundCallManager si está habilitado
+if (process.env.OUTBOUND_ENABLED === 'true') {
+  initializeOutboundCallManager()
+    .then((manager) => {
+      app.locals.outboundManager = manager;
+      logger.info('OutboundCallManager initialized and attached to app');
+    })
+    .catch((error) => {
+      logger.error({ error }, 'Failed to initialize OutboundCallManager');
+    });
+}
 
 // 404 handler (después de montar rutas /api)
 app.use((req, res, next) => {
@@ -93,4 +144,17 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 
 app.listen(port, host as any, () => {
   logger.info({ port, host, origins }, 'API listening');
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, shutting down gracefully');
+  await shutdownOutboundCallManager();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received, shutting down gracefully');
+  await shutdownOutboundCallManager();
+  process.exit(0);
 });

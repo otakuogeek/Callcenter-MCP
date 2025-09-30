@@ -28,11 +28,13 @@ import appointmentBilling from './appointmentBilling';
 // Rutas mejoradas existentes
 import notifications from './notifications';
 import documents from './documents';
+import outbound from './outbound';
 import metrics from './metrics';
 import audit from './audit';
 import sessions from './sessions';
 // Nuevas rutas para Biosanarcall 2025
 import patientsUpdated from './patients-updated';
+import patientsEnhanced from './patients-enhanced';
 import lookups from './lookups';
 import webhooks from './webhooks';
 // Rutas avanzadas de gestión de agenda
@@ -40,6 +42,13 @@ import agendaTemplates from './agenda-templates';
 import agendaOptimization from './agenda-optimization';
 import agendaConflicts from './agenda-conflicts';
 import voiceAgent from './voiceAgent';
+import outboundPublic from './outbound-public';
+// Nuevas rutas de endpoints avanzados
+import search from './search';
+import exportReports from './export-reports';
+// Sistema de asignación diaria y cola de espera
+import dailyQueue from './daily-queue';
+import autoAssignment from './auto-assignment';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -109,6 +118,7 @@ router.use('/audit', audit);
 router.use('/sessions', sessions);
 // Nuevas rutas Biosanarcall 2025
 router.use('/patients-v2', patientsUpdated);
+router.use('/patients-enhanced', patientsEnhanced);
 router.use('/lookups', lookups);
 router.use('/webhooks', webhooks);
 // Rutas avanzadas de gestión de agenda
@@ -117,6 +127,16 @@ router.use('/agenda-optimization', agendaOptimization);
 router.use('/agenda-conflicts', agendaConflicts);
 // Ruta del agente de voz para procesamiento de llamadas
 router.use('/voice-agent', voiceAgent);
+router.use('/outbound', outbound);
+// Rutas públicas de outbound (sin autenticación para testing)
+router.use('/outbound-public', outboundPublic);
+// Nuevas rutas avanzadas de endpoints
+router.use('/search', search);
+router.use('/export', exportReports);
+router.use('/notifications', notifications);
+// Sistema de asignación diaria y cola de espera
+router.use('/daily-queue', dailyQueue);
+router.use('/auto-assignment', autoAssignment);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)

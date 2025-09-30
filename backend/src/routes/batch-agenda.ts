@@ -367,7 +367,7 @@ router.get('/batches', requireAuth, async (req: Request, res: Response) => {
     const offset = (page - 1) * limit;
 
     const [batches] = await pool.query(
-      `SELECT bo.*, d.first_name, d.last_name, l.name as location_name, s.name as specialty_name
+      `SELECT bo.*, d.name, l.name as location_name, s.name as specialty_name
        FROM batch_operations bo
        LEFT JOIN doctors d ON bo.doctor_id = d.id
        LEFT JOIN locations l ON d.location_id = l.id

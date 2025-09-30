@@ -60,6 +60,11 @@ const managementItems = [
     icon: Clock,
   },
   {
+    title: "Cola Diaria",
+    url: "/daily-queue",
+    icon: Calendar,
+  },
+  {
     title: "Agentes",
     url: "/agents",
     icon: HeadphonesIcon,
@@ -83,7 +88,11 @@ const analyticsItems = [
     url: "/analytics",
     icon: BarChart3,
   },
- 
+  {
+    title: "Distribución",
+    url: "/distribution",
+    icon: Calendar,
+  },
 ];
 
 // Nuevos items para funcionalidades mejoradas

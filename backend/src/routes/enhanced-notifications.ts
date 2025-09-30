@@ -130,7 +130,10 @@ router.get('/pending', requireAuth, async (req: Request, res: Response) => {
       }
     });
 
-  } catch (error) {
+  } catch (error: any) {
+    if (error && (error.code === 'ER_NO_SUCH_TABLE' || error.errno === 1146)) {
+      return res.json({ success: true, data: { notifications: [], total_pending: 0 } });
+    }
     console.error('Error obteniendo notificaciones pendientes:', error);
     return res.status(500).json({
       success: false,
@@ -170,49 +173,32 @@ router.patch('/:id/process', requireAuth, async (req: Request, res: Response) =>
 // Obtener estadísticas de notificaciones
 router.get('/stats', requireAuth, async (req: Request, res: Response) => {
   const days = Number(req.query.days) || 30;
-
   try {
-    const [stats] = await pool.query(`
-      SELECT
-        COUNT(*) as total_notifications,
-        SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) as sent_count,
-        SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as failed_count,
-        SUM(CASE WHEN status = 'Pending' THEN 1 ELSE 0 END) as pending_count,
-        AVG(CASE WHEN processed_at IS NOT NULL THEN TIMESTAMPDIFF(SECOND, scheduled_time, processed_at) END) as avg_processing_time,
-        SUM(CASE WHEN notification_type = 'email' THEN 1 ELSE 0 END) as email_count,
-        SUM(CASE WHEN notification_type = 'sms' THEN 1 ELSE 0 END) as sms_count,
-        SUM(CASE WHEN notification_type = 'whatsapp' THEN 1 ELSE 0 END) as whatsapp_count
-      FROM appointment_notification_schedule
-      WHERE scheduled_time >= DATE_SUB(NOW(), INTERVAL ? DAY)
-    `, [days]);
-
-    // Tasa de éxito por tipo
-    const [successRates] = await pool.query(`
-      SELECT
-        notification_type,
-        COUNT(*) as total,
-        SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) as sent,
-        ROUND((SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) as success_rate
-      FROM appointment_notification_schedule
-      WHERE scheduled_time >= DATE_SUB(NOW(), INTERVAL ? DAY)
-      GROUP BY notification_type
-    `, [days]);
-
-    return res.json({
-      success: true,
-      data: {
-        overall_stats: (stats as any[])[0],
-        success_rates_by_type: successRates,
-        period_days: days
-      }
-    });
-
-  } catch (error) {
+    const [overallRows]: any = await pool.query(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) AS sent
+       FROM appointment_notification_schedule
+       WHERE scheduled_time >= DATE_SUB(NOW(), INTERVAL ? DAY)`,
+      [days]
+    );
+    const [byTypeRows]: any = await pool.query(
+      `SELECT notification_type,
+              COUNT(*) AS total,
+              SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) AS sent,
+              ROUND((SUM(CASE WHEN status = 'Sent' THEN 1 ELSE 0 END) / COUNT(*)) * 100, 2) AS success_rate
+       FROM appointment_notification_schedule
+       WHERE scheduled_time >= DATE_SUB(NOW(), INTERVAL ? DAY)
+       GROUP BY notification_type`,
+      [days]
+    );
+    const overall = Array.isArray(overallRows) && overallRows[0] ? overallRows[0] : { total: 0, sent: 0 };
+    return res.json({ success: true, data: { overall_stats: overall, success_rates_by_type: byTypeRows, period_days: days } });
+  } catch (error: any) {
+    if (error && (error.code === 'ER_NO_SUCH_TABLE' || error.errno === 1146)) {
+      return res.json({ success: true, data: { overall_stats: { total: 0, sent: 0 }, success_rates_by_type: [], period_days: days } });
+    }
     console.error('Error obteniendo estadísticas:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor'
-    });
+    return res.status(500).json({ success: false, message: 'Error interno del servidor' });
   }
 });
 

@@ -3,6 +3,8 @@ import cors from 'cors';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
 import { setupPatientModularRoutes } from './patient-modular';
+import { ENHANCED_MEDICAL_TOOLS, executeEnhancedMedicalTool } from './enhanced-medical-tools-simple';
+import { PATIENT_MANAGEMENT_TOOLS, executePatientManagementTool } from './patient-management-advanced';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -90,9 +92,11 @@ function createErrorResponse(id: string | number, code: number, message: string,
   };
 }
 
-// Herramientas MCP unificadas - Sistema médico completo
+// Herramientas MCP unificadas - Sistema médico completo (expandido con herramientas mejoradas)
 const UNIFIED_TOOLS = [
-  // === PACIENTES ===
+  ...ENHANCED_MEDICAL_TOOLS,
+  ...PATIENT_MANAGEMENT_TOOLS,
+  // === PACIENTES ORIGINALES (MANTENIDOS PARA COMPATIBILIDAD) ===
   {
     name: 'searchPatients',
     description: 'Buscar pacientes por nombre, documento o teléfono',
@@ -667,9 +671,22 @@ const UNIFIED_TOOLS = [
   }
 ];
 
-// Implementación de herramientas
+// Implementación de herramientas (expandida con herramientas mejoradas)
 async function executeToolCall(name: string, args: any): Promise<any> {
   try {
+    // Primero verificar si es una herramienta médica mejorada
+    const enhancedToolNames = ENHANCED_MEDICAL_TOOLS.map(tool => tool.name);
+    if (enhancedToolNames.includes(name)) {
+      return await executeEnhancedMedicalTool(name, args, pool);
+    }
+    
+    // Verificar si es una herramienta de gestión de pacientes avanzada
+    const patientToolNames = PATIENT_MANAGEMENT_TOOLS.map(tool => tool.name);
+    if (patientToolNames.includes(name)) {
+      return await executePatientManagementTool(name, args, pool);
+    }
+    
+    // Si no es una herramienta mejorada, continuar con las herramientas originales
     switch (name) {
       case 'searchPatients':
         return await searchPatients(args.q, args.limit || 20);
@@ -1519,10 +1536,56 @@ setupPatientModularRoutes(app, pool);
 
 // === ENDPOINTS MCP ===
 
+// Ruta GET para mostrar información del servidor MCP
+app.get('/mcp-unified', (req, res) => {
+  res.json({
+    name: "Biosanarcall Medical MCP Server",
+    version: "1.0.0",
+    description: "Servidor MCP unificado para gestión médica con 42 herramientas especializadas",
+    protocol: "JSON-RPC 2.0",
+    endpoint: "/mcp-unified",
+    method: "POST",
+    tools_count: UNIFIED_TOOLS.length,
+    categories: [
+      "Gestión de Pacientes",
+      "Sistema de Citas",
+      "Análisis y Reportes",
+      "Notificaciones",
+      "Operaciones de Archivo"
+    ],
+    usage: {
+      example_request: {
+        jsonrpc: "2.0",
+        id: "test",
+        method: "tools/list"
+      },
+      content_type: "application/json"
+    },
+    status: "active",
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Endpoint principal para tools/list
 app.post('/mcp-unified', async (req, res) => {
   try {
     const request: JSONRPCRequest = req.body;
+    
+    // Soporte para inicialización MCP
+    if (request.method === 'initialize') {
+      return res.json(createSuccessResponse(request.id, {
+        protocolVersion: "2025-03-26",
+        capabilities: {
+          tools: {
+            listChanged: true
+          }
+        },
+        serverInfo: {
+          name: "Biosanarcall Medical MCP Server",
+          version: "1.0.0"
+        }
+      }));
+    }
     
     if (request.method === 'tools/list') {
       return res.json(createSuccessResponse(request.id, {
@@ -1541,6 +1604,78 @@ app.post('/mcp-unified', async (req, res) => {
   } catch (error: any) {
     console.error('Error en MCP unified:', error);
     return res.json(createErrorResponse(req.body?.id || 'unknown', -32603, error.message));
+  }
+});
+
+// Endpoint ULTRA-OPTIMIZADO específico para ElevenLabs
+app.post('/elevenlabs-mcp', async (req, res) => {
+  // Headers optimizados para ElevenLabs
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('X-ElevenLabs-Optimized', 'true');
+  res.setHeader('X-Response-Time', Date.now());
+  
+  try {
+    const request: JSONRPCRequest = req.body;
+    
+    // Soporte para inicialización de ElevenLabs
+    if (request.method === 'initialize') {
+      return res.json({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          protocolVersion: "2025-03-26",
+          capabilities: {
+            tools: {
+              listChanged: true
+            }
+          },
+          serverInfo: {
+            name: "Biosanarcall Medical MCP Server",
+            version: "1.0.0"
+          }
+        }
+      });
+    }
+    
+    // Respuesta ultra-rápida para tools/list
+    if (request.method === 'tools/list') {
+      const response = {
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          tools: UNIFIED_TOOLS
+        }
+      };
+      return res.json(response);
+    }
+    
+    // Ejecución de herramientas optimizada
+    if (request.method === 'tools/call') {
+      const { name, arguments: args } = request.params;
+      const result = await executeToolCall(name, args || {});
+      return res.json({
+        jsonrpc: "2.0", 
+        id: request.id, 
+        result: { 
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] 
+        }
+      });
+    }
+    
+    return res.json({
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: -32601, message: 'Método no encontrado' }
+    });
+    
+  } catch (error: any) {
+    console.error('Error en ElevenLabs MCP:', error);
+    return res.json({
+      jsonrpc: "2.0",
+      id: req.body?.id || 'unknown',
+      error: { code: -32603, message: error.message }
+    });
   }
 });
 
