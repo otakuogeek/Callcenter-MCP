@@ -1,7 +1,7 @@
 
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
-import CalendarCentricDashboard from "@/components/CalendarCentricDashboard";
+import AppointmentsDashboard from "@/components/AppointmentsDashboard";
 
 const Index = () => {
   return (
@@ -12,7 +12,7 @@ const Index = () => {
           <div className="mb-4">
             <SidebarTrigger className="text-medical-600 hover:text-medical-800" />
           </div>
-          <CalendarCentricDashboard />
+          <AppointmentsDashboard />
         </main>
       </div>
     </SidebarProvider>

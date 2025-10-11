@@ -2,9 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
-import { setupPatientModularRoutes } from './patient-modular';
-import { ENHANCED_MEDICAL_TOOLS, executeEnhancedMedicalTool } from './enhanced-medical-tools-simple';
-import { PATIENT_MANAGEMENT_TOOLS, executePatientManagementTool } from './patient-management-advanced';
 
 // Cargar variables de entorno
 dotenv.config();
@@ -92,756 +89,1701 @@ function createErrorResponse(id: string | number, code: number, message: string,
   };
 }
 
-// Herramientas MCP unificadas - Sistema médico completo (expandido con herramientas mejoradas)
+// ===================================================================
+// HERRAMIENTAS MCP PARA REGISTRO DE PACIENTES Y CITAS MÉDICAS
+// ===================================================================
 const UNIFIED_TOOLS = [
-  ...ENHANCED_MEDICAL_TOOLS,
-  ...PATIENT_MANAGEMENT_TOOLS,
-  // === PACIENTES ORIGINALES (MANTENIDOS PARA COMPATIBILIDAD) ===
   {
-    name: 'searchPatients',
-    description: 'Buscar pacientes por nombre, documento o teléfono',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        q: { type: 'string', description: 'Término de búsqueda (nombre, documento, teléfono)' },
-        limit: { type: 'number', description: 'Máximo resultados (1-100)', minimum: 1, maximum: 100, default: 20 }
-      },
-      required: ['q']
-    }
-  },
-  {
-    name: 'getPatient',
-    description: 'Obtener información detallada de un paciente por ID',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        patient_id: { type: 'number', description: 'ID del paciente' }
-      },
-      required: ['patient_id']
-    }
-  },
-  {
-    name: 'createPatient',
-    description: 'Crear nuevo paciente en el sistema',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        document: { type: 'string', description: 'Documento de identidad' },
-        document_type_id: { type: 'number', description: 'ID del tipo de documento' },
-        name: { type: 'string', description: 'Nombre completo' },
-        phone: { type: 'string', description: 'Teléfono principal' },
-        phone_alt: { type: 'string', description: 'Teléfono alternativo' },
-        email: { type: 'string', description: 'Email' },
-        birth_date: { type: 'string', description: 'Fecha nacimiento YYYY-MM-DD' },
-        gender: { type: 'string', enum: ['Masculino','Femenino','Otro','No especificado'], description: 'Género' },
-        address: { type: 'string', description: 'Dirección' },
-        municipality_id: { type: 'number', description: 'ID del municipio' },
-        zone_id: { type: 'number', description: 'ID de la zona' },
-        insurance_eps_id: { type: 'number', description: 'ID de la EPS' },
-        insurance_affiliation_type: { type: 'string', enum: ['Contributivo','Subsidiado','Vinculado','Particular','Otro'], description: 'Tipo de afiliación' },
-        blood_group_id: { type: 'number', description: 'ID del grupo sanguíneo' },
-        population_group_id: { type: 'number', description: 'ID del grupo poblacional' },
-        education_level_id: { type: 'number', description: 'ID del nivel educativo' },
-        marital_status_id: { type: 'number', description: 'ID del estado civil' },
-        has_disability: { type: 'boolean', description: 'Tiene discapacidad', default: false },
-        disability_type_id: { type: 'number', description: 'ID del tipo de discapacidad' },
-        estrato: { type: 'number', description: 'Estrato socioeconómico (0-6)', minimum: 0, maximum: 6 },
-        notes: { type: 'string', description: 'Notas adicionales' }
-      },
-      required: [
-        'document', 
-        'document_type_id',
-        'name', 
-        'birth_date',
-        'gender',
-        'address',
-        'municipality_id',
-        'phone',
-        'email',
-        'insurance_eps_id',
-        'insurance_affiliation_type',
-        'blood_group_id',
-        'population_group_id',
-        'education_level_id',
-        'marital_status_id',
-        'estrato'
-      ]
-    }
-  },
-  {
-    name: 'updatePatient',
-    description: 'Actualizar información de un paciente',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        patient_id: { type: 'number', description: 'ID del paciente' },
-        name: { type: 'string', description: 'Nombre completo' },
-        phone: { type: 'string', description: 'Teléfono principal' },
-        phone_alt: { type: 'string', description: 'Teléfono alternativo' },
-        email: { type: 'string', description: 'Email' },
-        address: { type: 'string', description: 'Dirección' },
-        municipality_id: { type: 'number', description: 'ID del municipio' },
-        zone_id: { type: 'number', description: 'ID de la zona' },
-        insurance_eps_id: { type: 'number', description: 'ID de la EPS' },
-        insurance_affiliation_type: { type: 'string', enum: ['Contributivo','Subsidiado','Vinculado','Particular','Otro'], description: 'Tipo de afiliación' },
-        blood_group_id: { type: 'number', description: 'ID del grupo sanguíneo' },
-        population_group_id: { type: 'number', description: 'ID del grupo poblacional' },
-        education_level_id: { type: 'number', description: 'ID del nivel educativo' },
-        marital_status_id: { type: 'number', description: 'ID del estado civil' },
-        has_disability: { type: 'boolean', description: 'Tiene discapacidad' },
-        disability_type_id: { type: 'number', description: 'ID del tipo de discapacidad' },
-        estrato: { type: 'number', description: 'Estrato socioeconómico (0-6)', minimum: 0, maximum: 6 },
-        notes: { type: 'string', description: 'Notas adicionales' },
-        status: { type: 'string', enum: ['Activo', 'Inactivo'], description: 'Estado del paciente' }
-      },
-      required: ['patient_id']
-    }
-  },
-  {
-    name: 'createSimplePatient',
-    description: 'Crear nuevo paciente con datos ultra-mínimos (solo documento y nombre)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        document: { type: 'string', description: 'Documento de identidad (mínimo 3 caracteres)' },
-        name: { type: 'string', description: 'Nombre completo (mínimo 2 caracteres)' },
-        phone: { type: 'string', description: 'Teléfono principal (opcional)' },
-        email: { type: 'string', description: 'Email (opcional)' },
-        birth_date: { type: 'string', description: 'Fecha nacimiento DD/MM/YYYY (opcional)' },
-        gender: { type: 'string', description: 'Género (opcional, se infiere del nombre)' }
-      },
-      required: ['document', 'name']
-    }
-  },
-
-  // === CITAS ===
-  {
-    name: 'getAppointments',
-    description: 'Obtener citas por fecha específica',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        date: { type: 'string', description: 'Fecha YYYY-MM-DD (opcional, hoy por defecto)' },
-        status: { type: 'string', enum: ['Pendiente','Confirmada','Completada','Cancelada'], description: 'Filtrar por estado' },
-        patient_id: { type: 'number', description: 'Filtrar por paciente' },
-        doctor_id: { type: 'number', description: 'Filtrar por médico' }
-      }
-    }
-  },
-  {
-    name: 'createAppointment',
-    description: 'Crear nueva cita médica',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        patient_id: { type: 'number', description: 'ID del paciente' },
-        doctor_id: { type: 'number', description: 'ID del médico' },
-        specialty_id: { type: 'number', description: 'ID de la especialidad' },
-        location_id: { type: 'number', description: 'ID de la sede' },
-        scheduled_at: { type: 'string', description: 'Fecha y hora YYYY-MM-DD HH:MM:SS' },
-        duration_minutes: { type: 'number', description: 'Duración en minutos', default: 30 },
-        appointment_type: { type: 'string', enum: ['Presencial', 'Telemedicina'], description: 'Tipo de cita' },
-        reason: { type: 'string', description: 'Motivo de la cita' }
-      },
-      required: ['patient_id', 'doctor_id', 'specialty_id', 'location_id', 'scheduled_at']
-    }
-  },
-  {
-    name: 'updateAppointmentStatus',
-    description: 'Actualizar estado de una cita',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        appointment_id: { type: 'number', description: 'ID de la cita' },
-        status: { type: 'string', enum: ['Pendiente','Confirmada','Completada','Cancelada'], description: 'Nuevo estado' },
-        notes: { type: 'string', description: 'Notas adicionales' },
-        cancellation_reason: { type: 'string', description: 'Razón de cancelación (si aplica)' }
-      },
-      required: ['appointment_id', 'status']
-    }
-  },
-
-  // === MÉDICOS ===
-  {
-    name: 'getDoctors',
-    description: 'Listar médicos con sus especialidades y ubicaciones',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        active_only: { type: 'boolean', description: 'Solo médicos activos', default: true },
-        specialty_id: { type: 'number', description: 'Filtrar por especialidad' },
-        location_id: { type: 'number', description: 'Filtrar por ubicación' }
-      }
-    }
-  },
-  {
-    name: 'createDoctor',
-    description: 'Crear nuevo médico en el sistema',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Nombre completo' },
-        email: { type: 'string', description: 'Email' },
-        phone: { type: 'string', description: 'Teléfono' },
-        license_number: { type: 'string', description: 'Número de licencia médica' },
-        specialties: { type: 'array', items: { type: 'number' }, description: 'IDs de especialidades' },
-        locations: { type: 'array', items: { type: 'number' }, description: 'IDs de ubicaciones' }
-      },
-      required: ['name', 'license_number']
-    }
-  },
-
-  // === ESPECIALIDADES ===
-  {
-    name: 'getSpecialties',
-    description: 'Listar todas las especialidades médicas',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        active_only: { type: 'boolean', description: 'Solo especialidades activas', default: true }
-      }
-    }
-  },
-  {
-    name: 'createSpecialty',
-    description: 'Crear nueva especialidad médica',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Nombre de la especialidad' },
-        description: { type: 'string', description: 'Descripción' },
-        default_duration_minutes: { type: 'number', description: 'Duración por defecto en minutos', default: 30 }
-      },
-      required: ['name']
-    }
-  },
-
-  // === UBICACIONES ===
-  {
-    name: 'getLocations',
-    description: 'Listar sedes/ubicaciones disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        active_only: { type: 'boolean', description: 'Solo ubicaciones activas', default: true }
-      }
-    }
-  },
-  {
-    name: 'createLocation',
-    description: 'Crear nueva sede/ubicación',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        name: { type: 'string', description: 'Nombre de la sede' },
-        address: { type: 'string', description: 'Dirección' },
-        phone: { type: 'string', description: 'Teléfono' },
-        type: { type: 'string', description: 'Tipo de ubicación', default: 'Sucursal' },
-        capacity: { type: 'number', description: 'Capacidad', default: 0 }
-      },
-      required: ['name']
-    }
-  },
-
-  // === CONSULTAS ESPECIALES ===
-  {
-    name: 'getDaySummary',
-    description: 'Resumen completo del día con estadísticas de citas',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        date: { type: 'string', description: 'Fecha YYYY-MM-DD (opcional, hoy por defecto)' }
-      }
-    }
-  },
-  {
-    name: 'getPatientHistory',
-    description: 'Historial completo de citas de un paciente',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        patient_id: { type: 'number', description: 'ID del paciente' },
-        limit: { type: 'number', description: 'Número máximo de registros', default: 10 }
-      },
-      required: ['patient_id']
-    }
-  },
-  {
-    name: 'getDoctorSchedule',
-    description: 'Agenda de un médico en una fecha específica',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        doctor_id: { type: 'number', description: 'ID del médico' },
-        date: { type: 'string', description: 'Fecha YYYY-MM-DD (opcional, hoy por defecto)' }
-      },
-      required: ['doctor_id']
-    }
-  },
-
-  // === TABLAS LOOKUP ===
-  {
-    name: 'getDocumentTypes',
-    description: 'Obtener tipos de documento disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getBloodGroups',
-    description: 'Obtener grupos sanguíneos disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getEducationLevels',
-    description: 'Obtener niveles educativos disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getMaritalStatuses',
-    description: 'Obtener estados civiles disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getPopulationGroups',
-    description: 'Obtener grupos poblacionales disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getDisabilityTypes',
-    description: 'Obtener tipos de discapacidad disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getMunicipalities',
-    description: 'Obtener municipios disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        zone_id: { type: 'number', description: 'Filtrar por zona' }
-      }
-    }
-  },
-  {
-    name: 'getZones',
-    description: 'Obtener zonas disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-  {
-    name: 'getEPS',
-    description: 'Obtener EPS disponibles',
-    inputSchema: {
-      type: 'object',
-      properties: {}
-    }
-  },
-
-  {
-    name: 'executeCustomQuery',
-    description: 'Ejecutar consulta SQL personalizada (solo SELECT)',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Consulta SQL SELECT' },
-        params: { type: 'array', description: 'Parámetros para la consulta', items: { type: 'string' } }
-      },
-      required: ['query']
-    }
-  },
-
-  // === MEMORIA CONVERSACIONAL ===
-  {
-    name: 'initializeMemory',
-    description: 'Inicializar memoria de conversación para un paciente',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        patient_document: { type: 'string', description: 'Documento del paciente' },
-        session_id: { type: 'string', description: 'ID único de la sesión' },
-        purpose: { type: 'string', description: 'Propósito de la conversación (registro, cita, consulta)', default: 'general' }
-      },
-      required: ['patient_document', 'session_id']
-    }
-  },
-  {
-    name: 'addToMemory',
-    description: 'Agregar información a la memoria de conversación',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'ID de la sesión' },
-        type: { type: 'string', enum: ['question', 'answer', 'action', 'verification'], description: 'Tipo de interacción' },
-        content: { type: 'string', description: 'Contenido de la interacción' },
-        field: { type: 'string', description: 'Campo relacionado (opcional)' },
-        data: { type: 'object', description: 'Datos adicionales (opcional)' }
-      },
-      required: ['session_id', 'type', 'content']
-    }
-  },
-  {
-    name: 'checkMemory',
-    description: 'Verificar si existe información específica en la memoria',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'ID de la sesión' },
-        field: { type: 'string', description: 'Campo a verificar' }
-      },
-      required: ['session_id', 'field']
-    }
-  },
-  {
-    name: 'getMemory',
-    description: 'Obtener memoria completa de la conversación',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'ID de la sesión' }
-      },
-      required: ['session_id']
-    }
-  },
-  {
-    name: 'updateContext',
-    description: 'Actualizar contexto de la conversación',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'ID de la sesión' },
-        current_step: { type: 'string', description: 'Paso actual de la conversación' },
-        purpose: { type: 'string', description: 'Propósito actualizado' },
-        topics_discussed: { type: 'array', items: { type: 'string' }, description: 'Temas discutidos' },
-        voice_preferences: { type: 'object', description: 'Preferencias de voz' },
-        medical_context: { type: 'object', description: 'Contexto médico actualizado' }
-      },
-      required: ['session_id']
-    }
-  },
-  {
-    name: 'closeMemory',
-    description: 'Cerrar sesión de memoria de conversación',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'ID de la sesión' },
-        reason: { type: 'string', description: 'Razón del cierre', default: 'completed' }
-      },
-      required: ['session_id']
-    }
-  },
-  {
-    name: 'searchMemory',
-    description: 'Buscar información específica en la memoria de conversación',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string', description: 'ID de la sesión' },
-        query: { type: 'string', description: 'Término de búsqueda' },
-        type: { type: 'string', description: 'Tipo específico de interacción (opcional)' }
-      },
-      required: ['session_id', 'query']
-    }
-  },
-  {
-    name: 'getMemoryStats',
-    description: 'Obtener estadísticas de rendimiento del sistema de memoria',
+    name: 'listActiveEPS',
+    description: 'Consulta las EPS (Entidades Promotoras de Salud) activas disponibles para registro de pacientes. Retorna ID, nombre y código de cada EPS.',
     inputSchema: {
       type: 'object',
       properties: {},
-      additionalProperties: false
-    }
-  },
-  // === DISPONIBILIDADES ===
-  {
-    name: 'getAvailabilities',
-    description: 'Obtener disponibilidades de médicos por fecha y filtros',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        date: { type: 'string', description: 'Fecha YYYY-MM-DD (opcional)' },
-        doctor_id: { type: 'number', description: 'ID del médico (opcional)' },
-        specialty_id: { type: 'number', description: 'ID de la especialidad (opcional)' },
-        location_id: { type: 'number', description: 'ID de la ubicación (opcional)' },
-        status: { type: 'string', enum: ['Activa', 'Cancelada', 'Completa'], description: 'Estado (opcional)' }
-      }
+      required: []
     }
   },
   {
-    name: 'createAvailability',
-    description: 'Crear nueva disponibilidad para un médico',
+    name: 'registerPatientSimple',
+    description: 'Registro simplificado de pacientes con datos mínimos requeridos: nombre, cédula, teléfono y EPS. Use listActiveEPS para obtener los IDs válidos de EPS antes de registrar.',
     inputSchema: {
       type: 'object',
       properties: {
-        doctor_id: { type: 'number', description: 'ID del médico' },
-        specialty_id: { type: 'number', description: 'ID de la especialidad' },
-        location_id: { type: 'number', description: 'ID de la ubicación' },
-        date: { type: 'string', description: 'Fecha YYYY-MM-DD' },
-        start_time: { type: 'string', description: 'Hora inicio HH:MM' },
-        end_time: { type: 'string', description: 'Hora fin HH:MM' },
-        capacity: { type: 'number', description: 'Capacidad de pacientes' },
-        duration_minutes: { type: 'number', description: 'Duración por cita en minutos', default: 30 },
-        notes: { type: 'string', description: 'Notas adicionales (opcional)' }
+        document: { 
+          type: 'string', 
+          description: 'Cédula o documento de identidad del paciente' 
+        },
+        name: { 
+          type: 'string', 
+          description: 'Nombre completo del paciente' 
+        },
+        phone: { 
+          type: 'string', 
+          description: 'Número de teléfono principal' 
+        },
+        insurance_eps_id: { 
+          type: 'number', 
+          description: 'ID de la EPS (1-17). Principales: 1=NUEVA EPS, 2=SANITAS, 3=SURA, 4=SALUD TOTAL, 5=COMPENSAR' 
+        },
+        notes: { 
+          type: 'string', 
+          description: 'Notas adicionales opcionales sobre el paciente' 
+        }
       },
-      required: ['doctor_id', 'specialty_id', 'location_id', 'date', 'start_time', 'end_time', 'capacity']
+      required: ['document', 'name', 'phone', 'insurance_eps_id']
     }
   },
   {
-    name: 'updateAvailability',
-    description: 'Actualizar disponibilidad existente',
+    name: 'getAvailableAppointments',
+    description: 'Lista todas las citas médicas disponibles. Permite filtrar por médico, especialidad y ubicación. Muestra médicos, horarios, duraciones y cupos disponibles ordenados por fecha.',
     inputSchema: {
       type: 'object',
       properties: {
-        availability_id: { type: 'number', description: 'ID de la disponibilidad' },
-        capacity: { type: 'number', description: 'Nueva capacidad' },
-        status: { type: 'string', enum: ['Activa', 'Cancelada', 'Completa'], description: 'Nuevo estado' },
-        notes: { type: 'string', description: 'Notas actualizadas' }
+        doctor_id: {
+          type: 'number',
+          description: 'ID del médico (opcional, filtra por doctor específico)'
+        },
+        specialty_id: {
+          type: 'number',
+          description: 'ID de la especialidad médica (opcional, filtra por especialidad)'
+        },
+        location_id: {
+          type: 'number',
+          description: 'ID de la ubicación/sede (opcional, filtra por sede)'
+        },
+        limit: {
+          type: 'number',
+          description: 'Número máximo de resultados a retornar (default: 50)',
+          default: 50
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'checkAvailabilityQuota',
+    description: 'Verifica cuántos cupos hay disponibles para una ESPECIALIDAD en una SEDE específica. Agrega TODOS los cupos de todos los doctores de esa especialidad. Retorna información detallada sobre quotas totales, asignados, disponibles y si puede agendar directamente o debe ir a lista de espera. DEBE LLAMARSE ANTES de scheduleAppointment para tomar decisiones informadas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        specialty_id: {
+          type: 'number',
+          description: 'ID de la especialidad a verificar (obtenido de getAvailableAppointments en specialty.id)'
+        },
+        location_id: {
+          type: 'number',
+          description: 'ID de la sede/ubicación a verificar (obtenido de getAvailableAppointments en location.id)'
+        },
+        day_date: {
+          type: 'string',
+          description: 'Fecha específica a verificar en formato YYYY-MM-DD (opcional). Si no se especifica, retorna todas las fechas disponibles.',
+          pattern: '^\\d{4}-\\d{2}-\\d{2}$'
+        }
+      },
+      required: ['specialty_id', 'location_id']
+    }
+  },
+  {
+    name: 'scheduleAppointment',
+    description: 'Asigna una cita médica al paciente. Actualiza la disponibilidad y crea el registro de la cita. Requiere availability_id y día específico del availability_distribution.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        patient_id: {
+          type: 'number',
+          description: 'ID del paciente (obtenido de registerPatientSimple)'
+        },
+        availability_id: {
+          type: 'number',
+          description: 'ID de la disponibilidad (obtenido de getAvailableAppointments)'
+        },
+        scheduled_date: {
+          type: 'string',
+          description: 'Fecha y hora de la cita en formato YYYY-MM-DD HH:MM:SS',
+          pattern: '^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$'
+        },
+        appointment_type: {
+          type: 'string',
+          enum: ['Presencial', 'Telemedicina'],
+          description: 'Tipo de consulta',
+          default: 'Presencial'
+        },
+        reason: {
+          type: 'string',
+          description: 'Motivo de la consulta'
+        },
+        notes: {
+          type: 'string',
+          description: 'Notas adicionales (opcional)'
+        },
+        priority_level: {
+          type: 'string',
+          enum: ['Baja', 'Normal', 'Alta', 'Urgente'],
+          description: 'Nivel de prioridad de la cita',
+          default: 'Normal'
+        }
+      },
+      required: ['patient_id', 'availability_id', 'scheduled_date', 'reason']
+    }
+  },
+  {
+    name: 'getPatientAppointments',
+    description: 'Consulta todas las citas de un paciente (pasadas y futuras) con detalles completos de médico, especialidad, ubicación y estado.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        patient_id: {
+          type: 'number',
+          description: 'ID del paciente'
+        },
+        status: {
+          type: 'string',
+          enum: ['Pendiente', 'Confirmada', 'Completada', 'Cancelada', 'Todas'],
+          description: 'Filtrar por estado de la cita (opcional)',
+          default: 'Todas'
+        },
+        from_date: {
+          type: 'string',
+          description: 'Fecha desde (formato YYYY-MM-DD, opcional)',
+          pattern: '^\\d{4}-\\d{2}-\\d{2}$'
+        }
+      },
+      required: ['patient_id']
+    }
+  },
+  {
+    name: 'getWaitingListAppointments',
+    description: 'Consulta las solicitudes de citas en lista de espera. Permite filtrar por paciente, médico, especialidad o ubicación. Muestra la posición en la cola y tiempo de espera.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        patient_id: {
+          type: 'number',
+          description: 'ID del paciente (opcional, filtra por paciente específico)'
+        },
+        doctor_id: {
+          type: 'number',
+          description: 'ID del médico (opcional, filtra por doctor)'
+        },
+        specialty_id: {
+          type: 'number',
+          description: 'ID de la especialidad (opcional, filtra por especialidad)'
+        },
+        location_id: {
+          type: 'number',
+          description: 'ID de la ubicación (opcional, filtra por sede)'
+        },
+        priority_level: {
+          type: 'string',
+          enum: ['Baja', 'Normal', 'Alta', 'Urgente', 'Todas'],
+          description: 'Filtrar por nivel de prioridad (opcional)',
+          default: 'Todas'
+        },
+        status: {
+          type: 'string',
+          enum: ['pending', 'reassigned', 'cancelled', 'expired', 'all'],
+          description: 'Estado de la solicitud en lista de espera',
+          default: 'pending'
+        },
+        limit: {
+          type: 'number',
+          description: 'Número máximo de resultados (default: 50)',
+          default: 50
+        }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'reassignWaitingListAppointments',
+    description: 'Procesa automáticamente la lista de espera para una disponibilidad específica. Reasigna citas pendientes a cupos disponibles según prioridad (Urgente > Alta > Normal > Baja).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        availability_id: {
+          type: 'number',
+          description: 'ID de la disponibilidad a procesar'
+        }
       },
       required: ['availability_id']
-    }
-  },
-  // === RELACIONES MÉDICO-ESPECIALIDAD ===
-  {
-    name: 'assignSpecialtyToDoctor',
-    description: 'Asignar especialidad a un médico',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        doctor_id: { type: 'number', description: 'ID del médico' },
-        specialty_id: { type: 'number', description: 'ID de la especialidad' }
-      },
-      required: ['doctor_id', 'specialty_id']
-    }
-  },
-  {
-    name: 'removeSpecialtyFromDoctor',
-    description: 'Remover especialidad de un médico',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        doctor_id: { type: 'number', description: 'ID del médico' },
-        specialty_id: { type: 'number', description: 'ID de la especialidad' }
-      },
-      required: ['doctor_id', 'specialty_id']
-    }
-  },
-  // === ESTADÍSTICAS AVANZADAS ===
-  {
-    name: 'getDashboardStats',
-    description: 'Obtener estadísticas completas del dashboard',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        date_from: { type: 'string', description: 'Fecha inicio YYYY-MM-DD (opcional)' },
-        date_to: { type: 'string', description: 'Fecha fin YYYY-MM-DD (opcional)' }
-      }
-    }
-  },
-  {
-    name: 'getAppointmentStats',
-    description: 'Estadísticas detalladas de citas por período',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        date_from: { type: 'string', description: 'Fecha inicio YYYY-MM-DD' },
-        date_to: { type: 'string', description: 'Fecha fin YYYY-MM-DD' },
-        doctor_id: { type: 'number', description: 'ID del médico (opcional)' },
-        specialty_id: { type: 'number', description: 'ID de la especialidad (opcional)' }
-      },
-      required: ['date_from', 'date_to']
     }
   }
 ];
 
-// Implementación de herramientas (expandida con herramientas mejoradas)
+// ===================================================================
+// IMPLEMENTACIÓN DE HERRAMIENTAS
+// ===================================================================
 async function executeToolCall(name: string, args: any): Promise<any> {
   try {
-    // Primero verificar si es una herramienta médica mejorada
-    const enhancedToolNames = ENHANCED_MEDICAL_TOOLS.map(tool => tool.name);
-    if (enhancedToolNames.includes(name)) {
-      return await executeEnhancedMedicalTool(name, args, pool);
+    if (name === 'listActiveEPS') {
+      return await listActiveEPS();
     }
     
-    // Verificar si es una herramienta de gestión de pacientes avanzada
-    const patientToolNames = PATIENT_MANAGEMENT_TOOLS.map(tool => tool.name);
-    if (patientToolNames.includes(name)) {
-      return await executePatientManagementTool(name, args, pool);
+    if (name === 'registerPatientSimple') {
+      return await registerPatientSimple(args);
     }
     
-    // Si no es una herramienta mejorada, continuar con las herramientas originales
-    switch (name) {
-      case 'searchPatients':
-        return await searchPatients(args.q, args.limit || 20);
-      
-      case 'getPatient':
-        return await getPatientById(args.patient_id);
-      
-      case 'createPatient':
-        return await createPatient(args);
-      
-      case 'createSimplePatient':
-        return await createSimplePatient(args);
-      
-      case 'updatePatient':
-        return await updatePatient(args.patient_id, args);
-      
-      case 'getAppointments':
-        return await getAppointments(args);
-      
-      case 'createAppointment':
-        return await createAppointment(args);
-      
-      case 'updateAppointmentStatus':
-        return await updateAppointmentStatus(args.appointment_id, args);
-      
-      case 'getDoctors':
-        return await getDoctors(args);
-      
-      case 'createDoctor':
-        return await createDoctor(args);
-      
-      case 'getSpecialties':
-        return await getSpecialties(args?.active_only !== false);
-      
-      case 'createSpecialty':
-        return await createSpecialty(args);
-      
-      case 'getLocations':
-        return await getLocations(args?.active_only !== false);
-      
-      case 'createLocation':
-        return await createLocation(args);
-      
-      case 'getDaySummary':
-        return await getDaySummary(args.date);
-      
-      case 'getPatientHistory':
-        return await getPatientHistory(args.patient_id, args.limit || 10);
-      
-      case 'getDoctorSchedule':
-        return await getDoctorSchedule(args.doctor_id, args.date);
-      
-      case 'getDocumentTypes':
-        return await getDocumentTypes();
-      
-      case 'getBloodGroups':
-        return await getBloodGroups();
-      
-      case 'getEducationLevels':
-        return await getEducationLevels();
-      
-      case 'getMaritalStatuses':
-        return await getMaritalStatuses();
-      
-      case 'getPopulationGroups':
-        return await getPopulationGroups();
-      
-      case 'getDisabilityTypes':
-        return await getDisabilityTypes();
-      
-      case 'getMunicipalities':
-        return await getMunicipalities(args.zone_id);
-      
-      case 'getZones':
-        return await getZones();
-      
-      case 'getEPS':
-        return await getEPS();
-      
-      case 'executeCustomQuery':
-        return await executeCustomQuery(args.query, args.params);
-      
-      // === MEMORIA CONVERSACIONAL ===
-      case 'initializeMemory':
-        const { ConversationMemoryManager } = await import('./memory-manager.js');
-        return await ConversationMemoryManager.initializeMemory(args.session_id || args.patient_document, args.purpose || 'patient_consultation');
-      
-      case 'addToMemory':
-        const { ConversationMemoryManager: CMM1 } = await import('./memory-manager.js');
-        return await CMM1.addToMemory(args.session_id, args.type, args.content, args.field, args.data);
-      
-      case 'checkMemory':
-        const { ConversationMemoryManager: CMM2 } = await import('./memory-manager.js');
-        return await CMM2.checkMemory(args.session_id, args.field);
-      
-      case 'getMemory':
-        const { ConversationMemoryManager: CMM3 } = await import('./memory-manager.js');
-        return await CMM3.getMemory(args.session_id);
-      
-      case 'updateContext':
-        const { ConversationMemoryManager: CMM4 } = await import('./memory-manager.js');
-        return await CMM4.updateContext(args.session_id, {
-          current_step: args.current_step,
-          purpose: args.purpose,
-          topics_discussed: args.topics_discussed || [],
-          voice_preferences: args.voice_preferences,
-          medical_context: args.medical_context
-        });
-      
-      case 'closeMemory':
-        const { ConversationMemoryManager: CMM5 } = await import('./memory-manager.js');
-        return await CMM5.closeMemory(args.session_id, args.reason);
-      
-      case 'searchMemory':
-        const { ConversationMemoryManager: CMM6 } = await import('./memory-manager.js');
-        return await CMM6.searchMemory(args.session_id, args.query, args.type);
-      
-      case 'getMemoryStats':
-        const { ConversationMemoryManager: CMM7 } = await import('./memory-manager.js');
-        return await CMM7.getMemoryStats();
-      
-      // === DISPONIBILIDADES ===
-      case 'getAvailabilities':
-        return await getAvailabilities(args);
-      
-      case 'createAvailability':
-        return await createAvailability(args);
-      
-      case 'updateAvailability':
-        return await updateAvailability(args.availability_id, args);
-      
-      // === RELACIONES MÉDICO-ESPECIALIDAD ===
-      case 'assignSpecialtyToDoctor':
-        return await assignSpecialtyToDoctor(args.doctor_id, args.specialty_id);
-      
-      case 'removeSpecialtyFromDoctor':
-        return await removeSpecialtyFromDoctor(args.doctor_id, args.specialty_id);
-      
-      // === ESTADÍSTICAS AVANZADAS ===
-      case 'getDashboardStats':
-        return await getDashboardStats(args);
-      
-      case 'getAppointmentStats':
-        return await getAppointmentStats(args);
-      
-      default:
-        throw new Error(`Herramienta no implementada: ${name}`);
+    if (name === 'getAvailableAppointments') {
+      return await getAvailableAppointments(args);
     }
+    
+    if (name === 'checkAvailabilityQuota') {
+      return await checkAvailabilityQuota(args);
+    }
+    
+    if (name === 'scheduleAppointment') {
+      return await scheduleAppointment(args);
+    }
+    
+    if (name === 'getPatientAppointments') {
+      return await getPatientAppointments(args);
+    }
+    
+    if (name === 'getWaitingListAppointments') {
+      return await getWaitingListAppointments(args);
+    }
+    
+    if (name === 'reassignWaitingListAppointments') {
+      return await reassignWaitingListAppointments(args);
+    }
+    
+    throw new Error(`Herramienta no implementada: ${name}`);
   } catch (error: any) {
     console.error(`Error ejecutando ${name}:`, error);
     throw new Error(`Error en ${name}: ${error.message}`);
   }
 }
 
-// === IMPLEMENTACIONES DE FUNCIONES ===
+// ===================================================================
+// FUNCIÓN PARA LISTAR EPS ACTIVAS
+// ===================================================================
+async function listActiveEPS(): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    const [rows] = await connection.execute(`
+      SELECT 
+        id,
+        name,
+        code,
+        status,
+        has_agreement,
+        agreement_date,
+        notes,
+        created_at
+      FROM eps 
+      WHERE status = 'active'
+      ORDER BY name ASC
+    `);
+    
+    const epsList = (rows as any[]).map(eps => ({
+      id: eps.id,
+      name: eps.name,
+      code: eps.code,
+      has_agreement: eps.has_agreement === 1,
+      agreement_date: eps.agreement_date,
+      notes: eps.notes || '',
+      created_at: eps.created_at
+    }));
+    
+    return {
+      success: true,
+      count: epsList.length,
+      eps_list: epsList,
+      message: `Se encontraron ${epsList.length} EPS activas disponibles`,
+      usage_note: 'Use el campo "id" para registrar pacientes con registerPatientSimple'
+    };
+    
+  } catch (error: any) {
+    console.error('Error consultando EPS:', error);
+    return {
+      success: false,
+      error: 'Error al consultar EPS activas',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN DE REGISTRO SIMPLIFICADO DE PACIENTES
+// ===================================================================
+async function registerPatientSimple(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    // 1. Validar duplicados
+    const [duplicates] = await connection.execute(`
+      SELECT id, document, name, phone, status
+      FROM patients 
+      WHERE document = ? AND status = 'Activo'
+      LIMIT 1
+    `, [args.document]);
+    
+    if ((duplicates as any[]).length > 0) {
+      const duplicate = (duplicates as any[])[0];
+      await connection.rollback();
+      return {
+        success: false,
+        error: 'Paciente duplicado encontrado',
+        duplicate_patient: {
+          id: duplicate.id,
+          document: duplicate.document,
+          name: duplicate.name,
+          phone: duplicate.phone
+        },
+        suggestion: 'Ya existe un paciente activo con este documento'
+      };
+    }
+    
+    // 2. Verificar que la EPS existe
+    const [epsCheck] = await connection.execute(`
+      SELECT id, name FROM eps WHERE id = ? AND status = 'active'
+    `, [args.insurance_eps_id]);
+    
+    if ((epsCheck as any[]).length === 0) {
+      await connection.rollback();
+      return {
+        success: false,
+        error: 'EPS no válida',
+        available_eps: 'Use IDs entre 1-17. Principales: 1=NUEVA EPS, 2=SANITAS, 3=SURA, 4=SALUD TOTAL'
+      };
+    }
+    
+    // 3. Insertar paciente con datos mínimos
+    const [result] = await connection.execute(`
+      INSERT INTO patients (
+        document, name, phone, insurance_eps_id, 
+        notes, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, 'Activo', NOW())
+    `, [
+      args.document,
+      args.name.trim(),
+      args.phone,
+      args.insurance_eps_id,
+      args.notes || null
+    ]);
+    
+    const patient_id = (result as any).insertId;
+    await connection.commit();
+    
+    // 4. Obtener datos del paciente creado
+    const [patientData] = await connection.execute(`
+      SELECT 
+        p.id, p.document, p.name, p.phone, p.status, p.created_at,
+        eps.name as eps_name, eps.code as eps_code
+      FROM patients p
+      LEFT JOIN eps ON p.insurance_eps_id = eps.id
+      WHERE p.id = ?
+    `, [patient_id]);
+    
+    const patient = (patientData as any[])[0];
+    
+    return {
+      success: true,
+      message: 'Paciente registrado exitosamente',
+      patient_id: patient_id,
+      patient: {
+        id: patient.id,
+        document: patient.document,
+        name: patient.name,
+        phone: patient.phone,
+        eps: patient.eps_name,
+        eps_code: patient.eps_code,
+        status: patient.status,
+        created_at: patient.created_at
+      }
+    };
+    
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error registrando paciente:', error);
+    
+    if (error.code === 'ER_DUP_ENTRY') {
+      return {
+        success: false,
+        error: 'Documento duplicado'
+      };
+    }
+    
+    return {
+      success: false,
+      error: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN: CONSULTAR CITAS DISPONIBLES (AGRUPADAS POR ESPECIALIDAD)
+// ===================================================================
+async function getAvailableAppointments(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    const { doctor_id, specialty_id, location_id, limit = 50 } = args;
+    
+    // Query base que obtiene availabilities activas
+    let query = `
+      SELECT 
+        a.id as availability_id,
+        a.date as appointment_date,
+        a.start_time,
+        a.end_time,
+        a.duration_minutes,
+        a.capacity as total_capacity,
+        a.status as availability_status,
+        d.id as doctor_id,
+        d.name as doctor_name,
+        d.email as doctor_email,
+        d.phone as doctor_phone,
+        s.id as specialty_id,
+        s.name as specialty_name,
+        l.id as location_id,
+        l.name as location_name,
+        l.address as location_address,
+        l.phone as location_phone,
+        SUM(ad.quota) as total_quota_distributed,
+        SUM(ad.assigned) as total_assigned,
+        SUM(ad.quota - ad.assigned) as slots_available,
+        COUNT(ad.id) as distribution_count,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM appointments_waiting_list wl
+          WHERE wl.availability_id = a.id AND wl.status = 'pending'
+        ), 0) as waiting_list_count
+      FROM availabilities a
+      INNER JOIN availability_distribution ad ON a.id = ad.availability_id
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE a.date >= CURDATE()
+        AND a.status = 'Activa'
+    `;
+    
+    const params: any[] = [];
+    
+    if (doctor_id) {
+      query += ' AND a.doctor_id = ?';
+      params.push(doctor_id);
+    }
+    
+    if (specialty_id) {
+      query += ' AND a.specialty_id = ?';
+      params.push(specialty_id);
+    }
+    
+    if (location_id) {
+      query += ' AND a.location_id = ?';
+      params.push(location_id);
+    }
+    
+    query += ` 
+      GROUP BY a.id, a.date, a.start_time, a.end_time, a.duration_minutes, a.capacity, a.status,
+               d.id, d.name, d.email, d.phone,
+               s.id, s.name,
+               l.id, l.name, l.address, l.phone
+      ORDER BY s.name, l.name, a.date, a.start_time
+      LIMIT ?
+    `;
+    params.push(limit);
+    
+    const [rows] = await connection.execute(query, params);
+    const appointments = rows as any[];
+    
+    if (appointments.length === 0) {
+      return {
+        success: true,
+        message: 'No hay agendas programadas con los filtros aplicados',
+        count: 0,
+        specialties: [],
+        available_appointments: []
+      };
+    }
+    
+    // ===================================================================
+    // AGRUPACIÓN POR ESPECIALIDAD + SEDE
+    // ===================================================================
+    
+    const groupedBySpecialtyLocation: any = {};
+    
+    appointments.forEach(apt => {
+      // Clave: especialidad + sede
+      const groupKey = `specialty${apt.specialty_id}_location${apt.location_id}`;
+      
+      if (!groupedBySpecialtyLocation[groupKey]) {
+        groupedBySpecialtyLocation[groupKey] = {
+          specialty: {
+            id: apt.specialty_id,
+            name: apt.specialty_name
+          },
+          location: {
+            id: apt.location_id,
+            name: apt.location_name,
+            address: apt.location_address,
+            phone: apt.location_phone
+          },
+          doctors: [],
+          availabilities: [],
+          total_slots_available: 0,
+          total_waiting_list: 0,
+          earliest_date: apt.appointment_date,
+          has_direct_availability: false
+        };
+      }
+      
+      // Agregar availability
+      groupedBySpecialtyLocation[groupKey].availabilities.push({
+        availability_id: apt.availability_id,
+        appointment_date: apt.appointment_date,
+        time_range: `${apt.start_time.slice(0,5)} - ${apt.end_time.slice(0,5)}`,
+        start_time: apt.start_time.slice(0,5),
+        end_time: apt.end_time.slice(0,5),
+        duration_minutes: apt.duration_minutes,
+        doctor: {
+          id: apt.doctor_id,
+          name: apt.doctor_name
+        },
+        slots_available: apt.slots_available,
+        waiting_list_count: apt.waiting_list_count || 0
+      });
+      
+      // Agregar doctor (sin duplicar)
+      const doctorExists = groupedBySpecialtyLocation[groupKey].doctors.some(
+        (d: any) => d.id === apt.doctor_id
+      );
+      if (!doctorExists) {
+        groupedBySpecialtyLocation[groupKey].doctors.push({
+          id: apt.doctor_id,
+          name: apt.doctor_name,
+          email: apt.doctor_email,
+          phone: apt.doctor_phone
+        });
+      }
+      
+      groupedBySpecialtyLocation[groupKey].total_slots_available += apt.slots_available;
+      groupedBySpecialtyLocation[groupKey].total_waiting_list += (apt.waiting_list_count || 0);
+      
+      if (apt.slots_available > 0) {
+        groupedBySpecialtyLocation[groupKey].has_direct_availability = true;
+      }
+      
+      // Actualizar fecha más temprana
+      if (apt.appointment_date < groupedBySpecialtyLocation[groupKey].earliest_date) {
+        groupedBySpecialtyLocation[groupKey].earliest_date = apt.appointment_date;
+      }
+    });
+    
+    // Convertir a array y ordenar
+    const specialtiesArray = Object.values(groupedBySpecialtyLocation).map((group: any) => {
+      // Ordenar availabilities por fecha y hora
+      group.availabilities.sort((a: any, b: any) => {
+        if (a.appointment_date !== b.appointment_date) {
+          return a.appointment_date.getTime() - b.appointment_date.getTime();
+        }
+        return a.start_time.localeCompare(b.start_time);
+      });
+      
+      // Formatear earliest_date
+      group.earliest_date = group.earliest_date.toISOString().split('T')[0];
+      
+      return group;
+    });
+    
+    // Ordenar por especialidad
+    specialtiesArray.sort((a: any, b: any) => 
+      a.specialty.name.localeCompare(b.specialty.name)
+    );
+    
+    // Extraer lista única de especialidades
+    const uniqueSpecialties = Array.from(
+      new Set(specialtiesArray.map((g: any) => g.specialty.name))
+    ).sort();
+    
+    // Formato plano para compatibilidad
+    const formattedAppointments = appointments.map(apt => ({
+      availability_id: apt.availability_id,
+      appointment_date: apt.appointment_date,
+      time_range: `${apt.start_time.slice(0,5)} - ${apt.end_time.slice(0,5)}`,
+      duration_minutes: apt.duration_minutes,
+      slots_available: apt.slots_available,
+      waiting_list_count: apt.waiting_list_count || 0,
+      doctor_id: apt.doctor_id,
+      doctor_name: apt.doctor_name,
+      specialty_id: apt.specialty_id,
+      specialty_name: apt.specialty_name,
+      location_id: apt.location_id,
+      location_name: apt.location_name
+    }));
+    
+    return {
+      success: true,
+      message: `Se encontraron ${uniqueSpecialties.length} especialidades con agendas disponibles`,
+      count: appointments.length,
+      specialties_count: uniqueSpecialties.length,
+      specialties_list: uniqueSpecialties,
+      specialties: specialtiesArray,
+      available_appointments: formattedAppointments,
+      info: {
+        grouping: 'Agrupado por ESPECIALIDAD + SEDE',
+        specialty_focus: 'Cada especialidad muestra todas sus sedes y doctores disponibles',
+        slots_available_info: 'slots_available=0 permite lista de espera automática',
+        usage: 'Use specialty_id + location_id para verificar cupos con checkAvailabilityQuota'
+      }
+    };
+    
+  } catch (error: any) {
+    console.error('Error consultando citas disponibles:', error);
+    return {
+      success: false,
+      error: 'Error al consultar citas disponibles',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN: VERIFICAR CUPOS DISPONIBLES POR ESPECIALIDAD Y SEDE
+// VERSIÓN 3.5: Agrupado por ESPECIALIDAD + SEDE (no por availability_id individual)
+// ===================================================================
+async function checkAvailabilityQuota(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    const { specialty_id, location_id, day_date } = args;
+    
+    if (!specialty_id || !location_id) {
+      return {
+        success: false,
+        error: 'specialty_id y location_id son requeridos'
+      };
+    }
+    
+    // 1. Obtener información de la especialidad y sede
+    const [specialtyInfo] = await connection.execute(`
+      SELECT 
+        s.id as specialty_id,
+        s.name as specialty_name,
+        l.id as location_id,
+        l.name as location_name,
+        l.address as location_address,
+        l.phone as location_phone
+      FROM specialties s
+      CROSS JOIN locations l
+      WHERE s.id = ? AND l.id = ?
+    `, [specialty_id, location_id]);
+    
+    if ((specialtyInfo as any[]).length === 0) {
+      return {
+        success: false,
+        error: 'Especialidad o sede no encontrada'
+      };
+    }
+    
+    const info = (specialtyInfo as any[])[0];
+    
+    // 2. Obtener TODAS las availabilities de esta especialidad en esta sede
+    let availQuery = `
+      SELECT 
+        a.id as availability_id,
+        a.date as appointment_date,
+        a.start_time,
+        a.end_time,
+        a.duration_minutes,
+        a.capacity as total_capacity,
+        d.id as doctor_id,
+        d.name as doctor_name,
+        d.email as doctor_email
+      FROM availabilities a
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      WHERE a.specialty_id = ? 
+        AND a.location_id = ? 
+        AND a.status = 'Activa'
+    `;
+    
+    const queryParams: any[] = [specialty_id, location_id];
+    
+    if (day_date) {
+      availQuery += ' AND a.date >= ?';
+      queryParams.push(day_date);
+    }
+    
+    availQuery += ' ORDER BY a.date ASC, a.start_time ASC';
+    
+    const [availabilities] = await connection.execute(availQuery, queryParams);
+    const availArray = availabilities as any[];
+    
+    if (availArray.length === 0) {
+      return {
+        success: false,
+        error: 'No hay agendas activas para esta especialidad en esta sede',
+        specialty: { id: info.specialty_id, name: info.specialty_name },
+        location: { id: info.location_id, name: info.location_name },
+        suggestion: 'Intente con otra sede o consulte las especialidades disponibles'
+      };
+    }
+    
+    // 3. Para cada availability, obtener su distribución de cupos
+    const availabilityIds = availArray.map(a => a.availability_id);
+    
+    let distQuery = `
+      SELECT 
+        availability_id,
+        day_date,
+        quota,
+        assigned,
+        (quota - assigned) as slots_available
+      FROM availability_distribution
+      WHERE availability_id IN (${availabilityIds.map(() => '?').join(',')})
+    `;
+    
+    const distParams = [...availabilityIds];
+    
+    if (day_date) {
+      distQuery += ' AND day_date >= ?';
+      distParams.push(day_date);
+    }
+    
+    const [distributions] = await connection.execute(distQuery, distParams);
+    const distArray = distributions as any[];
+    
+    // 4. Calcular totales agregados por especialidad+sede
+    let totalQuota = 0;
+    let totalAssigned = 0;
+    let totalAvailable = 0;
+    
+    const distributionsByAvailability: any = {};
+    
+    distArray.forEach((dist: any) => {
+      totalQuota += dist.quota;
+      totalAssigned += dist.assigned;
+      totalAvailable += dist.slots_available;
+      
+      if (!distributionsByAvailability[dist.availability_id]) {
+        distributionsByAvailability[dist.availability_id] = [];
+      }
+      distributionsByAvailability[dist.availability_id].push(dist);
+    });
+    
+    // 5. Contar lista de espera para esta especialidad+sede
+    const [waitingList] = await connection.execute(`
+      SELECT COUNT(*) as waiting_count
+      FROM appointments_waiting_list wl
+      INNER JOIN availabilities a ON wl.availability_id = a.id
+      WHERE a.specialty_id = ? 
+        AND a.location_id = ? 
+        AND wl.status = 'pending'
+    `, [specialty_id, location_id]);
+    
+    const waitingCount = (waitingList as any[])[0].waiting_count;
+    
+    // 6. Obtener doctores únicos
+    const uniqueDoctors = Array.from(new Set(availArray.map(a => a.doctor_name)));
+    
+    // 7. Construir información detallada de availabilities con cupos
+    const availabilitiesWithQuota = availArray.map(avail => {
+      const dists = distributionsByAvailability[avail.availability_id] || [];
+      const availQuota = dists.reduce((sum: number, d: any) => sum + d.quota, 0);
+      const availAssigned = dists.reduce((sum: number, d: any) => sum + d.assigned, 0);
+      const availAvailable = availQuota - availAssigned;
+      
+      return {
+        availability_id: avail.availability_id,
+        appointment_date: avail.appointment_date,
+        time_range: `${avail.start_time.slice(0, 5)} - ${avail.end_time.slice(0, 5)}`,
+        doctor: {
+          id: avail.doctor_id,
+          name: avail.doctor_name
+        },
+        quota: availQuota,
+        assigned: availAssigned,
+        slots_available: availAvailable,
+        has_availability: availAvailable > 0
+      };
+    });
+    
+    // 8. Determinar si puede agendar directamente o debe ir a lista de espera
+    const canScheduleDirect = totalAvailable > 0;
+    const hasAnyAvailability = availabilitiesWithQuota.some(a => a.has_availability);
+    
+    // 9. Seleccionar primera availability con cupos (para recomendación)
+    const recommendedAvailability = availabilitiesWithQuota.find(a => a.has_availability);
+    
+    return {
+      success: true,
+      specialty: {
+        id: info.specialty_id,
+        name: info.specialty_name
+      },
+      location: {
+        id: info.location_id,
+        name: info.location_name,
+        address: info.location_address,
+        phone: info.location_phone
+      },
+      doctors_available: uniqueDoctors.length,
+      doctors_list: uniqueDoctors,
+      total_availabilities: availArray.length,
+      quota_summary: {
+        total_quota: totalQuota,
+        total_assigned: totalAssigned,
+        total_available: totalAvailable,
+        waiting_list_count: waitingCount
+      },
+      availabilities: availabilitiesWithQuota,
+      recommendation: {
+        can_schedule_direct: canScheduleDirect,
+        should_use_waiting_list: !canScheduleDirect,
+        suggested_availability_id: recommendedAvailability?.availability_id || availabilitiesWithQuota[0]?.availability_id,
+        action: canScheduleDirect 
+          ? 'Proceder con scheduleAppointment (sin priority_level)' 
+          : 'Proceder con scheduleAppointment (incluir priority_level: "Normal")',
+        message: canScheduleDirect
+          ? `Puede agendar cita directa.`
+          : 'Se procesará solicitud. Operador contactará al paciente.'
+      },
+      info: {
+        grouping: 'Agregado por ESPECIALIDAD + SEDE',
+        scope: 'Incluye TODOS los doctores de esta especialidad en esta sede',
+        usage: 'Use suggested_availability_id para agendar con scheduleAppointment'
+      }
+    };
+    
+  } catch (error: any) {
+    console.error('Error verificando cupos disponibles:', error);
+    return {
+      success: false,
+      error: 'Error al verificar cupos disponibles',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN: AGENDAR CITA
+// ===================================================================
+async function scheduleAppointment(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const { 
+      patient_id, 
+      availability_id, 
+      scheduled_date,
+      appointment_type = 'Presencial',
+      reason,
+      notes,
+      priority_level = 'Normal'
+    } = args;
+    
+    // 1. Validar que el paciente existe
+    const [patientCheck] = await connection.execute(
+      'SELECT id, name, document FROM patients WHERE id = ? AND status = "Activo"',
+      [patient_id]
+    );
+    
+    if ((patientCheck as any[]).length === 0) {
+      await connection.rollback();
+      return {
+        success: false,
+        error: 'Paciente no encontrado o inactivo'
+      };
+    }
+    
+    const patient = (patientCheck as any[])[0];
+    
+    // 2. Obtener información de disponibilidad
+    const [availCheck] = await connection.execute(`
+      SELECT 
+        a.id, a.date, a.start_time, a.end_time, a.duration_minutes,
+        a.location_id, a.specialty_id, a.doctor_id,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name
+      FROM availabilities a
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE a.id = ? AND a.status = 'Activa'
+    `, [availability_id]);
+    
+    if ((availCheck as any[]).length === 0) {
+      await connection.rollback();
+      return {
+        success: false,
+        error: 'Disponibilidad no encontrada o inactiva'
+      };
+    }
+    
+    const availability = (availCheck as any[])[0];
+    
+    // 3. Extraer día de scheduled_date para verificar distribución
+    const scheduledDateTime = scheduled_date; // "2025-10-15 09:00:00"
+    const appointmentDate = scheduled_date.split(' ')[0]; // "2025-10-15"
+    
+    // 4. Verificar que la fecha de la cita coincida con la disponibilidad
+    const availabilityDate = availability.date.toISOString().split('T')[0];
+    if (appointmentDate !== availabilityDate) {
+      await connection.rollback();
+      return {
+        success: false,
+        error: `La fecha de la cita (${appointmentDate}) no coincide con la disponibilidad del doctor (${availabilityDate})`
+      };
+    }
+    
+    // 5. Verificar cupo disponible en availability_distribution
+    // Buscar por availability_id (puede haber múltiples day_date para la misma availability)
+    const [distCheck] = await connection.execute(`
+      SELECT id, day_date, quota, assigned, (quota - assigned) as available
+      FROM availability_distribution
+      WHERE availability_id = ?
+      ORDER BY (quota - assigned) DESC
+      LIMIT 1
+    `, [availability_id]);
+    
+    if ((distCheck as any[]).length === 0) {
+      await connection.rollback();
+      return {
+        success: false,
+        error: 'No hay distribución de disponibilidad para esta cita',
+        suggestion: 'Contacte al administrador para crear la distribución de cupos'
+      };
+    }
+    
+    const distribution = (distCheck as any[])[0];
+    
+    // **NUEVA LÓGICA**: Si no hay cupos, guardar en lista de espera
+    if (distribution.available <= 0) {
+      // Insertar en appointments_waiting_list en lugar de rechazar
+      // La fecha programada puede ser flexible, se asignará cuando haya cupo
+      const [waitingInsert] = await connection.execute(`
+        INSERT INTO appointments_waiting_list (
+          patient_id,
+          availability_id,
+          scheduled_date,
+          appointment_type,
+          reason,
+          notes,
+          priority_level,
+          status,
+          requested_by,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'Sistema_MCP', NOW())
+      `, [
+        patient_id,
+        availability_id,
+        scheduledDateTime,
+        appointment_type,
+        reason,
+        notes || null,
+        priority_level
+      ]);
+      
+      const waiting_list_id = (waitingInsert as any).insertId;
+      
+      // Contar cuántas personas están esperando para esta ESPECIALIDAD (no solo esta availability)
+      const [countResult] = await connection.execute(`
+        SELECT COUNT(*) as total_waiting
+        FROM appointments_waiting_list wl
+        INNER JOIN availabilities a ON wl.availability_id = a.id
+        WHERE a.specialty_id = ? 
+          AND wl.status = 'pending'
+      `, [availability.specialty_id]);
+      
+      const totalWaiting = (countResult as any[])[0].total_waiting;
+      
+      // Calcular posición en la cola según prioridad
+      const [queueResult] = await connection.execute(`
+        SELECT COUNT(*) + 1 as queue_position
+        FROM appointments_waiting_list wl
+        INNER JOIN availabilities a ON wl.availability_id = a.id
+        WHERE a.specialty_id = ?
+          AND wl.status = 'pending'
+          AND (
+            (wl.priority_level = 'Urgente' AND ? != 'Urgente')
+            OR (wl.priority_level = 'Alta' AND ? NOT IN ('Urgente', 'Alta'))
+            OR (wl.priority_level = 'Normal' AND ? = 'Baja')
+            OR (wl.priority_level = ? AND wl.created_at < NOW())
+          )
+      `, [availability.specialty_id, priority_level, priority_level, priority_level, priority_level]);
+      
+      const queuePosition = (queueResult as any[])[0].queue_position;
+      
+      await connection.commit();
+      
+      return {
+        success: true,
+        waiting_list: true,
+        message: 'No hay cupos disponibles. Ha sido agregado a la lista de espera prioritaria',
+        waiting_list_id: waiting_list_id,
+        queue_position: queuePosition,
+        total_waiting_specialty: totalWaiting,
+        patient: {
+          id: patient.id,
+          name: patient.name,
+          document: patient.document
+        },
+        requested_for: {
+          appointment_type: appointment_type,
+          priority_level: priority_level,
+          reason: reason,
+          specialty: {
+            id: availability.specialty_id,
+            name: availability.specialty_name
+          },
+          location: {
+            id: availability.location_id,
+            name: availability.location_name
+          }
+        },
+        info: `Ha sido agregado a la lista de espera para ${availability.specialty_name} con prioridad ${priority_level}. Una operadora se comunicará con usted cuando haya disponibilidad.`,
+        next_steps: 'Una de nuestras operadoras se comunicará con usted tan pronto tengamos una cita disponible para confirmarle la fecha y hora.'
+      };
+    }
+    
+    // 6. Verificar que el paciente no tenga cita duplicada en la misma fecha/hora
+    const [dupCheck] = await connection.execute(`
+      SELECT id FROM appointments
+      WHERE patient_id = ? 
+        AND scheduled_at = ?
+        AND status IN ('Pendiente', 'Confirmada')
+    `, [patient_id, scheduledDateTime]);
+    
+    if ((dupCheck as any[]).length > 0) {
+      await connection.rollback();
+      return {
+        success: false,
+        error: 'El paciente ya tiene una cita agendada en este horario'
+      };
+    }
+    
+    // 7. Insertar la cita en appointments
+    const [insertResult] = await connection.execute(`
+      INSERT INTO appointments (
+        patient_id,
+        availability_id,
+        location_id,
+        specialty_id,
+        doctor_id,
+        scheduled_at,
+        duration_minutes,
+        appointment_type,
+        status,
+        reason,
+        notes,
+        priority_level,
+        appointment_source,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?, ?, 'Sistema_Inteligente', NOW())
+    `, [
+      patient_id,
+      availability_id,
+      availability.location_id,
+      availability.specialty_id,
+      availability.doctor_id,
+      scheduledDateTime, // Fecha y hora completa de la cita
+      availability.duration_minutes,
+      appointment_type,
+      reason,
+      notes || null,
+      priority_level
+    ]);
+    
+    const appointment_id = (insertResult as any).insertId;
+    
+    // 8. Actualizar availability_distribution (incrementar assigned)
+    await connection.execute(`
+      UPDATE availability_distribution
+      SET assigned = assigned + 1
+      WHERE id = ?
+    `, [distribution.id]);
+    
+    await connection.commit();
+    
+    // 9. Retornar confirmación con información clara
+    return {
+      success: true,
+      message: 'Cita agendada exitosamente',
+      appointment_id: appointment_id,
+      appointment: {
+        id: appointment_id,
+        patient: {
+          id: patient.id,
+          name: patient.name,
+          document: patient.document
+        },
+        scheduled_at: scheduledDateTime, // Fecha y hora de la cita
+        appointment_date: appointmentDate, // Solo fecha de la cita
+        duration_minutes: availability.duration_minutes,
+        appointment_type: appointment_type,
+        status: 'Confirmada',
+        doctor: {
+          id: availability.doctor_id,
+          name: availability.doctor_name
+        },
+        specialty: {
+          id: availability.specialty_id,
+          name: availability.specialty_name
+        },
+        location: {
+          id: availability.location_id,
+          name: availability.location_name
+        },
+        reason: reason,
+        priority_level: priority_level
+      },
+      availability_info: {
+        distribution_date: distribution.day_date, // Fecha en que se distribuyeron cupos
+        quota: distribution.quota,
+        assigned: distribution.assigned + 1,
+        remaining: distribution.available - 1
+      },
+      info: 'La cita fue registrada y el cupo actualizado exitosamente'
+    };
+    
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error agendando cita:', error);
+    return {
+      success: false,
+      error: 'Error al agendar la cita',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN: CONSULTAR CITAS DEL PACIENTE
+// ===================================================================
+async function getPatientAppointments(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    const { patient_id, status = 'Todas', from_date } = args;
+    
+    // Construir query con filtros
+    let query = `
+      SELECT 
+        a.id,
+        a.scheduled_at,
+        a.duration_minutes,
+        a.appointment_type,
+        a.status,
+        a.reason,
+        a.notes,
+        a.priority_level,
+        a.created_at,
+        d.id as doctor_id,
+        d.name as doctor_name,
+        s.id as specialty_id,
+        s.name as specialty_name,
+        l.id as location_id,
+        l.name as location_name,
+        l.address as location_address,
+        l.phone as location_phone
+      FROM appointments a
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE a.patient_id = ?
+    `;
+    
+    const params: any[] = [patient_id];
+    
+    if (status !== 'Todas') {
+      query += ' AND a.status = ?';
+      params.push(status);
+    }
+    
+    if (from_date) {
+      query += ' AND DATE(a.scheduled_at) >= ?';
+      params.push(from_date);
+    }
+    
+    query += ' ORDER BY a.scheduled_at DESC';
+    
+    const [rows] = await connection.execute(query, params);
+    const appointments = rows as any[];
+    
+    if (appointments.length === 0) {
+      return {
+        success: true,
+        message: 'No se encontraron citas para este paciente',
+        count: 0,
+        appointments: []
+      };
+    }
+    
+    const formattedAppointments = appointments.map(apt => ({
+      id: apt.id,
+      scheduled_at: apt.scheduled_at,
+      duration_minutes: apt.duration_minutes,
+      appointment_type: apt.appointment_type,
+      status: apt.status,
+      reason: apt.reason,
+      notes: apt.notes,
+      priority_level: apt.priority_level,
+      created_at: apt.created_at,
+      doctor: {
+        id: apt.doctor_id,
+        name: apt.doctor_name
+      },
+      specialty: {
+        id: apt.specialty_id,
+        name: apt.specialty_name
+      },
+      location: {
+        id: apt.location_id,
+        name: apt.location_name,
+        address: apt.location_address,
+        phone: apt.location_phone
+      }
+    }));
+    
+    // Clasificar citas
+    const now = new Date();
+    const upcoming = formattedAppointments.filter(apt => 
+      new Date(apt.scheduled_at) > now && 
+      ['Pendiente', 'Confirmada'].includes(apt.status)
+    );
+    
+    const past = formattedAppointments.filter(apt => 
+      new Date(apt.scheduled_at) <= now ||
+      ['Completada', 'Cancelada'].includes(apt.status)
+    );
+    
+    return {
+      success: true,
+      message: `Se encontraron ${appointments.length} citas`,
+      count: appointments.length,
+      summary: {
+        total: appointments.length,
+        upcoming: upcoming.length,
+        past: past.length,
+        by_status: {
+          pendiente: appointments.filter(a => a.status === 'Pendiente').length,
+          confirmada: appointments.filter(a => a.status === 'Confirmada').length,
+          completada: appointments.filter(a => a.status === 'Completada').length,
+          cancelada: appointments.filter(a => a.status === 'Cancelada').length
+        }
+      },
+      upcoming_appointments: upcoming,
+      past_appointments: past
+    };
+    
+  } catch (error: any) {
+    console.error('Error consultando citas del paciente:', error);
+    return {
+      success: false,
+      error: 'Error al consultar citas del paciente',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN: CONSULTAR LISTA DE ESPERA
+// ===================================================================
+async function getWaitingListAppointments(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    const { 
+      patient_id,
+      doctor_id,
+      specialty_id,
+      location_id,
+      priority_level = 'Todas',
+      status = 'pending',
+      limit = 50
+    } = args;
+    
+    // Construir query con filtros
+    let query = `
+      SELECT 
+        wl.id as waiting_list_id,
+        wl.status,
+        wl.priority_level,
+        wl.scheduled_date as requested_date,
+        wl.appointment_type,
+        wl.reason,
+        wl.notes,
+        wl.created_at as added_to_waiting_list_at,
+        wl.expires_at,
+        DATEDIFF(wl.expires_at, NOW()) as days_until_expiration,
+        wl.reassigned_at,
+        wl.reassigned_appointment_id,
+        
+        -- Información del paciente
+        p.id as patient_id,
+        p.name as patient_name,
+        p.document as patient_document,
+        p.phone as patient_phone,
+        p.email as patient_email,
+        
+        -- Información de la disponibilidad
+        a.id as availability_id,
+        a.date as availability_date,
+        a.start_time,
+        a.end_time,
+        a.duration_minutes,
+        a.capacity as total_capacity,
+        
+        -- Cupos actuales
+        (
+          SELECT COUNT(*)
+          FROM appointments app
+          WHERE app.availability_id = a.id 
+            AND app.status IN ('Pendiente', 'Confirmada')
+        ) as current_appointments_count,
+        (
+          a.capacity - (
+            SELECT COUNT(*)
+            FROM appointments app
+            WHERE app.availability_id = a.id 
+              AND app.status IN ('Pendiente', 'Confirmada')
+          )
+        ) as slots_currently_available,
+        
+        -- Información del doctor
+        d.id as doctor_id,
+        d.name as doctor_name,
+        d.email as doctor_email,
+        
+        -- Información de la especialidad
+        s.id as specialty_id,
+        s.name as specialty_name,
+        
+        -- Información de la ubicación
+        l.id as location_id,
+        l.name as location_name,
+        l.address as location_address,
+        
+        -- Posición en la cola (por ESPECIALIDAD, no por availability específico)
+        (
+          SELECT COUNT(*) + 1
+          FROM appointments_waiting_list wl2
+          INNER JOIN availabilities a2 ON wl2.availability_id = a2.id
+          WHERE a2.specialty_id = s.id
+            AND wl2.status = 'pending'
+            AND (
+              (wl2.priority_level = 'Urgente' AND wl.priority_level != 'Urgente')
+              OR (wl2.priority_level = 'Alta' AND wl.priority_level NOT IN ('Urgente', 'Alta'))
+              OR (wl2.priority_level = 'Normal' AND wl.priority_level = 'Baja')
+              OR (wl2.priority_level = wl.priority_level AND wl2.created_at < wl.created_at)
+            )
+        ) as queue_position
+      
+      FROM appointments_waiting_list wl
+      INNER JOIN patients p ON wl.patient_id = p.id
+      INNER JOIN availabilities a ON wl.availability_id = a.id
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE 1=1
+    `;
+    
+    const params: any[] = [];
+    
+    if (patient_id) {
+      query += ' AND wl.patient_id = ?';
+      params.push(patient_id);
+    }
+    
+    if (doctor_id) {
+      query += ' AND a.doctor_id = ?';
+      params.push(doctor_id);
+    }
+    
+    if (specialty_id) {
+      query += ' AND a.specialty_id = ?';
+      params.push(specialty_id);
+    }
+    
+    if (location_id) {
+      query += ' AND a.location_id = ?';
+      params.push(location_id);
+    }
+    
+    if (priority_level !== 'Todas') {
+      query += ' AND wl.priority_level = ?';
+      params.push(priority_level);
+    }
+    
+    if (status !== 'all') {
+      query += ' AND wl.status = ?';
+      params.push(status);
+    }
+    
+    query += ` 
+      ORDER BY 
+        CASE wl.priority_level
+          WHEN 'Urgente' THEN 1
+          WHEN 'Alta' THEN 2
+          WHEN 'Normal' THEN 3
+          WHEN 'Baja' THEN 4
+        END,
+        wl.created_at ASC
+      LIMIT ?
+    `;
+    params.push(limit);
+    
+    const [rows] = await connection.execute(query, params);
+    const waitingList = rows as any[];
+    
+    if (waitingList.length === 0) {
+      return {
+        success: true,
+        message: 'No hay solicitudes en lista de espera con los filtros aplicados',
+        count: 0,
+        waiting_list: [],
+        filters_applied: {
+          patient_id: patient_id || 'Ninguno',
+          doctor_id: doctor_id || 'Ninguno',
+          specialty_id: specialty_id || 'Ninguno',
+          location_id: location_id || 'Ninguno',
+          priority_level: priority_level,
+          status: status,
+          limit: limit
+        }
+      };
+    }
+    
+    const formattedWaitingList = waitingList.map(item => ({
+      waiting_list_id: item.waiting_list_id,
+      queue_position: item.queue_position,
+      status: item.status,
+      priority_level: item.priority_level,
+      requested_date: item.requested_date,
+      appointment_type: item.appointment_type,
+      reason: item.reason,
+      notes: item.notes,
+      added_to_waiting_list_at: item.added_to_waiting_list_at,
+      days_waiting: Math.floor((Date.now() - new Date(item.added_to_waiting_list_at).getTime()) / (1000 * 60 * 60 * 24)),
+      patient: {
+        id: item.patient_id,
+        name: item.patient_name,
+        document: item.patient_document,
+        phone: item.patient_phone,
+        email: item.patient_email
+      },
+      availability: {
+        id: item.availability_id,
+        date: item.availability_date,
+        time_range: `${item.start_time.slice(0,5)} - ${item.end_time.slice(0,5)}`,
+        duration_minutes: item.duration_minutes,
+        total_capacity: item.total_capacity,
+        current_appointments: item.current_appointments_count,
+        slots_currently_available: item.slots_currently_available,
+        can_be_reassigned: item.slots_currently_available > 0
+      },
+      doctor: {
+        id: item.doctor_id,
+        name: item.doctor_name,
+        email: item.doctor_email
+      },
+      specialty: {
+        id: item.specialty_id,
+        name: item.specialty_name
+      },
+      location: {
+        id: item.location_id,
+        name: item.location_name,
+        address: item.location_address
+      },
+      reassignment_info: item.status === 'reassigned' ? {
+        reassigned_at: item.reassigned_at,
+        appointment_id: item.reassigned_appointment_id
+      } : null
+    }));
+    
+    // Estadísticas
+    const stats = {
+      total_waiting: waitingList.length,
+      by_priority: {
+        urgente: waitingList.filter(w => w.priority_level === 'Urgente').length,
+        alta: waitingList.filter(w => w.priority_level === 'Alta').length,
+        normal: waitingList.filter(w => w.priority_level === 'Normal').length,
+        baja: waitingList.filter(w => w.priority_level === 'Baja').length
+      },
+      can_be_reassigned_now: waitingList.filter(w => w.slots_currently_available > 0).length
+    };
+    
+    return {
+      success: true,
+      message: `Se encontraron ${waitingList.length} solicitudes en lista de espera`,
+      count: waitingList.length,
+      waiting_list: formattedWaitingList,
+      statistics: stats,
+      filters_applied: {
+        patient_id: patient_id || 'Ninguno',
+        doctor_id: doctor_id || 'Ninguno',
+        specialty_id: specialty_id || 'Ninguno',
+        location_id: location_id || 'Ninguno',
+        priority_level: priority_level,
+        status: status,
+        limit: limit
+      },
+      info: {
+        queue_order: 'Las solicitudes están ordenadas por prioridad (Urgente > Alta > Normal > Baja) y luego por antigüedad',
+        reassignment: 'Use reassignWaitingListAppointments para procesar automáticamente cuando haya cupos disponibles'
+      }
+    };
+    
+  } catch (error: any) {
+    console.error('Error consultando lista de espera:', error);
+    return {
+      success: false,
+      error: 'Error al consultar lista de espera',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN: REASIGNAR DESDE LISTA DE ESPERA
+// ===================================================================
+async function reassignWaitingListAppointments(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+  
+  try {
+    const { availability_id } = args;
+    
+    // Verificar que la disponibilidad existe
+    const [availCheck] = await connection.execute(`
+      SELECT 
+        a.id, a.date, a.start_time, a.end_time,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name,
+        a.capacity,
+        (
+          SELECT COUNT(*)
+          FROM appointments app
+          WHERE app.availability_id = a.id 
+            AND app.status IN ('Pendiente', 'Confirmada')
+        ) as current_appointments
+      FROM availabilities a
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE a.id = ?
+    `, [availability_id]);
+    
+    if ((availCheck as any[]).length === 0) {
+      return {
+        success: false,
+        error: 'Disponibilidad no encontrada'
+      };
+    }
+    
+    const availability = (availCheck as any[])[0];
+    const slotsAvailable = availability.capacity - availability.current_appointments;
+    
+    if (slotsAvailable <= 0) {
+      return {
+        success: false,
+        message: 'No hay cupos disponibles para reasignar',
+        availability_info: {
+          availability_id: availability.id,
+          date: availability.date,
+          doctor: availability.doctor_name,
+          specialty: availability.specialty_name,
+          location: availability.location_name,
+          capacity: availability.capacity,
+          current_appointments: availability.current_appointments,
+          slots_available: slotsAvailable
+        }
+      };
+    }
+    
+    // Llamar al procedimiento almacenado
+    await connection.execute(`CALL process_waiting_list_for_availability(?)`, [availability_id]);
+    
+    // Consultar resultados
+    const [reassignedResult] = await connection.execute(`
+      SELECT COUNT(*) as total_reassigned
+      FROM appointments_waiting_list
+      WHERE availability_id = ? AND status = 'reassigned'
+    `, [availability_id]);
+    
+    const totalReassigned = (reassignedResult as any[])[0].total_reassigned;
+    
+    const [stillWaitingResult] = await connection.execute(`
+      SELECT COUNT(*) as still_waiting
+      FROM appointments_waiting_list
+      WHERE availability_id = ? AND status = 'pending'
+    `, [availability_id]);
+    
+    const stillWaiting = (stillWaitingResult as any[])[0].still_waiting;
+    
+    // Nueva consulta de cupos actuales
+    const [updatedAvailCheck] = await connection.execute(`
+      SELECT 
+        a.capacity,
+        (
+          SELECT COUNT(*)
+          FROM appointments app
+          WHERE app.availability_id = a.id 
+            AND app.status IN ('Pendiente', 'Confirmada')
+        ) as current_appointments
+      FROM availabilities a
+      WHERE a.id = ?
+    `, [availability_id]);
+    
+    const updated = (updatedAvailCheck as any[])[0];
+    const slotsRemainingAfter = updated.capacity - updated.current_appointments;
+    
+    return {
+      success: true,
+      message: `Se procesó la lista de espera exitosamente`,
+      reassigned_count: totalReassigned,
+      still_waiting_count: stillWaiting,
+      availability_info: {
+        availability_id: availability.id,
+        date: availability.date,
+        doctor: availability.doctor_name,
+        specialty: availability.specialty_name,
+        location: availability.location_name,
+        capacity: updated.capacity,
+        appointments_before: availability.current_appointments,
+        appointments_after: updated.current_appointments,
+        slots_available_before: slotsAvailable,
+        slots_available_after: slotsRemainingAfter
+      },
+      info: totalReassigned > 0
+        ? `Se reasignaron ${totalReassigned} solicitudes de la lista de espera a citas confirmadas`
+        : 'No se reasignó ninguna solicitud (puede que no hayan solicitudes o los cupos ya estén llenos)'
+    };
+    
+  } catch (error: any) {
+    console.error('Error procesando lista de espera:', error);
+    return {
+      success: false,
+      error: 'Error al procesar lista de espera',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// === IMPLEMENTACIONES DE FUNCIONES AUXILIARES (YA NO SE USAN) ===
 
 async function searchPatients(query: string, limit: number = 20) {
   const like = `%${query}%`;
@@ -1529,10 +2471,6 @@ async function getEPS() {
   const [rows] = await pool.query('SELECT id, name FROM eps ORDER BY name');
   return { eps: rows };
 }
-
-// === CONFIGURACIÓN DE RUTAS MODULARES ===
-// Configurar las nuevas rutas modulares de pacientes
-setupPatientModularRoutes(app, pool);
 
 // === ENDPOINTS MCP ===
 

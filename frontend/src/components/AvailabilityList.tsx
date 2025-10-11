@@ -6,6 +6,7 @@ import { Separator } from "@/components/ui/separator";
 import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
+import { safeFormatDate } from "@/utils/dateHelpers";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Availability } from "@/hooks/useAppointmentData";
 import { useAppointmentData } from "@/hooks/useAppointmentData";
@@ -186,33 +187,111 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
           <div className="flex items-center justify-between">
             <CardTitle className="text-xl font-bold flex items-center gap-2">
               <CalendarIcon className="w-5 h-5 text-blue-600" />
-              Disponibilidades del día
-              {date && (
-                <span className="text-base font-normal text-gray-500 ml-2">
-                  ({format(date, "EEEE, d 'de' MMMM", { locale: es })})
-                </span>
-              )}
+              {date ? 'Agendas del Día Seleccionado' : 'Próximas Disponibilidades'}
             </CardTitle>
             <Badge variant="secondary" className="bg-blue-100 text-blue-800">
               {filteredAvailabilities.length} agenda{filteredAvailabilities.length !== 1 ? 's' : ''}
             </Badge>
           </div>
           <CardDescription className="text-sm text-gray-600">
-            Gestiona y supervisa las agendas médicas programadas
+            {date 
+              ? `Mostrando agendas para el ${format(date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}`
+              : 'Gestiona y supervisa todas las agendas médicas futuras'
+            }
           </CardDescription>
         </CardHeader>
         
+        {/* Banner de filtro activo por fecha */}
+        {date && (
+          <div className="mx-6 mt-2 mb-4 p-4 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg shadow-md">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-white/20 rounded-lg">
+                  <CalendarDays className="w-5 h-5" />
+                </div>
+                <div>
+                  <p className="font-semibold text-base">Filtro por Fecha Activo</p>
+                  <p className="text-sm text-blue-50">
+                    {filteredAvailabilities.length === 0 
+                      ? `No hay agendas programadas para esta fecha`
+                      : `Mostrando ${filteredAvailabilities.length} agenda${filteredAvailabilities.length !== 1 ? 's' : ''} programada${filteredAvailabilities.length !== 1 ? 's' : ''}`
+                    }
+                  </p>
+                </div>
+              </div>
+              <Button 
+                variant="ghost" 
+                size="sm"
+                className="text-white hover:bg-white/20 hover:text-white"
+                onClick={() => {
+                  // Trigger parent component to clear date filter
+                  const event = new CustomEvent('clearDateFilter');
+                  window.dispatchEvent(event);
+                }}
+              >
+                <X className="w-4 h-4 mr-2" />
+                Ver Todas
+              </Button>
+            </div>
+          </div>
+        )}
+        
         <CardContent className="p-6">
           {filteredAvailabilities.length === 0 ? (
-            <div className="text-center py-16">
-              <CalendarIcon className="w-20 h-20 text-gray-300 mx-auto mb-6" />
-              <h3 className="text-xl font-medium text-gray-900 mb-2">No hay disponibilidades</h3>
-              <p className="text-gray-500 max-w-md mx-auto">
-                {date 
-                  ? `No se encontraron agendas para el ${format(date, "EEEE, d 'de' MMMM", { locale: es })}`
-                  : "Selecciona una fecha para ver las disponibilidades disponibles"
-                }
-              </p>
+            <div className="text-center py-16 px-6">
+              <div className="max-w-md mx-auto">
+                {date ? (
+                  // Mensaje específico cuando se filtra por fecha
+                  <>
+                    <div className="mb-6 p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-full w-24 h-24 mx-auto flex items-center justify-center">
+                      <CalendarIcon className="w-12 h-12 text-blue-500" />
+                    </div>
+                    <h3 className="text-2xl font-bold text-gray-900 mb-3">
+                      No hay agendas para este día
+                    </h3>
+                    <p className="text-gray-600 mb-6 leading-relaxed">
+                      No se encontraron agendas programadas para el{' '}
+                      <span className="font-semibold text-blue-600">
+                        {format(date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                      </span>
+                    </p>
+                    <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                      <Button
+                        variant="default"
+                        className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+                        onClick={() => {
+                          const event = new CustomEvent('createAvailabilityForDate', { 
+                            detail: { date: date.toISOString().split('T')[0] } 
+                          });
+                          window.dispatchEvent(event);
+                        }}
+                      >
+                        <UserPlus className="w-4 h-4 mr-2" />
+                        Crear Agenda para este Día
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          const event = new CustomEvent('clearDateFilter');
+                          window.dispatchEvent(event);
+                        }}
+                      >
+                        <CalendarDays className="w-4 h-4 mr-2" />
+                        Ver Todas las Agendas
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  // Mensaje general cuando no hay filtro de fecha
+                  <>
+                    <CalendarIcon className="w-20 h-20 text-gray-300 mx-auto mb-6" />
+                    <h3 className="text-xl font-medium text-gray-900 mb-2">No hay disponibilidades</h3>
+                    <p className="text-gray-500 max-w-md mx-auto">
+                      No se encontraron agendas próximas que coincidan con los filtros seleccionados
+                    </p>
+                  </>
+                )}
+              </div>
             </div>
           ) : (
             <div className="space-y-4">
@@ -227,8 +306,8 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                   >
                     <Card 
                       className={`border-l-4 transition-all duration-300 hover:shadow-lg cursor-pointer group ${
-                        availability.status === 'Activa' ? 'border-l-green-500 bg-gradient-to-r from-green-50/80 to-white' :
-                        availability.status === 'Completa' ? 'border-l-blue-500 bg-gradient-to-r from-blue-50/80 to-white' :
+                        availability.status === 'active' ? 'border-l-green-500 bg-gradient-to-r from-green-50/80 to-white' :
+                        availability.status === 'completed' ? 'border-l-blue-500 bg-gradient-to-r from-blue-50/80 to-white' :
                         'border-l-red-500 bg-gradient-to-r from-red-50/80 to-white'
                       } ${expandedCard === availability.id ? 'shadow-xl ring-2 ring-blue-100' : 'shadow-md'}`}
                       onClick={() => setExpandedCard(expandedCard === availability.id ? null : availability.id)}
@@ -285,13 +364,13 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                 {getStatusIcon(availability.status)}
                                 {availability.status}
                               </Badge>
-                              {availability.status === 'Activa' && availability.bookedSlots < availability.capacity && (
+                              {availability.status === 'active' && availability.bookedSlots < availability.capacity && (
                                 <Badge className="bg-green-500 text-white border-green-600 flex items-center gap-1 animate-pulse">
                                   <UserPlus className="w-3 h-3" />
                                   {availability.capacity - availability.bookedSlots} disponibles
                                 </Badge>
                               )}
-                              {availability.status === 'Activa' && availability.bookedSlots < availability.capacity && (
+                              {availability.status === 'active' && availability.bookedSlots < availability.capacity && (
                                 <Button
                                   size="sm"
                                   className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold shadow-lg hover:shadow-xl transition-all duration-200"
@@ -305,9 +384,15 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                 </Button>
                               )}
                               <div className="text-right">
-                                <div className="flex items-center gap-1 text-sm font-bold text-gray-700">
-                                  <Clock className="w-4 h-4" />
-                                  {availability.startTime} - {availability.endTime}
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-center gap-1 text-sm font-bold text-blue-700">
+                                    <CalendarIcon className="w-4 h-4" />
+                                    {safeFormatDate(availability.date, "EEE, d 'de' MMM", { locale: es })}
+                                  </div>
+                                  <div className="flex items-center gap-1 text-sm font-bold text-gray-700">
+                                    <Clock className="w-4 h-4" />
+                                    {availability.startTime} - {availability.endTime}
+                                  </div>
                                 </div>
                               </div>
                             </div>

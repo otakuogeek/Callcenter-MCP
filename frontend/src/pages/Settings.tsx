@@ -26,27 +26,16 @@ const Settings = () => {
               description="Personaliza y configura el sistema de call center"
             />
 
-            <Tabs defaultValue="general" className="space-y-6">
-              <TabsList className="grid w-full grid-cols-5">
-                <TabsTrigger value="general" className="flex items-center gap-2">
-                  <SettingsIcon className="w-4 h-4" />
-                  General
-                </TabsTrigger>
+            <Tabs defaultValue="management" className="space-y-6">
+              <TabsList className="grid w-full grid-cols-2">
+                {/* Ocultas: General, IA y Notificaciones */}
                 <TabsTrigger value="management" className="flex items-center gap-2">
                   <Users className="w-4 h-4" />
                   Gestión
                 </TabsTrigger>
-                <TabsTrigger value="ai" className="flex items-center gap-2">
-                  <Bot className="w-4 h-4" />
-                  IA
-                </TabsTrigger>
                 <TabsTrigger value="users" className="flex items-center gap-2">
                   <User className="w-4 h-4" />
                   Usuarios
-                </TabsTrigger>
-                <TabsTrigger value="notifications" className="flex items-center gap-2">
-                  <Bell className="w-4 h-4" />
-                  Notificaciones
                 </TabsTrigger>
               </TabsList>
 

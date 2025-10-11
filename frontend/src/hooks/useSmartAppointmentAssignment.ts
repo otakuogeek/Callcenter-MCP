@@ -13,9 +13,15 @@ export interface SmartAssignmentRequest {
   specialtyId: number;
   locationId?: number;
   preferredDoctorId?: number;
-  urgencyLevel: 'Baja' | 'Media' | 'Alta' | 'Urgente';
-  appointmentType: 'Presencial' | 'Telemedicina';
-  durationMinutes: number;
+  
+  // Información de calendario (cuando se selecciona doctor específico)
+  preferredDate?: string;
+  timeSlotInfo?: {
+    distributionId: number;
+    availabilityId: number;
+    startTime: string;
+    endTime: string;
+  };
   
   // Información adicional
   reason?: string;
@@ -25,6 +31,11 @@ export interface SmartAssignmentRequest {
   // Configuración de búsqueda
   searchDaysAhead?: number;
   preferredTimeSlots?: string[];
+  
+  // Campos legacy (mantenidos para compatibilidad)
+  urgencyLevel?: 'Baja' | 'Media' | 'Alta' | 'Urgente';
+  appointmentType?: 'Presencial' | 'Telemedicina';
+  durationMinutes?: number;
 }
 
 export interface AssignmentResult {
@@ -98,6 +109,7 @@ export function useSmartAppointmentAssignment() {
         
         if (existingPatient) {
           patientId = Number(existingPatient.id);
+          console.log('Paciente existente encontrado:', { id: patientId, document: existingPatient.document });
         } else {
           // Crear nuevo paciente
           const newPatient = await api.createPatient({
@@ -107,10 +119,26 @@ export function useSmartAppointmentAssignment() {
             email: request.patientEmail || null,
             status: 'Activo',
           });
-          patientId = Number((newPatient as any).id);
+          
+          console.log('Nuevo paciente creado:', newPatient);
+          
+          // Verificar que el paciente tenga ID válido
+          if (!newPatient || !newPatient.id) {
+            throw new Error('Error: No se pudo obtener ID del paciente creado');
+          }
+          
+          patientId = Number(newPatient.id);
+          console.log('ID del nuevo paciente:', patientId);
         }
+        
+        // Verificar que el patientId sea válido
+        if (!patientId || isNaN(patientId) || patientId <= 0) {
+          throw new Error(`ID de paciente inválido: ${patientId}`);
+        }
+        
       } catch (error) {
-        throw new Error('Error procesando información del paciente');
+        console.error('Error procesando información del paciente:', error);
+        throw new Error('Error procesando información del paciente: ' + (error as Error).message);
       }
 
       // 2. Intentar asignación automática de cita
@@ -130,7 +158,11 @@ export function useSmartAppointmentAssignment() {
           preferred_time_slots: request.preferredTimeSlots,
         };
 
+        console.log('Enviando solicitud de asignación automática:', autoAssignmentRequest);
+
         const assignmentResponse = await api.post('/auto-assignment/smart-assign', autoAssignmentRequest);
+        
+        console.log('Respuesta de asignación automática:', assignmentResponse);
         
         if (assignmentResponse.data.success) {
           if (assignmentResponse.data.assignment_type === 'appointment') {
@@ -257,7 +289,18 @@ function mapUrgencyToPriority(urgency: 'Baja' | 'Media' | 'Alta' | 'Urgente'): '
 
 function formatDate(dateString: string): string {
   try {
+    if (!dateString || dateString === 'null' || dateString === 'undefined') {
+      return 'Fecha no disponible';
+    }
+    
     const date = new Date(dateString);
+    
+    // Verificar que la fecha sea válida
+    if (isNaN(date.getTime())) {
+      console.warn('Fecha inválida recibida:', dateString);
+      return dateString; // Devolver el string original si no se puede procesar
+    }
+    
     return date.toLocaleDateString('es-ES', {
       weekday: 'long',
       year: 'numeric',
@@ -266,8 +309,9 @@ function formatDate(dateString: string): string {
       hour: '2-digit',
       minute: '2-digit',
     });
-  } catch {
-    return dateString;
+  } catch (error) {
+    console.warn('Error formateando fecha:', dateString, error);
+    return dateString || 'Fecha no disponible';
   }
 }
 

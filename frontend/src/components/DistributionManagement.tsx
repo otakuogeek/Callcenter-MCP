@@ -8,6 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useDistribution } from '@/hooks/useDistribution';
 import { Edit, Save, X, Users, Calendar, Clock, MapPin, Stethoscope } from 'lucide-react';
+import { safeFormatDate } from '@/utils/dateHelpers';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 
@@ -116,7 +117,7 @@ const DistributionManagement: React.FC<DistributionManagementProps> = ({
                   <div className="space-y-1">
                     <CardTitle className="text-base flex items-center gap-2">
                       <Calendar className="h-4 w-4" />
-                      {format(new Date(distribution.day_date), 'EEEE, dd MMMM yyyy', { locale: es })}
+                      {safeFormatDate(distribution.day_date, 'EEEE, dd MMMM yyyy', { locale: es })}
                     </CardTitle>
                     <CardDescription className="flex items-center gap-4 text-sm">
                       <span className="flex items-center gap-1">
@@ -154,7 +155,7 @@ const DistributionManagement: React.FC<DistributionManagementProps> = ({
                           <div className="text-sm text-muted-foreground space-y-1">
                             <div className="flex items-center gap-2">
                               <Calendar className="h-3 w-3" />
-                              {format(new Date(distribution.day_date), 'dd/MM/yyyy', { locale: es })}
+                              {safeFormatDate(distribution.day_date, 'dd/MM/yyyy', { locale: es })}
                             </div>
                             <div className="flex items-center gap-2">
                               <Users className="h-3 w-3" />

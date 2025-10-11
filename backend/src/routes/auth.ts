@@ -3,6 +3,7 @@ import { z } from 'zod';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pool from '../db/pool';
+import { loginLimiter } from '../middleware/rateLimiters';
 
 const router = Router();
 
@@ -11,7 +12,8 @@ const loginSchema = z.object({
   password: z.string().min(6),
 });
 
-router.post('/login', async (req: Request, res: Response) => {
+// Aplicar rate limiting específico a login
+router.post('/login', loginLimiter, async (req: Request, res: Response) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const { email, password } = parsed.data;

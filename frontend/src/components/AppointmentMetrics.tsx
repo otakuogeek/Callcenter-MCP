@@ -25,12 +25,12 @@ const AppointmentMetrics = ({ availabilities, locations, date }: AppointmentMetr
   const targetYMD = toYMDLocal(target);
 
   const dayAvailabilities = availabilities.filter(a => a.date === targetYMD);
-  const activeAvailabilities = dayAvailabilities.filter(availability => availability.status === "Activa").length;
-  const completedAvailabilities = dayAvailabilities.filter(availability => availability.status === "Completa").length;
-  const cancelledAvailabilities = dayAvailabilities.filter(availability => availability.status === "Cancelada").length;
+  const activeAvailabilities = dayAvailabilities.filter(availability => availability.status === "active").length;
+  const completedAvailabilities = dayAvailabilities.filter(availability => availability.status === "completed").length;
+  const cancelledAvailabilities = dayAvailabilities.filter(availability => availability.status === "cancelled").length;
   const totalCapacityDay = dayAvailabilities.reduce((sum, availability) => sum + availability.capacity, 0);
   const totalBookedDay = dayAvailabilities.reduce((sum, availability) => sum + availability.bookedSlots, 0);
-  const totalActiveLocations = locations.filter(location => location.status === "Activa").length;
+  const totalActiveLocations = locations.filter(location => location.status === "active").length;
   const occupancyRate = totalCapacityDay > 0 ? Math.round((totalBookedDay / totalCapacityDay) * 100) : 0;
 
   const metrics = [

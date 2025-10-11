@@ -17,6 +17,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -63,6 +64,9 @@ const DayDetailModal = ({
             <CalendarIcon className="w-5 h-5 text-blue-600" />
             Agenda del {dateStr}
           </DialogTitle>
+          <DialogDescription>
+            Resumen de disponibilidades y citas programadas para esta fecha
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6 mt-4">

@@ -12,7 +12,7 @@ const schema = z.object({
   phone: z.string().optional().nullable(),
   // Validaremos este campo contra location_types en runtime para permitir tipos dinámicos
   type: z.string().min(1).default('Sucursal'),
-  status: z.enum(['Activa','En Mantenimiento','Inactiva']).default('Activa'),
+  status: z.enum(['active','maintenance','inactive']).default('active'),
   capacity: z.number().int().min(0).default(0),
   current_patients: z.number().int().min(0).default(0),
   hours: z.string().optional().nullable(),

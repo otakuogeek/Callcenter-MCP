@@ -1,0 +1,31 @@
+{
+  "apps": [
+    {
+      "name": "mcp-simple-register",
+      "script": "dist/server-simple-register.js",
+      "cwd": "/home/ubuntu/app/mcp-server-node",
+      "instances": 1,
+      "exec_mode": "cluster",
+      "env": {
+        "NODE_ENV": "production",
+        "PORT": "8978",
+        "DB_HOST": "127.0.0.1",
+        "DB_PORT": "3306",
+        "DB_USER": "biosanar_user",
+        "DB_PASS": "/6Tx0eXqFQONTFuoc7aqPicNlPhmuINU",
+        "DB_NAME": "biosanar"
+      },
+      "log_file": "/home/ubuntu/app/mcp-server-node/logs/simple-register-combined.log",
+      "out_file": "/home/ubuntu/app/mcp-server-node/logs/simple-register-out.log",
+      "error_file": "/home/ubuntu/app/mcp-server-node/logs/simple-register-error.log",
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z",
+      "merge_logs": true,
+      "max_memory_restart": "200M",
+      "watch": false,
+      "ignore_watch": ["logs", "node_modules", "dist"],
+      "restart_delay": 5000,
+      "max_restarts": 10,
+      "min_uptime": "10s"
+    }
+  ]
+}

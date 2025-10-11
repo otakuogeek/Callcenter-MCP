@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -171,13 +172,16 @@ export const QuickAppointmentModal = ({
 
     setLoading(true);
     try {
-      // Construir la fecha y hora de la cita
-      const scheduledAt = `${availabilityData.date} ${availabilityData.startTime}:00`;
+      // Construir la fecha y hora de la cita correctamente
+      // El backend espera formato: 'YYYY-MM-DD HH:MM:SS'
+      const dateStr = availabilityData.date.split('T')[0]; // Obtener solo la fecha sin tiempo
+      const timeStr = availabilityData.startTime.split(':').slice(0, 2).join(':'); // Formato HH:MM
+      const scheduledAt = `${dateStr} ${timeStr}:00`; // Formato completo YYYY-MM-DD HH:MM:SS
       
       const appointmentData = {
         patient_id: selectedPatient.id,
         availability_id: availabilityData.id,
-        location_id: availabilityData.locationId,
+        location_id: availabilityData.locationId || 1, // Fallback para location_id
         specialty_id: availabilityData.specialtyId || 1, // Fallback si no tiene specialtyId
         doctor_id: availabilityData.doctorId || 1, // Fallback si no tiene doctorId
         scheduled_at: scheduledAt,
@@ -185,12 +189,17 @@ export const QuickAppointmentModal = ({
         appointment_type: appointmentForm.appointmentType,
         status: 'Confirmada',
         reason: appointmentForm.reason,
-        notes: appointmentForm.notes || undefined,
-        insurance_type: appointmentForm.insuranceType || undefined,
-        manual: false
+        notes: appointmentForm.notes || null,
+        insurance_type: appointmentForm.insuranceType || null
       };
 
-      await api.createAppointment(appointmentData);
+      console.log('Datos de cita que se están enviando:', appointmentData);
+      console.log('Fecha construida (scheduled_at):', scheduledAt);
+      console.log('Paciente seleccionado:', selectedPatient);
+      console.log('Datos de disponibilidad:', availabilityData);
+
+      const result = await api.createAppointment(appointmentData);
+      console.log('Respuesta del backend:', result);
       
       toast({
         title: 'Cita registrada exitosamente',
@@ -221,6 +230,9 @@ export const QuickAppointmentModal = ({
             <UserPlus className="w-6 h-6 text-blue-600" />
             Registrar Cita Rápida
           </DialogTitle>
+          <DialogDescription>
+            Registra una nueva cita médica de forma rápida seleccionando los datos del paciente y la agenda disponible.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6">

@@ -9,7 +9,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 
 const Login = lazy(() => import("./pages/Login"));
 const Index = lazy(() => import("./pages/Index"));
-const PatientsPage = lazy(() => import("./pages/PatientsPage"));
+const PatientsModernPage = lazy(() => import("./pages/PatientsModernPage"));
 const NewPatientPage = lazy(() => import("./pages/NewPatientPage"));
 const Appointments = lazy(() => import("./pages/Appointments"));
 const DailySchedule = lazy(() => import("./pages/DailySchedule"));
@@ -25,7 +25,7 @@ const Billing = lazy(() => import("./pages/Billing"));
 const Settings = lazy(() => import("./pages/Settings"));
 const AgendaManagement = lazy(() => import("./pages/AgendaManagement"));
 const DistributionDashboard = lazy(() => import("./pages/DistributionDashboard"));
-const QueueManagementPage = lazy(() => import("./pages/QueueManagementPage"));
+const DailyQueue = lazy(() => import("./pages/DailyQueue"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient({
@@ -43,7 +43,15 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
+      <BrowserRouter
+        future={{
+          v7_startTransition: true,
+          v7_relativeSplatPath: true,
+          v7_normalizeFormMethod: true,
+          v7_partialHydration: true,
+          v7_skipActionErrorRevalidation: true
+        }}
+      >
         <Suspense fallback={<LoadingScreen className="h-screen" label="Cargando módulo..." />}>
           <Routes>
             <Route path="/login" element={<Login />} />
@@ -54,7 +62,12 @@ const App = () => (
             } />
             <Route path="/patients" element={
               <ProtectedRoute>
-                <PatientsPage />
+                <PatientsModernPage />
+              </ProtectedRoute>
+            } />
+            <Route path="/patients-modern" element={
+              <ProtectedRoute>
+                <PatientsModernPage />
               </ProtectedRoute>
             } />
             <Route path="/patients/new" element={
@@ -134,7 +147,7 @@ const App = () => (
             } />
             <Route path="/daily-queue" element={
               <ProtectedRoute>
-                <QueueManagementPage />
+                <DailyQueue />
               </ProtectedRoute>
             } />
             <Route path="*" element={<NotFound />} />

@@ -2,6 +2,8 @@
  * Utility functions for safe array operations
  */
 
+import { logger } from './logger';
+
 /**
  * Safely maps over an array, returning empty array if input is not an array
  * @param data - The data to map over
@@ -10,7 +12,7 @@
  */
 export function safeMap<T, R>(data: any, mapFn: (item: T, index: number) => R): R[] {
   if (!Array.isArray(data)) {
-    console.warn('safeMap: Expected array but received:', typeof data, data);
+    logger.warn('safeMap: Expected array but received:', typeof data, data);
     return [];
   }
   return data.map(mapFn);
@@ -24,7 +26,7 @@ export function safeMap<T, R>(data: any, mapFn: (item: T, index: number) => R): 
  */
 export function safeFilter<T>(data: any, filterFn: (item: T, index: number) => boolean): T[] {
   if (!Array.isArray(data)) {
-    console.warn('safeFilter: Expected array but received:', typeof data, data);
+    logger.warn('safeFilter: Expected array but received:', typeof data, data);
     return [];
   }
   return data.filter(filterFn);

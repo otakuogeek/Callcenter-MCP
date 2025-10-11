@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { safeDayOfWeek } from "@/utils/dateHelpers";
 import {
   BarChart,
   Bar,
@@ -156,7 +157,8 @@ const Analytics = () => {
     const order = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
     const map = new Map<string, { sum: number; count: number }>();
     days.forEach(d => {
-      const dow = new Date(d.date).getDay();
+      const dow = safeDayOfWeek(d.date);
+      if (dow === null) return;
       const key = order[dow];
       const cur = map.get(key) || { sum: 0, count: 0 };
       cur.sum += d.consultations; cur.count += 1; map.set(key, cur);

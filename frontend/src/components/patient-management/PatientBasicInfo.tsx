@@ -100,6 +100,15 @@ const PatientBasicInfo = ({ lookupData, onPatientCreated }: PatientBasicInfoProp
       return false;
     }
     
+    if (form.document.trim().length < 5) {
+      toast({
+        title: "Error de validación",
+        description: "El documento debe tener al menos 5 caracteres",
+        variant: "destructive"
+      });
+      return false;
+    }
+    
     if (!form.name.trim()) {
       toast({
         title: "Error de validación",
@@ -107,6 +116,31 @@ const PatientBasicInfo = ({ lookupData, onPatientCreated }: PatientBasicInfoProp
         variant: "destructive"
       });
       return false;
+    }
+    
+    if (form.name.trim().split(' ').length < 2) {
+      toast({
+        title: "Advertencia",
+        description: "Por favor ingrese el nombre completo",
+        variant: "destructive"
+      });
+      return false;
+    }
+    
+    // Validar fecha de nacimiento si está presente
+    if (form.birth_date) {
+      const birthDate = new Date(form.birth_date);
+      const today = new Date();
+      const age = today.getFullYear() - birthDate.getFullYear();
+      
+      if (age < 0 || age > 120) {
+        toast({
+          title: "Error de validación",
+          description: "La fecha de nacimiento no es válida",
+          variant: "destructive"
+        });
+        return false;
+      }
     }
     
     return true;
@@ -120,23 +154,30 @@ const PatientBasicInfo = ({ lookupData, onPatientCreated }: PatientBasicInfoProp
     setSubmitting(true);
     
     try {
-      const response = await fetch('/api/patients-basic', {
+      // Usar variable de entorno para la URL base del API
+      const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+      
+      const response = await fetch(`${apiBase}/patients/basic`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
         body: JSON.stringify({
-          ...form,
-          document_type_id: form.document_type_id ? parseInt(form.document_type_id) : null
+          document: form.document.trim(),
+          document_type_id: form.document_type_id ? parseInt(form.document_type_id) : null,
+          name: form.name.trim(),
+          birth_date: form.birth_date || null,
+          gender: form.gender || 'No especificado'
         })
       });
 
-      if (response.ok) {
-        const result = await response.json();
+      const result = await response.json();
+      
+      if (response.ok && result.success) {
         toast({
           title: "Éxito",
-          description: "Información básica del paciente guardada correctamente",
+          description: result.message || "Información básica del paciente guardada correctamente",
         });
         
         // Resetear formulario
@@ -156,18 +197,36 @@ const PatientBasicInfo = ({ lookupData, onPatientCreated }: PatientBasicInfoProp
         }
         
       } else {
-        const error = await response.json();
-        toast({
-          title: "Error",
-          description: error.message || "Error al guardar la información básica",
-          variant: "destructive"
-        });
+        // Manejar errores específicos
+        if (response.status === 409) {
+          toast({
+            title: "Paciente ya existe",
+            description: result.message || "Ya existe un paciente con este documento",
+            variant: "destructive"
+          });
+        } else if (response.status === 401) {
+          toast({
+            title: "Sesión expirada",
+            description: "Por favor inicie sesión nuevamente",
+            variant: "destructive"
+          });
+          // Redirigir al login después de 2 segundos
+          setTimeout(() => {
+            window.location.href = '/login';
+          }, 2000);
+        } else {
+          toast({
+            title: "Error",
+            description: result.message || "Error al guardar la información básica",
+            variant: "destructive"
+          });
+        }
       }
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error al guardar paciente:', error);
       toast({
-        title: "Error",
-        description: "Error de conexión al guardar la información",
+        title: "Error de conexión",
+        description: "No se pudo conectar con el servidor. Por favor verifique su conexión.",
         variant: "destructive"
       });
     } finally {

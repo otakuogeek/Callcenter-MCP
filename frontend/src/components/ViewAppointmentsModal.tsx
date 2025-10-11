@@ -36,7 +36,7 @@ const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalP
     try {
       const [appointmentsData, availabilitiesData] = await Promise.all([
         api.getAppointments(undefined, date),
-        api.getAvailabilities(date)
+        api.getAvailabilities({ date }) // ✅ FIX: Pasar como objeto
       ]);
       setAppointments(appointmentsData || []);
       const enriched = (availabilitiesData || []).map((a: any) => {

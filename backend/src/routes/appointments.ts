@@ -22,6 +22,7 @@ async function hasRoomColumn(): Promise<boolean> {
 }
 
 const schema = z.object({
+  // Campos básicos existentes
   patient_id: z.number().int(),
   availability_id: z.number().int().nullable().optional(),
   location_id: z.number().int(),
@@ -37,6 +38,26 @@ const schema = z.object({
   notes: z.string().optional().nullable(),
   cancellation_reason: z.string().optional().nullable(),
   manual: z.boolean().optional().default(false),
+  
+  // Nuevos campos agregados en la migración
+  consultation_reason_detailed: z.string().optional().nullable(),
+  additional_notes: z.string().optional().nullable(),
+  priority_level: z.enum(['Baja', 'Normal', 'Alta', 'Urgente']).default('Normal'),
+  insurance_company: z.string().optional().nullable(),
+  insurance_policy_number: z.string().optional().nullable(),
+  appointment_source: z.enum(['Manual', 'Sistema_Inteligente', 'Llamada', 'Web', 'App']).default('Manual'),
+  reminder_sent: z.boolean().optional().default(false),
+  reminder_sent_at: z.string().optional().nullable(),
+  preferred_time: z.string().optional().nullable(),
+  symptoms: z.string().optional().nullable(),
+  allergies: z.string().optional().nullable(),
+  medications: z.string().optional().nullable(),
+  emergency_contact_name: z.string().optional().nullable(),
+  emergency_contact_phone: z.string().optional().nullable(),
+  follow_up_required: z.boolean().optional().default(false),
+  follow_up_date: z.string().optional().nullable(),
+  payment_method: z.enum(['Efectivo', 'Tarjeta', 'Transferencia', 'Seguro', 'Credito']).optional().nullable(),
+  copay_amount: z.number().min(0).optional().nullable(),
 });
 
 router.get('/', requireAuth, async (req: Request, res: Response) => {
@@ -80,23 +101,46 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
   try {
-    // Validación: evitar que el mismo doctor tenga dos citas que se solapen en el tiempo
+    // ================= Nueva validación basada en cupos disponibles =================
+    
+    // 1. Validación: evitar que el mismo paciente tenga múltiples citas el mismo día
     try {
-      const [confRows] = await pool.query(
+      const [patientDayRows] = await pool.query(
         `SELECT id FROM appointments
-         WHERE doctor_id = ? AND status != 'Cancelada'
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
+         WHERE patient_id = ? AND status != 'Cancelada'
+           AND DATE(scheduled_at) = DATE(?)
          LIMIT 1`,
-        [d.doctor_id, d.scheduled_at, d.duration_minutes, d.scheduled_at]
+        [d.patient_id, d.scheduled_at]
       );
-      if (Array.isArray(confRows) && confRows.length) {
-        return res.status(409).json({ message: 'Conflicto: el doctor ya tiene una cita que se solapa con ese horario.' });
+      if (Array.isArray(patientDayRows) && patientDayRows.length) {
+        return res.status(409).json({ message: 'El paciente ya tiene una cita agendada para este día.' });
       }
-    } catch {/* ignore and continue, fallback to insert error if any */}
+    } catch {/* ignore and continue */}
 
-    // Validación: evitar que el mismo paciente tenga dos citas que se solapen
-    // Validación: evitar que la misma sala/consultorio tenga solape (si existe columna room_id y se envía)
+    // 2. Validación de cupos disponibles en la availability
+    if (d.availability_id) {
+      try {
+        const [availRows] = await pool.query(
+          `SELECT capacity, booked_slots, status FROM availabilities
+           WHERE id = ? AND status = 'Activa'`,
+          [d.availability_id]
+        );
+        
+        if (!Array.isArray(availRows) || availRows.length === 0) {
+          return res.status(404).json({ message: 'La agenda seleccionada no existe o no está activa.' });
+        }
+        
+        const availability = availRows[0] as any;
+        if (availability.booked_slots >= availability.capacity) {
+          return res.status(409).json({ message: 'No hay cupos disponibles en esta agenda. Todos los cupos están ocupados.' });
+        }
+      } catch (err) {
+        console.error('Error validando cupos disponibles:', err);
+        return res.status(500).json({ message: 'Error interno validando disponibilidad.' });
+      }
+    }
+
+    // 3. Validación: evitar que la misma sala/consultorio tenga conflicto (si aplica)
     try {
       if ((d as any).room_id != null && await hasRoomColumn()) {
         const roomId = Number((d as any).room_id);
@@ -113,19 +157,6 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
             return res.status(409).json({ message: 'Conflicto: la sala/consultorio ya tiene una cita que se solapa con ese horario.' });
           }
         }
-      }
-    } catch {/* ignore */}
-    try {
-      const [confRowsP] = await pool.query(
-        `SELECT id FROM appointments
-         WHERE patient_id = ? AND status != 'Cancelada'
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
-         LIMIT 1`,
-        [d.patient_id, d.scheduled_at, d.duration_minutes, d.scheduled_at]
-      );
-      if (Array.isArray(confRowsP) && confRowsP.length) {
-        return res.status(409).json({ message: 'Conflicto: el paciente ya tiene una cita que se solapa con ese horario.' });
       }
     } catch {/* ignore */}
 
@@ -152,8 +183,28 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     }
 
     const hasRoom = await hasRoomColumn();
-    let cols = ['patient_id','availability_id','location_id','specialty_id','doctor_id','scheduled_at','duration_minutes','appointment_type','status','reason','insurance_type','notes','cancellation_reason','created_by_user_id'] as string[];
-    let vals: any[] = [d.patient_id, availabilityIdToUse, d.location_id, d.specialty_id, d.doctor_id, d.scheduled_at, d.duration_minutes, d.appointment_type, d.status, d.reason ?? null, d.insurance_type ?? null, d.notes ?? null, d.cancellation_reason ?? null, (req as any).user?.id ?? null];
+    let cols = [
+      'patient_id','availability_id','location_id','specialty_id','doctor_id',
+      'scheduled_at','duration_minutes','appointment_type','status','reason',
+      'insurance_type','notes','cancellation_reason','created_by_user_id',
+      // Nuevos campos de la migración
+      'consultation_reason_detailed','additional_notes','priority_level',
+      'insurance_company','insurance_policy_number','appointment_source',
+      'reminder_sent','reminder_sent_at','preferred_time','symptoms',
+      'allergies','medications','emergency_contact_name','emergency_contact_phone',
+      'follow_up_required','follow_up_date','payment_method','copay_amount'
+    ] as string[];
+    let vals: any[] = [
+      d.patient_id, availabilityIdToUse, d.location_id, d.specialty_id, d.doctor_id,
+      d.scheduled_at, d.duration_minutes, d.appointment_type, d.status, d.reason ?? null,
+      d.insurance_type ?? null, d.notes ?? null, d.cancellation_reason ?? null, (req as any).user?.id ?? null,
+      // Valores para nuevos campos
+      d.consultation_reason_detailed ?? null, d.additional_notes ?? null, d.priority_level ?? 'Normal',
+      d.insurance_company ?? null, d.insurance_policy_number ?? null, d.appointment_source ?? 'Manual',
+      d.reminder_sent ?? false, d.reminder_sent_at ?? null, d.preferred_time ?? null, d.symptoms ?? null,
+      d.allergies ?? null, d.medications ?? null, d.emergency_contact_name ?? null, d.emergency_contact_phone ?? null,
+      d.follow_up_required ?? false, d.follow_up_date ?? null, d.payment_method ?? null, d.copay_amount ?? null
+    ];
     if (hasRoom) {
       cols.push('room_id');
       vals.push((d as any).room_id ?? null);
@@ -247,8 +298,55 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       }
     } catch { /* ignore */ }
 
+    // ================= Actualizar cupos reservados en availability =================
+    if (availabilityIdToUse) {
+      try {
+        await pool.query(
+          `UPDATE availabilities 
+           SET booked_slots = booked_slots + 1 
+           WHERE id = ? AND booked_slots < capacity`,
+          [availabilityIdToUse]
+        );
+      } catch (updateErr) {
+        console.error('Error actualizando booked_slots:', updateErr);
+        // No fallar la creación de la cita por este error
+      }
+    }
+
     return res.status(201).json(created);
-  } catch {
+  } catch (error: any) {
+    console.error('Error creating appointment:', error);
+    
+    // Manejar errores de foreign key específicamente
+    if (error.code === 'ER_NO_REFERENCED_ROW_2') {
+      const constraint = error.message;
+      if (constraint.includes('fk_appt_patient')) {
+        return res.status(400).json({ 
+          message: 'El paciente especificado no existe',
+          error: `patient_id: ${req.body.patient_id} no encontrado`
+        });
+      } else if (constraint.includes('fk_appt_doctor')) {
+        return res.status(400).json({ 
+          message: 'El doctor especificado no existe',
+          error: `doctor_id: ${req.body.doctor_id} no encontrado`
+        });
+      } else if (constraint.includes('fk_appt_specialty')) {
+        return res.status(400).json({ 
+          message: 'La especialidad especificada no existe',
+          error: `specialty_id: ${req.body.specialty_id} no encontrado`
+        });
+      } else if (constraint.includes('fk_appt_location')) {
+        return res.status(400).json({ 
+          message: 'La ubicación especificada no existe',
+          error: `location_id: ${req.body.location_id} no encontrado`
+        });
+      }
+      return res.status(400).json({ 
+        message: 'Error de referencia en la base de datos',
+        error: constraint
+      });
+    }
+    
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -259,44 +357,54 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
   try {
-    // Si se modifica doctor_id, scheduled_at o duration_minutes, validar conflictos
-    if ('doctor_id' in d || 'scheduled_at' in d || 'duration_minutes' in d || 'room_id' in d) {
-      const [rows] = await pool.query(`SELECT doctor_id, scheduled_at, duration_minutes, patient_id${await hasRoomColumn() ? ', room_id' : ''} FROM appointments WHERE id = ? LIMIT 1`, [id]);
+    // Si se modifica doctor_id, scheduled_at, duration_minutes o availability_id, validar cupos
+    if ('doctor_id' in d || 'scheduled_at' in d || 'duration_minutes' in d || 'availability_id' in d) {
+      const [rows] = await pool.query(`SELECT doctor_id, scheduled_at, duration_minutes, patient_id, availability_id${await hasRoomColumn() ? ', room_id' : ''} FROM appointments WHERE id = ? LIMIT 1`, [id]);
       const current = Array.isArray(rows) && rows.length ? (rows as any)[0] : null;
       if (!current) return res.status(404).json({ message: 'Appointment not found' });
-      const newDoctorId = typeof d.doctor_id === 'number' ? d.doctor_id : Number(current.doctor_id);
-      const newScheduledAt = d.scheduled_at ?? current.scheduled_at;
-      const newDuration = typeof d.duration_minutes === 'number' ? d.duration_minutes : Number(current.duration_minutes);
+      
       const newPatientId = typeof d.patient_id === 'number' ? d.patient_id : Number(current.patient_id);
-      const newRoomId = ('room_id' in d) ? (d as any).room_id : (await hasRoomColumn() ? (current as any).room_id : undefined);
-      const [confRows] = await pool.query(
-        `SELECT id FROM appointments
-         WHERE doctor_id = ? AND status != 'Cancelada' AND id != ?
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
-         LIMIT 1`,
-        [newDoctorId, id, newScheduledAt, newDuration, newScheduledAt]
-      );
-      if (Array.isArray(confRows) && confRows.length) {
-        return res.status(409).json({ message: 'Conflicto: el doctor ya tiene una cita que se solapa con ese horario.' });
+      const newScheduledAt = d.scheduled_at ?? current.scheduled_at;
+      const newAvailabilityId = typeof d.availability_id === 'number' ? d.availability_id : current.availability_id;
+
+      // 1. Validación: evitar que el mismo paciente tenga múltiples citas el mismo día
+      if (d.scheduled_at || d.patient_id) {
+        const [patientDayRows] = await pool.query(
+          `SELECT id FROM appointments
+           WHERE patient_id = ? AND status != 'Cancelada' AND id != ?
+             AND DATE(scheduled_at) = DATE(?)
+           LIMIT 1`,
+          [newPatientId, id, newScheduledAt]
+        );
+        if (Array.isArray(patientDayRows) && patientDayRows.length) {
+          return res.status(409).json({ message: 'El paciente ya tiene una cita agendada para este día.' });
+        }
       }
 
-      const [confRowsP] = await pool.query(
-        `SELECT id FROM appointments
-         WHERE patient_id = ? AND status != 'Cancelada' AND id != ?
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
-         LIMIT 1`,
-        [newPatientId, id, newScheduledAt, newDuration, newScheduledAt]
-      );
-      if (Array.isArray(confRowsP) && confRowsP.length) {
-        return res.status(409).json({ message: 'Conflicto: el paciente ya tiene una cita que se solapa con ese horario.' });
+      // 2. Validación de cupos disponibles (solo si cambia availability_id)
+      if (d.availability_id && d.availability_id !== current.availability_id) {
+        const [availRows] = await pool.query(
+          `SELECT capacity, booked_slots, status FROM availabilities
+           WHERE id = ? AND status = 'Activa'`,
+          [d.availability_id]
+        );
+        
+        if (!Array.isArray(availRows) || availRows.length === 0) {
+          return res.status(404).json({ message: 'La agenda seleccionada no existe o no está activa.' });
+        }
+        
+        const availability = availRows[0] as any;
+        if (availability.booked_slots >= availability.capacity) {
+          return res.status(409).json({ message: 'No hay cupos disponibles en esta agenda. Todos los cupos están ocupados.' });
+        }
       }
 
-      // Validar sala/consultorio si aplica
+      // 3. Validar sala/consultorio si aplica
       if (await hasRoomColumn()) {
+        const newRoomId = ('room_id' in d) ? (d as any).room_id : (current as any).room_id;
         const roomIdNum = Number(newRoomId);
         if (newRoomId != null && !Number.isNaN(roomIdNum)) {
+          const newDuration = typeof d.duration_minutes === 'number' ? d.duration_minutes : Number(current.duration_minutes);
           const [confRowsR] = await pool.query(
             `SELECT id FROM appointments
              WHERE room_id = ? AND status != 'Cancelada' AND id != ?
@@ -327,6 +435,26 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     // Si se cancela, liberar preallocation si corresponde
     if (d.status === 'Cancelada') {
       try { await pool.query('CALL release_preallocation_slot(?)', [id]); } catch { /* ignore */ }
+      
+      // ================= Decrementar cupos reservados en availability =================
+      try {
+        // Obtener el availability_id de la cita antes de actualizarlo
+        const [apptRows] = await pool.query('SELECT availability_id FROM appointments WHERE id = ? LIMIT 1', [id]);
+        if (Array.isArray(apptRows) && apptRows.length) {
+          const currentAppt = apptRows[0] as any;
+          if (currentAppt.availability_id) {
+            await pool.query(
+              `UPDATE availabilities 
+               SET booked_slots = GREATEST(0, booked_slots - 1) 
+               WHERE id = ?`,
+              [currentAppt.availability_id]
+            );
+          }
+        }
+      } catch (updateErr) {
+        console.error('Error decrementando booked_slots:', updateErr);
+        // No fallar la actualización por este error
+      }
     }
     // Recalcular facturación si cambió el doctor
     if (doctorChanged) {
@@ -347,6 +475,41 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
         }
       } catch { /* ignore recalculation errors */ }
     }
+
+    // ================= Manejar cambio de availability_id =================
+    if (d.availability_id && typeof d.availability_id === 'number') {
+      try {
+        // Obtener el availability_id anterior
+        const [prevRows] = await pool.query('SELECT availability_id FROM appointments WHERE id = ? LIMIT 1', [id]);
+        if (Array.isArray(prevRows) && prevRows.length) {
+          const prevAppt = prevRows[0] as any;
+          const oldAvailabilityId = prevAppt.availability_id;
+          
+          // Si cambió el availability_id, actualizar contadores
+          if (oldAvailabilityId && oldAvailabilityId !== d.availability_id) {
+            // Decrementar del availability anterior
+            await pool.query(
+              `UPDATE availabilities 
+               SET booked_slots = GREATEST(0, booked_slots - 1) 
+               WHERE id = ?`,
+              [oldAvailabilityId]
+            );
+            
+            // Incrementar en el nuevo availability
+            await pool.query(
+              `UPDATE availabilities 
+               SET booked_slots = booked_slots + 1 
+               WHERE id = ? AND booked_slots < capacity`,
+              [d.availability_id]
+            );
+          }
+        }
+      } catch (updateErr) {
+        console.error('Error actualizando contadores de availability:', updateErr);
+        // No fallar la actualización por este error
+      }
+    }
+
     return res.json({ id, ...d });
   } catch {
     return res.status(500).json({ message: 'Server error' });
@@ -497,6 +660,279 @@ router.post('/recalc', requireAuth, async (_req: Request, res: Response) => {
     return res.json({ success: true, message: 'Recalculo ejecutado' });
   } catch {
     return res.status(500).json({ success: false, message: 'Error durante recálculo'});
+  }
+});
+
+// Obtener cola de espera agrupada por especialidad
+router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const query = `
+      SELECT 
+        wl.id,
+        wl.patient_id,
+        wl.scheduled_date,
+        wl.priority_level,
+        wl.call_type,
+        wl.created_at,
+        wl.reason,
+        wl.notes,
+        p.name AS patient_name,
+        p.phone AS patient_phone,
+        p.document AS patient_document,
+        s.name AS specialty_name,
+        s.id AS specialty_id,
+        d.name AS doctor_name,
+        l.name AS location_name,
+        a.date AS appointment_date,
+        a.start_time,
+        CASE 
+          WHEN wl.priority_level = 'Urgente' THEN 1
+          WHEN wl.priority_level = 'Alta' THEN 2
+          WHEN wl.priority_level = 'Normal' THEN 3
+          WHEN wl.priority_level = 'Baja' THEN 4
+          ELSE 5
+        END AS priority_order
+      FROM appointments_waiting_list wl
+      INNER JOIN patients p ON wl.patient_id = p.id
+      INNER JOIN availabilities a ON wl.availability_id = a.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE wl.status = 'pending'
+      ORDER BY s.name, priority_order, wl.created_at
+    `;
+
+    const [rows]: any = await pool.query(query);
+    
+    // Agrupar por especialidad
+    const groupedBySpecialty: any = {};
+    
+    for (const row of rows) {
+      const specialtyKey = row.specialty_name;
+      
+      if (!groupedBySpecialty[specialtyKey]) {
+        groupedBySpecialty[specialtyKey] = {
+          specialty_id: row.specialty_id,
+          specialty_name: row.specialty_name,
+          total_waiting: 0,
+          patients: []
+        };
+      }
+      
+      groupedBySpecialty[specialtyKey].total_waiting++;
+      groupedBySpecialty[specialtyKey].patients.push({
+        id: row.id,
+        patient_id: row.patient_id,
+        patient_name: row.patient_name,
+        patient_phone: row.patient_phone,
+        patient_document: row.patient_document,
+        scheduled_date: row.scheduled_date,
+        priority_level: row.priority_level,
+        call_type: row.call_type, // 🔥 NUEVO: tipo de llamada (normal/reagendar)
+        created_at: row.created_at,
+        reason: row.reason,
+        notes: row.notes,
+        doctor_name: row.doctor_name,
+        location_name: row.location_name,
+        appointment_date: row.appointment_date,
+        start_time: row.start_time,
+        queue_position: groupedBySpecialty[specialtyKey].total_waiting
+      });
+    }
+    
+    // Convertir objeto a array
+    const result = Object.values(groupedBySpecialty);
+    
+    // Calcular estadísticas generales
+    const stats = {
+      total_specialties: result.length,
+      total_patients_waiting: rows.length,
+      by_priority: {
+        urgente: rows.filter((r: any) => r.priority_level === 'Urgente').length,
+        alta: rows.filter((r: any) => r.priority_level === 'Alta').length,
+        normal: rows.filter((r: any) => r.priority_level === 'Normal').length,
+        baja: rows.filter((r: any) => r.priority_level === 'Baja').length
+      }
+    };
+
+    return res.json({ 
+      success: true, 
+      data: result,
+      stats: stats
+    });
+
+  } catch (error: any) {
+    console.error('Error obteniendo cola de espera:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Error al obtener cola de espera',
+      error: error.message 
+    });
+  }
+});
+
+// Obtener cola diaria (citas del día actual: en espera + otorgadas)
+router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const today = new Date();
+    const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+
+    // 1. Obtener citas en espera creadas hoy
+    const waitingQuery = `
+      SELECT 
+        'waiting' AS type,
+        wl.id,
+        wl.patient_id,
+        wl.scheduled_date AS scheduled_at,
+        wl.priority_level,
+        wl.call_type,
+        wl.status,
+        wl.reason,
+        wl.notes,
+        wl.created_at,
+        p.name AS patient_name,
+        p.phone AS patient_phone,
+        p.document AS patient_document,
+        s.name AS specialty_name,
+        s.id AS specialty_id,
+        d.name AS doctor_name,
+        d.id AS doctor_id,
+        l.name AS location_name,
+        l.id AS location_id,
+        a.date AS appointment_date,
+        a.start_time
+      FROM appointments_waiting_list wl
+      INNER JOIN patients p ON wl.patient_id = p.id
+      INNER JOIN availabilities a ON wl.availability_id = a.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE wl.status = 'pending'
+        AND DATE(wl.created_at) = ?
+      ORDER BY wl.priority_level, wl.created_at
+    `;
+
+    // 2. Obtener citas otorgadas creadas hoy
+    const appointmentsQuery = `
+      SELECT 
+        'appointment' AS type,
+        app.id,
+        app.patient_id,
+        app.scheduled_at,
+        app.priority_level,
+        app.status,
+        app.reason,
+        app.notes,
+        app.created_at,
+        p.name AS patient_name,
+        p.phone AS patient_phone,
+        p.document AS patient_document,
+        s.name AS specialty_name,
+        s.id AS specialty_id,
+        d.name AS doctor_name,
+        d.id AS doctor_id,
+        l.name AS location_name,
+        l.id AS location_id,
+        app.appointment_type,
+        app.duration_minutes
+      FROM appointments app
+      INNER JOIN patients p ON app.patient_id = p.id
+      INNER JOIN specialties s ON app.specialty_id = s.id
+      INNER JOIN doctors d ON app.doctor_id = d.id
+      INNER JOIN locations l ON app.location_id = l.id
+      WHERE DATE(app.created_at) = ?
+      ORDER BY app.created_at
+    `;
+
+    const [waitingRows]: any = await pool.query(waitingQuery, [todayStr]);
+    const [appointmentRows]: any = await pool.query(appointmentsQuery, [todayStr]);
+
+    // 3. Calcular estadísticas
+    const stats = {
+      total_waiting: waitingRows.length,
+      total_scheduled: appointmentRows.length,
+      total_today: waitingRows.length + appointmentRows.length,
+      by_status: {
+        pending: appointmentRows.filter((a: any) => a.status === 'Pendiente').length,
+        confirmed: appointmentRows.filter((a: any) => a.status === 'Confirmada').length,
+        completed: appointmentRows.filter((a: any) => a.status === 'Completada').length,
+        cancelled: appointmentRows.filter((a: any) => a.status === 'Cancelada').length,
+      },
+      by_priority: {
+        urgente: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Urgente').length,
+        alta: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Alta').length,
+        normal: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Normal').length,
+        baja: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Baja').length,
+      }
+    };
+
+    // 4. Agrupar por especialidad
+    const groupedBySpecialty: any = {};
+
+    // Agregar citas en espera
+    for (const row of waitingRows) {
+      const key = row.specialty_name;
+      if (!groupedBySpecialty[key]) {
+        groupedBySpecialty[key] = {
+          specialty_id: row.specialty_id,
+          specialty_name: row.specialty_name,
+          waiting_count: 0,
+          scheduled_count: 0,
+          items: []
+        };
+      }
+      groupedBySpecialty[key].waiting_count++;
+      groupedBySpecialty[key].items.push({
+        ...row,
+        type: 'waiting'
+      });
+    }
+
+    // Agregar citas otorgadas
+    for (const row of appointmentRows) {
+      const key = row.specialty_name;
+      if (!groupedBySpecialty[key]) {
+        groupedBySpecialty[key] = {
+          specialty_id: row.specialty_id,
+          specialty_name: row.specialty_name,
+          waiting_count: 0,
+          scheduled_count: 0,
+          items: []
+        };
+      }
+      groupedBySpecialty[key].scheduled_count++;
+      groupedBySpecialty[key].items.push({
+        ...row,
+        type: 'appointment'
+      });
+    }
+
+    // Ordenar items dentro de cada especialidad
+    Object.values(groupedBySpecialty).forEach((group: any) => {
+      group.items.sort((a: any, b: any) => {
+        // Primero por tipo (waiting antes que appointment)
+        if (a.type !== b.type) return a.type === 'waiting' ? -1 : 1;
+        // Luego por hora programada
+        return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
+      });
+    });
+
+    const data = Object.values(groupedBySpecialty);
+
+    return res.json({
+      success: true,
+      date: todayStr,
+      data,
+      stats
+    });
+
+  } catch (error: any) {
+    console.error('Error obteniendo cola diaria:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Error al obtener cola diaria',
+      error: error.message 
+    });
   }
 });
 

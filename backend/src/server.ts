@@ -11,6 +11,7 @@ import bootstrap from './db/bootstrap';
 import path from 'path';
 import fs from 'fs';
 import { initializeOutboundCallManager, shutdownOutboundCallManager } from './config/outbound';
+import { getRateLimitKey } from './middleware/rateLimiters';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim().length < 16) {
@@ -47,30 +48,22 @@ app.use(compression({
   },
 }));
 app.use(pinoHttp({ logger }));
-// Rate limiting con configuración mejorada para trust proxy
+
+// Rate limiting GENERAL (muy permisivo - solo para prevenir abusos extremos)
+// Los endpoints autenticados ya tienen seguridad vía JWT
 if (process.env.NODE_ENV !== 'test') {
   app.use(rateLimit({ 
     windowMs: 15 * 60 * 1000, // 15 minutos
-    max: 1000, // límite por ventana de tiempo
+    max: 50000, // 50000 peticiones por ventana (muy generoso)
     standardHeaders: true,
     legacyHeaders: false,
-    // Deshabilitar validación permisiva de trust proxy
-    validate: {
-      trustProxy: false,
-    },
-    // Key generator personalizado para manejar IPs detrás de proxy
-    keyGenerator: (req) => {
-      // Usar IP del header X-Forwarded-For si está disponible
-      const forwarded = req.headers['x-forwarded-for'];
-      if (forwarded && typeof forwarded === 'string') {
-        return forwarded.split(',')[0].trim();
-      }
-      // Fallback a la IP de conexión directa
-      return req.socket.remoteAddress || 'unknown';
-    },
+    validate: { trustProxy: false },
+    keyGenerator: getRateLimitKey,
     skip: (req) => {
-      // Omitir rate limiting para endpoints de salud y webhooks
-      return req.path === '/health' || req.path === '/ready' || req.path.startsWith('/api/webhooks');
+      // Omitir rate limiting para endpoints autenticados, salud y webhooks
+      const hasAuth = !!(req.headers.authorization || req.query.token);
+      const isHealthOrWebhook = req.path === '/health' || req.path === '/ready' || req.path.startsWith('/api/webhooks');
+      return hasAuth || isHealthOrWebhook;
     }
   }));
 }

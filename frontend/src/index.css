@@ -192,3 +192,10 @@
 .status-danger::before {
   background-color: #ef4444;
 }
+
+/* Estilos para labels requeridos */
+.required::after {
+  content: ' *';
+  color: #ef4444;
+  font-weight: 600;
+}

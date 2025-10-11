@@ -3,10 +3,12 @@ import React, { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { safeFormatDate } from "@/utils/dateHelpers";
 import { Badge } from "@/components/ui/badge";
 import { Calendar, Clock, User, MapPin, CheckCircle, AlertCircle, XCircle } from "lucide-react";
 import { format } from "date-fns";
@@ -92,6 +94,9 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
             <Calendar className="w-5 h-5" />
             <span>Detalles de la Disponibilidad</span>
           </DialogTitle>
+          <DialogDescription>
+            Información detallada sobre la disponibilidad seleccionada, incluyendo horarios, ubicación y estadísticas.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6 mt-4">
@@ -131,7 +136,7 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                 <span className="text-sm font-medium text-gray-600">Fecha:</span>
               </div>
               <p className="text-base">
-                {format(new Date(availability.date), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                {safeFormatDate(availability.date, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
               </p>
             </div>
 

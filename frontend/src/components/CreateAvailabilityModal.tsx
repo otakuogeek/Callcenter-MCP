@@ -6,6 +6,7 @@ import { useAppointmentData } from "@/hooks/useAppointmentData";
 import { AnimatedForm, AnimatedInputField, AnimatedSelectField, AnimatedTextareaField } from "@/components/ui/animated-form";
 import { AnimatedButton } from "@/components/ui/animated-button";
 import { EnhancedAnimatedPresenceWrapper } from "@/components/ui/enhanced-animated-container";
+import { safeDateFromString } from "@/utils/dateHelpers";
 
 interface CreateAvailabilityModalProps {
   isOpen: boolean;
@@ -35,7 +36,9 @@ const CreateAvailabilityModal = ({
   
   // Validaciones locales y restricciones nativas
   const todayStr = new Date().toISOString().split('T')[0];
-  const isPastDate = availabilityForm.date ? (new Date(availabilityForm.date) < new Date(new Date().toDateString())) : false;
+  const formDate = safeDateFromString(availabilityForm.date);
+  const today = new Date(new Date().toDateString());
+  const isPastDate = formDate ? formDate < today : false;
   const timeOrderInvalid = !!(availabilityForm.startTime && availabilityForm.endTime && availabilityForm.startTime >= availabilityForm.endTime);
   const capacityInvalid = availabilityForm.capacity < 1;
 

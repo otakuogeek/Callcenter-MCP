@@ -36,8 +36,9 @@ export async function generateAvailabilityDistribution(params: AvailabilityDistr
   startDate.setHours(0, 0, 0, 0);
   endDate.setHours(0, 0, 0, 0);
 
-  if (endDate <= startDate) {
-    throw new Error('La fecha de fin debe ser posterior a la fecha de inicio.');
+  // Permitir fechas iguales para asignar todo a un día específico
+  if (endDate < startDate) {
+    throw new Error('La fecha de fin debe ser posterior o igual a la fecha de inicio.');
   }
 
   if (params.total_quota <= 0) {
@@ -70,44 +71,50 @@ export async function generateAvailabilityDistribution(params: AvailabilityDistr
   const distribution = validDays.map(d => ({ date: d.date, quota: 0 }));
   let remainingQuota = params.total_quota;
 
-  // Estrategia de distribución aleatoria equilibrada:
-  // 1. Asignar al menos 1 cupo por día si es posible
-  const minQuotaPerDay = Math.floor(params.total_quota / validDays.length);
-  const extraQuota = params.total_quota % validDays.length;
+  // CASO ESPECIAL: Si solo hay un día válido, asignar toda la cuota a ese día
+  if (validDays.length === 1) {
+    distribution[0].quota = params.total_quota;
+    remainingQuota = 0;
+  } else {
+    // Estrategia de distribución aleatoria equilibrada para múltiples días:
+    // 1. Asignar al menos 1 cupo por día si es posible
+    const minQuotaPerDay = Math.floor(params.total_quota / validDays.length);
+    const extraQuota = params.total_quota % validDays.length;
 
-  // Asignar cupo mínimo a cada día
-  for (let i = 0; i < distribution.length; i++) {
-    distribution[i].quota = minQuotaPerDay;
-    remainingQuota -= minQuotaPerDay;
-  }
-
-  // Distribuir cupos restantes aleatoriamente
-  const maxQuotaPerDay = Math.max(minQuotaPerDay + 2, Math.ceil(params.total_quota * 0.3)); // Límite máximo por día
-  
-  while (remainingQuota > 0) {
-    const randomIndex = Math.floor(Math.random() * distribution.length);
-    
-    // Verificar que no supere el límite máximo
-    if (distribution[randomIndex].quota < maxQuotaPerDay) {
-      distribution[randomIndex].quota += 1;
-      remainingQuota -= 1;
+    // Asignar cupo mínimo a cada día
+    for (let i = 0; i < distribution.length; i++) {
+      distribution[i].quota = minQuotaPerDay;
+      remainingQuota -= minQuotaPerDay;
     }
+
+    // Distribuir cupos restantes aleatoriamente
+    const maxQuotaPerDay = Math.max(minQuotaPerDay + 2, Math.ceil(params.total_quota * 0.3)); // Límite máximo por día
     
-    // Prevenir bucle infinito si todos los días alcanzan el máximo
-    const canAssignMore = distribution.some(d => d.quota < maxQuotaPerDay);
-    if (!canAssignMore) {
-      // Distribuir el resto entre todos los días
-      const remaining = remainingQuota;
-      for (let i = 0; i < remaining && i < distribution.length; i++) {
-        distribution[i].quota += 1;
+    while (remainingQuota > 0) {
+      const randomIndex = Math.floor(Math.random() * distribution.length);
+      
+      // Verificar que no supere el límite máximo
+      if (distribution[randomIndex].quota < maxQuotaPerDay) {
+        distribution[randomIndex].quota += 1;
         remainingQuota -= 1;
       }
-      break;
+      
+      // Prevenir bucle infinito si todos los días alcanzan el máximo
+      const canAssignMore = distribution.some(d => d.quota < maxQuotaPerDay);
+      if (!canAssignMore) {
+        // Distribuir el resto entre todos los días
+        const remaining = remainingQuota;
+        for (let i = 0; i < remaining && i < distribution.length; i++) {
+          distribution[i].quota += 1;
+          remainingQuota -= 1;
+        }
+        break;
+      }
     }
-  }
 
-  // Mezclar el orden para mayor aleatoriedad
-  distribution.sort(() => Math.random() - 0.5);
+    // Mezclar el orden para mayor aleatoriedad (solo si hay múltiples días)
+    distribution.sort(() => Math.random() - 0.5);
+  }
 
   // Calcular estadísticas
   const totalAssigned = distribution.reduce((sum, d) => sum + d.quota, 0);

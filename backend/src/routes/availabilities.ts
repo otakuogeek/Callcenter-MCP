@@ -13,7 +13,7 @@ const schema = z.object({
   start_time: z.string(),
   end_time: z.string(),
   capacity: z.number().int().min(1).default(1),
-  status: z.enum(['Activa','Cancelada','Completa']).default('Activa'),
+  status: z.enum(['active','cancelled','completed']).default('active'),
   notes: z.string().optional().nullable(),
   auto_preallocate: z.boolean().optional(),
   preallocation_publish_date: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/).optional(),
@@ -29,11 +29,20 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   try {
     if (date) {
       const [rows] = await pool.query(
-        `SELECT a.*, 
+        `SELECT a.id,
+                DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
+                a.start_time,
+                a.end_time,
+                a.doctor_id,
+                a.specialty_id,
+                a.location_id,
+                a.capacity,
+                a.booked_slots,
+                a.status,
+                a.created_at,
                 d.name AS doctor_name, 
                 s.name AS specialty_name, 
-                l.name AS location_name,
-                (SELECT COUNT(*) FROM appointments ap WHERE ap.availability_id = a.id AND ap.status != 'Cancelada') AS booked_slots
+                l.name AS location_name
          FROM availabilities a
          JOIN doctors d ON d.id = a.doctor_id
          JOIN specialties s ON s.id = a.specialty_id  
@@ -45,20 +54,31 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       return res.json(rows);
     }
     const [rows] = await pool.query(
-      `SELECT a.*, 
+      `SELECT a.id,
+              DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
+              a.start_time,
+              a.end_time,
+              a.doctor_id,
+              a.specialty_id,
+              a.location_id,
+              a.capacity,
+              a.booked_slots,
+              a.status,
+              a.created_at,
               d.name AS doctor_name, 
               s.name AS specialty_name, 
-              l.name AS location_name,
-              (SELECT COUNT(*) FROM appointments ap WHERE ap.availability_id = a.id AND ap.status != 'Cancelada') AS booked_slots
+              l.name AS location_name
        FROM availabilities a
        JOIN doctors d ON d.id = a.doctor_id
        JOIN specialties s ON s.id = a.specialty_id  
        JOIN locations l ON l.id = a.location_id
-       ORDER BY a.date DESC, a.start_time ASC 
+       WHERE a.date >= CURDATE()
+       ORDER BY a.date ASC, a.start_time ASC 
        LIMIT 200`
     );
     return res.json(rows);
   } catch (e: any) {
+    console.error('Error en GET /availabilities:', e);
     if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
       return res.json([]);
     }
@@ -70,10 +90,23 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data as any;
+  
+  // Validar que no sea sábado ni domingo
+  // Usar formato ISO local para evitar problemas de zona horaria
+  const appointmentDate = new Date(d.date + 'T12:00:00');
+  const dayOfWeek = appointmentDate.getDay(); // 0 = Domingo, 6 = Sábado
+  
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return res.status(400).json({ 
+      message: 'No se pueden crear disponibilidades en fines de semana (sábados y domingos)',
+      error: 'weekend_not_allowed'
+    });
+  }
+  
   try {
     const [result] = await pool.query(
-      `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, booked_slots, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       [d.location_id, d.specialty_id, d.doctor_id, d.date, d.start_time, d.end_time, d.capacity, d.status, d.notes ?? null]
     );
     // @ts-ignore
@@ -114,6 +147,24 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
         console.warn('Fallo distribución automática:', e);
         return res.status(400).json({ 
           message: 'Error en distribución automática', 
+          error: e instanceof Error ? e.message : 'Error desconocido' 
+        });
+      }
+    } else {
+      // Si NO se activa la distribución automática, asignar toda la capacidad al día de la cita
+      try {
+        const { generateAvailabilityDistribution } = await import('../utils/availabilityDistribution');
+        distribution = await generateAvailabilityDistribution({
+          availability_id: availabilityId,
+          start_date: d.date, // Mismo día de la cita
+          end_date: d.date,   // Mismo día de la cita
+          total_quota: d.capacity,
+          exclude_weekends: true // Siempre excluir fines de semana según reglas de negocio
+        });
+      } catch (e) {
+        console.warn('Fallo distribución automática del día de la cita:', e);
+        return res.status(400).json({ 
+          message: 'Error al asignar cupos al día de la cita', 
           error: e instanceof Error ? e.message : 'Error desconocido' 
         });
       }
@@ -228,7 +279,60 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   const parsed = schema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
+  
+  // Si se está actualizando la fecha, validar que no sea fin de semana
+  if (d.date) {
+    const appointmentDate = new Date(d.date + 'T12:00:00');
+    const dayOfWeek = appointmentDate.getDay(); // 0 = Domingo, 6 = Sábado
+    
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      return res.status(400).json({ 
+        message: 'No se pueden crear disponibilidades en fines de semana (sábados y domingos)',
+        error: 'weekend_not_allowed'
+      });
+    }
+  }
+  
   try {
+    // 🔥 SI SE ESTÁ CANCELANDO LA AGENDA, MOVER CITAS A LISTA DE ESPERA
+    if (d.status === 'Cancelada') {
+      // Obtener todas las citas de esta agenda que NO están canceladas
+      const [appointments] = await pool.query(`
+        SELECT 
+          a.id,
+          a.patient_id,
+          a.scheduled_at,
+          a.reason
+        FROM appointments a
+        WHERE a.availability_id = ? 
+          AND a.status NOT IN ('Cancelada', 'Completada')
+      `, [id]) as any;
+
+      // Mover cada cita a la lista de espera con call_type='reagendar' y prioridad 'Alta'
+      if (Array.isArray(appointments) && appointments.length > 0) {
+        for (const apt of appointments) {
+          await pool.query(`
+            INSERT INTO appointments_waiting_list 
+            (patient_id, availability_id, scheduled_date, reason, priority_level, call_type, status)
+            VALUES (?, ?, ?, ?, 'Alta', 'reagendar', 'pending')
+          `, [
+            apt.patient_id,
+            id, // availability_id original
+            apt.scheduled_at,
+            apt.reason || 'Reagendamiento por cancelación de agenda'
+          ]);
+        }
+
+        // Eliminar las citas de la tabla appointments (DELETE no dispara el trigger de cancelación)
+        await pool.query(`
+          DELETE FROM appointments 
+          WHERE availability_id = ? AND status NOT IN ('Cancelada', 'Completada')
+        `, [id]);
+
+        console.log(`✅ ${appointments.length} citas movidas a lista de espera con tipo 'reagendar' y eliminadas de appointments`);
+      }
+    }
+
     const fields: string[] = []; const values: any[] = [];
     for (const k of Object.keys(d) as (keyof typeof d)[]) { fields.push(`${k} = ?`); // @ts-ignore
       values.push(d[k] ?? null); }
@@ -236,7 +340,8 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     values.push(id);
     await pool.query(`UPDATE availabilities SET ${fields.join(', ')} WHERE id = ?`, values);
     return res.json({ id, ...d });
-  } catch {
+  } catch (error) {
+    console.error('Error updating availability:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -285,37 +390,54 @@ router.post('/batch', requireAuth, async (req: Request, res: Response) => {
   const batchId = d.batch_id || `batch_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
   try {
-    // Call stored procedure to create batch availabilities
-    const [result] = await pool.query(
-      `CALL create_batch_availabilities(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        d.doctor_id,
-        d.location_id,
-        d.specialty_id,
-        d.start_date,
-        d.end_date,
-        d.start_time,
-        d.end_time,
-        d.capacity,
-        d.slot_duration_minutes,
-        batchId,
-        d.exclude_weekends,
-        d.exclude_holidays
-      ]
-    );
-
-    // Get created availabilities count
-    const [countResult] = await pool.query(
-      'SELECT COUNT(*) as count FROM availabilities WHERE batch_id = ?',
-      [batchId]
-    );
-
-    const count = Array.isArray(countResult) && countResult[0] ? (countResult[0] as any).count : 0;
+    // Generate date range excluding weekends if specified
+    const startDate = new Date(d.start_date + 'T12:00:00');
+    const endDate = new Date(d.end_date + 'T12:00:00');
+    const availabilities = [];
+    
+    const currentDate = new Date(startDate);
+    let createdCount = 0;
+    
+    while (currentDate <= endDate) {
+      const dayOfWeek = currentDate.getDay(); // 0 = Domingo, 6 = Sábado
+      
+      // Skip weekends if exclude_weekends is true
+      if (d.exclude_weekends && (dayOfWeek === 0 || dayOfWeek === 6)) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        continue;
+      }
+      
+      // Create availability for this date
+      try {
+        const [result] = await pool.query(
+          `INSERT INTO availabilities (doctor_id, location_id, specialty_id, date, start_time, end_time, capacity, booked_slots, batch_id, exclude_weekends, exclude_holidays) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+          [
+            d.doctor_id,
+            d.location_id,
+            d.specialty_id,
+            currentDate.toISOString().split('T')[0], // Format: YYYY-MM-DD
+            d.start_time,
+            d.end_time,
+            d.capacity,
+            batchId,
+            d.exclude_weekends,
+            d.exclude_holidays
+          ]
+        );
+        createdCount++;
+      } catch (insertError: any) {
+        console.error('Error inserting availability for date:', currentDate, insertError);
+        // Continue with next date instead of failing entire batch
+      }
+      
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
 
     return res.status(201).json({
       batch_id: batchId,
-      created_count: count,
-      message: 'Batch availabilities created successfully'
+      created_count: createdCount,
+      message: `Batch availabilities created successfully. ${d.exclude_weekends ? 'Weekends excluded.' : ''}`
     });
   } catch (error: any) {
     console.error('Batch creation error:', error);
@@ -332,7 +454,7 @@ router.get('/batch/:batchId', requireAuth, async (req: Request, res: Response) =
               d.name AS doctor_name,
               s.name AS specialty_name,
               l.name AS location_name,
-              (SELECT COUNT(*) FROM appointments ap WHERE ap.availability_id = a.id AND ap.status != 'Cancelada') AS booked_slots
+              a.booked_slots
        FROM availabilities a
        JOIN doctors d ON d.id = a.doctor_id
        JOIN specialties s ON s.id = a.specialty_id
@@ -397,8 +519,8 @@ router.get('/non-working-days', requireAuth, async (req: Request, res: Response)
 
     // Generate weekends in the date range
     const weekends: any[] = [];
-    const start = new Date(start_date as string);
-    const end = new Date(end_date as string);
+    const start = new Date((start_date as string) + 'T12:00:00');
+    const end = new Date((end_date as string) + 'T12:00:00');
 
     for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
       const dayOfWeek = date.getDay(); // 0 = Sunday, 6 = Saturday
@@ -526,7 +648,7 @@ router.post('/distribute-appointments', requireAuth, async (req: Request, res: R
   try {
     // Get available dates for this batch
     const [availabilities] = await pool.query(
-      'SELECT id, date, capacity FROM availabilities WHERE batch_id = ? AND status = "Activa" ORDER BY date ASC',
+      'SELECT id, date, capacity FROM availabilities WHERE batch_id = ? AND status = "active" ORDER BY date ASC',
       [batch_id]
     );
 
@@ -800,7 +922,7 @@ router.get('/distributions/stats', requireAuth, async (req: Request, res: Respon
       FROM availability_distribution ad
       JOIN availabilities a ON a.id = ad.availability_id
       WHERE a.status = 'Activa'
-        AND ad.day_date >= CURDATE()
+        AND ad.day_date > DATE_SUB(CURDATE(), INTERVAL 1 DAY)
       GROUP BY ad.day_date
       ORDER BY ad.day_date ASC
       LIMIT 30
@@ -845,7 +967,7 @@ router.get('/active', requireAuth, async (req: Request, res: Response) => {
       JOIN specialties s ON s.id = a.specialty_id  
       JOIN locations l ON l.id = a.location_id
       WHERE a.status = 'Activa'
-        AND a.date >= CURDATE()
+        AND a.date > DATE_SUB(CURDATE(), INTERVAL 1 DAY)
       ORDER BY a.date ASC, a.start_time ASC
     `);
     
@@ -871,7 +993,7 @@ router.get('/filters/options', requireAuth, async (req, res) => {
       SELECT DISTINCT d.id, d.name 
       FROM doctors d
       INNER JOIN availabilities a ON d.id = a.doctor_id
-      WHERE a.is_active = 1
+      WHERE a.status = 'Activa'
       ORDER BY d.name
     `);
 
@@ -880,7 +1002,7 @@ router.get('/filters/options', requireAuth, async (req, res) => {
       SELECT DISTINCT s.id, s.name 
       FROM specialties s
       INNER JOIN availabilities a ON s.id = a.specialty_id
-      WHERE a.is_active = 1
+      WHERE a.status = 'Activa'
       ORDER BY s.name
     `);
 
@@ -889,7 +1011,7 @@ router.get('/filters/options', requireAuth, async (req, res) => {
       SELECT DISTINCT l.id, l.name 
       FROM locations l
       INNER JOIN availabilities a ON l.id = a.location_id
-      WHERE a.is_active = 1
+      WHERE a.status = 'Activa'
       ORDER BY l.name
     `);
 
@@ -977,6 +1099,300 @@ router.get('/:id/distribution', requireAuth, async (req: Request, res: Response)
       success: false,
       message: 'Error interno del servidor',
       error: error instanceof Error ? error.message : 'Error desconocido'
+    });
+  }
+});
+
+// Endpoint para obtener opciones dinámicas basadas en availabilities activas
+router.get('/smart-options', requireAuth, async (req: Request, res: Response) => {
+  const { date, specialty_id, location_id, doctor_id } = req.query;
+  
+  try {
+    let whereConditions = ['a.status = ?', 'a.date > DATE_SUB(CURDATE(), INTERVAL 1 DAY)'];
+    let params: any[] = ['Activa'];
+    
+    // Filtrar por fecha si se proporciona
+    if (date) {
+      whereConditions.push('a.date = ?');
+      params.push(date);
+    }
+    
+    // Construir query base para obtener availabilities activas
+    const baseQuery = `
+      FROM availabilities a
+      JOIN doctors d ON d.id = a.doctor_id
+      JOIN specialties s ON s.id = a.specialty_id  
+      JOIN locations l ON l.id = a.location_id
+      WHERE ${whereConditions.join(' AND ')}
+    `;
+    
+    // Obtener especialidades disponibles
+    let specialtiesQuery = `SELECT DISTINCT s.id, s.name ${baseQuery}`;
+    let specialtiesParams = [...params];
+    
+    if (location_id) {
+      specialtiesQuery += ' AND a.location_id = ?';
+      specialtiesParams.push(Number(location_id));
+    }
+    if (doctor_id) {
+      specialtiesQuery += ' AND a.doctor_id = ?';
+      specialtiesParams.push(Number(doctor_id));
+    }
+    specialtiesQuery += ' ORDER BY s.name';
+    
+    // Obtener ubicaciones disponibles
+    let locationsQuery = `SELECT DISTINCT l.id, l.name ${baseQuery}`;
+    let locationsParams = [...params];
+    
+    if (specialty_id) {
+      locationsQuery += ' AND a.specialty_id = ?';
+      locationsParams.push(Number(specialty_id));
+    }
+    if (doctor_id) {
+      locationsQuery += ' AND a.doctor_id = ?';
+      locationsParams.push(Number(doctor_id));
+    }
+    locationsQuery += ' ORDER BY l.name';
+    
+    // Obtener doctores disponibles
+    let doctorsQuery = `SELECT DISTINCT d.id, d.name ${baseQuery}`;
+    let doctorsParams = [...params];
+    
+    if (specialty_id) {
+      doctorsQuery += ' AND a.specialty_id = ?';
+      doctorsParams.push(Number(specialty_id));
+    }
+    if (location_id) {
+      doctorsQuery += ' AND a.location_id = ?';
+      doctorsParams.push(Number(location_id));
+    }
+    doctorsQuery += ' ORDER BY d.name';
+    
+    // Ejecutar queries en paralelo
+    const [specialtiesResult, locationsResult, doctorsResult] = await Promise.all([
+      pool.query(specialtiesQuery, specialtiesParams),
+      pool.query(locationsQuery, locationsParams),
+      pool.query(doctorsQuery, doctorsParams)
+    ]);
+    
+    // Obtener slots disponibles si se proporciona especialidad, ubicación y doctor
+    let availableSlots: any[] = [];
+    if (specialty_id && location_id && doctor_id) {
+      let slotsConditions = [...whereConditions, 'a.specialty_id = ?', 'a.location_id = ?', 'a.doctor_id = ?'];
+      let slotsParams = [...params, Number(specialty_id), Number(location_id), Number(doctor_id)];
+      
+      const [slotsResult] = await pool.query(`
+        SELECT 
+          a.id as availability_id,
+          a.date,
+          a.start_time,
+          a.end_time,
+          a.capacity,
+          a.booked_slots,
+          (a.capacity - a.booked_slots) AS available_slots
+        ${baseQuery.replace('WHERE', 'WHERE')} 
+        AND a.specialty_id = ? AND a.location_id = ? AND a.doctor_id = ?
+        HAVING available_slots > 0
+        ORDER BY a.date ASC, a.start_time ASC
+      `, slotsParams);
+      
+      availableSlots = Array.isArray(slotsResult) ? slotsResult : [];
+    }
+    
+    return res.json({
+      success: true,
+      data: {
+        specialties: Array.isArray(specialtiesResult[0]) ? specialtiesResult[0] : [],
+        locations: Array.isArray(locationsResult[0]) ? locationsResult[0] : [],
+        doctors: Array.isArray(doctorsResult[0]) ? doctorsResult[0] : [],
+        available_slots: availableSlots
+      },
+      filters: {
+        date: date || null,
+        specialty_id: specialty_id ? Number(specialty_id) : null,
+        location_id: location_id ? Number(location_id) : null,
+        doctor_id: doctor_id ? Number(doctor_id) : null
+      }
+    });
+  } catch (error: any) {
+    console.error('Error getting smart options:', error);
+    return res.status(500).json({ 
+      success: false,
+      message: 'Error al obtener opciones inteligentes', 
+      error: error.message 
+    });
+  }
+});
+
+// Endpoint para obtener distribución de disponibilidad por doctor/especialidad/ubicación
+router.get('/distribution-calendar', requireAuth, async (req: Request, res: Response) => {
+  const { doctor_id, specialty_id, location_id, start_date, end_date } = req.query;
+  
+  if (!doctor_id) {
+    return res.status(400).json({
+      success: false,
+      message: 'doctor_id es requerido'
+    });
+  }
+  
+  try {
+    let whereConditions = [
+      'a.doctor_id = ?',
+      'a.status = ?',
+      'ad.day_date > DATE_SUB(CURDATE(), INTERVAL 1 DAY)'
+    ];
+    let params: any[] = [Number(doctor_id), 'Activa'];
+    
+    // Filtros opcionales
+    if (specialty_id) {
+      whereConditions.push('a.specialty_id = ?');
+      params.push(Number(specialty_id));
+    }
+    
+    if (location_id) {
+      whereConditions.push('a.location_id = ?');
+      params.push(Number(location_id));
+    }
+    
+    if (start_date) {
+      whereConditions.push('ad.day_date >= ?');
+      params.push(start_date);
+    }
+    
+    if (end_date) {
+      whereConditions.push('ad.day_date <= ?');
+      params.push(end_date);
+    }
+    
+    const whereClause = whereConditions.join(' AND ');
+    
+    const [rows] = await pool.query(`
+      SELECT 
+        ad.id as distribution_id,
+        ad.availability_id,
+        ad.day_date,
+        ad.quota,
+        ad.assigned,
+        (ad.quota - ad.assigned) as available_slots,
+        a.doctor_id,
+        a.specialty_id,
+        a.location_id,
+        a.start_time,
+        a.end_time,
+        a.capacity as total_capacity,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name,
+        DAYNAME(ad.day_date) as day_name_en,
+        CASE DAYOFWEEK(ad.day_date)
+          WHEN 1 THEN 'Domingo'
+          WHEN 2 THEN 'Lunes'
+          WHEN 3 THEN 'Martes'
+          WHEN 4 THEN 'Miércoles'
+          WHEN 5 THEN 'Jueves'
+          WHEN 6 THEN 'Viernes'
+          WHEN 7 THEN 'Sábado'
+        END as day_name_es
+      FROM availability_distribution ad
+      JOIN availabilities a ON a.id = ad.availability_id
+      JOIN doctors d ON d.id = a.doctor_id
+      JOIN specialties s ON s.id = a.specialty_id
+      JOIN locations l ON l.id = a.location_id
+      WHERE ${whereClause}
+      HAVING available_slots > 0
+      ORDER BY ad.day_date ASC, a.start_time ASC
+    `, params);
+    
+    // Agrupar por fecha para facilitar el manejo en frontend
+    const groupedByDate: { [key: string]: any[] } = {};
+    const availableDates: any[] = [];
+    
+    if (Array.isArray(rows)) {
+      rows.forEach((row: any) => {
+        const dateKey = row.day_date;
+        if (!groupedByDate[dateKey]) {
+          groupedByDate[dateKey] = [];
+          availableDates.push({
+            date: dateKey,
+            day_name: row.day_name_es,
+            total_available_slots: 0,
+            time_slots: []
+          });
+        }
+        
+        const dateEntry = availableDates.find(d => d.date === dateKey);
+        if (dateEntry) {
+          dateEntry.total_available_slots += row.available_slots;
+          dateEntry.time_slots.push({
+            distribution_id: row.distribution_id,
+            availability_id: row.availability_id,
+            start_time: row.start_time,
+            end_time: row.end_time,
+            available_slots: row.available_slots,
+            quota: row.quota,
+            assigned: row.assigned
+          });
+        }
+        
+        groupedByDate[dateKey].push(row);
+      });
+    }
+    
+    return res.json({
+      success: true,
+      data: {
+        available_dates: availableDates,
+        grouped_by_date: groupedByDate,
+        total_days: availableDates.length,
+        total_slots: availableDates.reduce((sum, d) => sum + d.total_available_slots, 0)
+      },
+      filters: {
+        doctor_id: Number(doctor_id),
+        specialty_id: specialty_id ? Number(specialty_id) : null,
+        location_id: location_id ? Number(location_id) : null,
+        start_date: start_date || null,
+        end_date: end_date || null
+      }
+    });
+  } catch (error: any) {
+    console.error('Error getting distribution calendar:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener calendario de distribución',
+      error: error.message
+    });
+  }
+});
+
+// Endpoint para recalcular booked_slots de todas las disponibilidades
+// Útil para sincronizar datos después de migraciones o correcciones
+router.post('/recalculate-booked-slots', requireAuth, async (req: Request, res: Response) => {
+  try {
+    // Actualizar booked_slots basado en el conteo real de citas no canceladas
+    const [result] = await pool.query(`
+      UPDATE availabilities a
+      SET a.booked_slots = (
+        SELECT COUNT(*) 
+        FROM appointments ap 
+        WHERE ap.availability_id = a.id 
+        AND ap.status != 'Cancelada'
+      )
+    `);
+
+    // @ts-ignore
+    const affectedRows = result.affectedRows || 0;
+
+    return res.json({
+      success: true,
+      message: `Se recalcularon ${affectedRows} disponibilidades correctamente`,
+      affected_rows: affectedRows
+    });
+  } catch (error: any) {
+    console.error('Error recalculando booked_slots:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al recalcular booked_slots',
+      error: error.message
     });
   }
 });

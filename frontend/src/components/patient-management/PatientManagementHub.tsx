@@ -31,7 +31,14 @@ interface LookupData {
   population_groups: Array<{id: number, name: string}>;
   disability_types: Array<{id: number, name: string}>;
   municipalities: Array<{id: number, name: string}>;
-  eps: Array<{id: number, name: string}>;
+  eps: Array<{
+    id: number;
+    name: string;
+    code?: string;
+    affiliation_type?: string;
+    has_agreement?: boolean;
+    status?: string;
+  }>;
   insurance_affiliation_types: Array<{id: string, name: string}>;
   gender_options: Array<{id: string, name: string}>;
   estratos: Array<{id: number, name: string}>;

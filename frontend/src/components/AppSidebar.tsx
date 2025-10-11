@@ -1,4 +1,4 @@
-import { Calendar, Users, BarChart3, Clock, HeadphonesIcon, MapPin, FileText, Activity, Settings } from "lucide-react";
+import { Calendar, Users, BarChart3, Clock, HeadphonesIcon, MapPin, FileText, Settings } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 
@@ -44,12 +44,12 @@ const mainItems = [
     url: "/patients",
     icon: Users,
   },
-  {
-    title: "Monitor de Llamadas",
-    url: "/calls/monitor",
-    icon: Activity,
-    highlight: true,
-  },
+  // {
+  //   title: "Monitor de Llamadas",
+  //   url: "/calls/monitor",
+  //   icon: Activity,
+  //   highlight: true,
+  // },
 ];
 
 // Menu items de gestión
@@ -64,11 +64,11 @@ const managementItems = [
     url: "/daily-queue",
     icon: Calendar,
   },
-  {
-    title: "Agentes",
-    url: "/agents",
-    icon: HeadphonesIcon,
-  },
+  // {
+  //   title: "Agentes",
+  //   url: "/agents",
+  //   icon: HeadphonesIcon,
+  // },
   {
     title: "Consultas",
     url: "/consultations",
@@ -119,11 +119,11 @@ export function AppSidebar() {
     const pollFallback = async () => {
       try {
         if (path.includes('queue')) {
-          const ovRes = await fetch(`${base}/queue/overview` + (token?`?token=${encodeURIComponent(token)}`:''), { headers: token?{ Authorization:`Bearer ${token}`}:undefined });
-          if (ovRes.ok) {
-            const ov = await ovRes.json();
+          const waitingListRes = await fetch(`${base}/appointments/waiting-list` + (token?`?token=${encodeURIComponent(token)}`:''), { headers: token?{ Authorization:`Bearer ${token}`}:undefined });
+          if (waitingListRes.ok) {
+            const waitingListData = await waitingListRes.json();
             // synth event
-            onEvent(new MessageEvent('poll', { data: JSON.stringify(ov) }));
+            onEvent(new MessageEvent('poll', { data: JSON.stringify({ stats: waitingListData.stats }) }));
           }
         } else if (path.includes('transfers')) {
           const trRes = await fetch(`${base}/transfers?status=pending` + (token?`&token=${encodeURIComponent(token)}`:''), { headers: token?{ Authorization:`Bearer ${token}`}:undefined });
@@ -183,8 +183,8 @@ export function AppSidebar() {
   }
 
   useEffect(() => {
-  let esQueue: any = null;
   let esTransfers: any = null;
+  let queuePollingInterval: any = null;
     
     const fetchInitial = async () => {
       try {
@@ -192,15 +192,15 @@ export function AppSidebar() {
         const token = localStorage.getItem('token') || '';
         const headers: any = token ? { Authorization: `Bearer ${token}` } : {};
         
-        // Obtener overview de queue con manejo de errores
+        // Obtener datos de waiting list con manejo de errores
         try {
-          const ovRes = await fetch(`${base}/queue/overview`, { headers });
-          if (ovRes.ok) {
-            const ov = await ovRes.json();
-            setQueueCount(Number(ov?.waiting || 0));
+          const waitingListRes = await fetch(`${base}/appointments/waiting-list`, { headers });
+          if (waitingListRes.ok) {
+            const waitingListData = await waitingListRes.json();
+            setQueueCount(Number(waitingListData?.stats?.total_patients_waiting || 0));
           }
         } catch (error) {
-          console.warn('Error fetching queue overview:', error);
+          console.warn('Error fetching waiting list:', error);
         }
         
         // Obtener transfers con manejo de errores
@@ -220,15 +220,25 @@ export function AppSidebar() {
     
     fetchInitial();
 
-    const onQueue = (ev: MessageEvent) => {
+    // Polling periódico para la cola de espera (cada 30 segundos)
+    const pollQueue = async () => {
       try {
-        // naive: recompute based on event type
-        if (ev.type === 'enqueue') setQueueCount((c) => c + 1);
-        if (ev.type === 'scheduled' || ev.type === 'cancelled' || ev.type === 'assign') setQueueCount((c) => Math.max(0, c - 1));
+        const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+        const token = localStorage.getItem('token') || '';
+        const headers: any = token ? { Authorization: `Bearer ${token}` } : {};
+        
+        const waitingListRes = await fetch(`${base}/appointments/waiting-list`, { headers });
+        if (waitingListRes.ok) {
+          const waitingListData = await waitingListRes.json();
+          setQueueCount(Number(waitingListData?.stats?.total_patients_waiting || 0));
+        }
       } catch (error) {
-        console.warn('Error handling queue event:', error);
+        console.warn('Error polling waiting list:', error);
       }
     };
+
+    // Iniciar polling cada 30 segundos
+    queuePollingInterval = setInterval(pollQueue, 30000);
     
     const onTransfers = (ev: MessageEvent) => {
       try {
@@ -239,12 +249,11 @@ export function AppSidebar() {
       }
     };
     
-    esQueue = subscribe('/queue/stream', onQueue);
     esTransfers = subscribe('/transfers/stream', onTransfers);
 
     
     return () => {
-  esQueue?.close?.();
+  if (queuePollingInterval) clearInterval(queuePollingInterval);
   esTransfers?.close?.();
     };
   }, [location.pathname]);

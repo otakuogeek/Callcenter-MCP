@@ -3,8 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Plus, Calendar, Filter, Search, X, Zap } from "lucide-react";
 import { useAppointmentData, type AvailabilityForm } from "@/hooks/useAppointmentData";
 import AppointmentFilters from "./AppointmentFilters";
-import AppointmentCalendar from "./AppointmentCalendar";
-import EnhancedAppointmentCalendar from "./EnhancedAppointmentCalendar";
+import DateNavigationCards from "./DateNavigationCards";
 import AvailabilityList from "./AvailabilityList";
 import CreateAvailabilityModal from "./CreateAvailabilityModal";
 import ViewAppointmentsModal from "./ViewAppointmentsModal";
@@ -20,6 +19,7 @@ import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { safeDateFromString } from "@/utils/dateHelpers";
 
 const AppointmentManagement = () => {
   const [date, setDate] = useState<Date | undefined>(new Date());
@@ -33,7 +33,6 @@ const AppointmentManagement = () => {
   const [selectedStatus, setSelectedStatus] = useState("all");
   const [viewMode, setViewMode] = useState<"calendar" | "distribution">("calendar");
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
-  const [enhancedMode] = useState(true);
   const [enhancedFilters, setEnhancedFilters] = useState({
     doctors: [] as number[],
     specialties: [] as number[],
@@ -98,8 +97,12 @@ const AppointmentManagement = () => {
     if (!form.endTime) errors.push("Debe especificar hora de fin");
     
     // Validar que la fecha no sea pasada
-    if (form.date && new Date(form.date) < new Date(new Date().toDateString())) {
-      errors.push("No puede crear una agenda en una fecha pasada");
+    if (form.date) {
+      const formDate = safeDateFromString(form.date);
+      const today = new Date(new Date().toDateString());
+      if (formDate && formDate < today) {
+        errors.push("No puede crear una agenda en una fecha pasada");
+      }
     }
     
     // Validar que la hora de fin sea posterior a la de inicio
@@ -159,12 +162,34 @@ const AppointmentManagement = () => {
   };
 
   useEffect(() => {
-    const d = date ? date.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-    loadAvailabilities(d);
+    // Cargar todas las disponibilidades futuras (sin filtrar por fecha específica)
+    loadAvailabilities();
     // También cargar resumen mensual para marcar el calendario
     const ref = date || new Date();
     loadCalendarSummary(ref.getUTCMonth(), ref.getUTCFullYear());
-  }, [date, loadAvailabilities, loadCalendarSummary]);
+  }, [loadAvailabilities, loadCalendarSummary]);
+
+  // Event listener para limpiar filtro de fecha desde AvailabilityList
+  useEffect(() => {
+    const handleClearDateFilter = () => {
+      setDate(undefined);
+    };
+    const handleCreateAvailabilityForDate = (event: any) => {
+      const dateStr = event.detail?.date;
+      if (dateStr) {
+        const targetDate = new Date(dateStr + 'T00:00:00');
+        setDate(targetDate);
+        setAvailabilityForm(prev => ({ ...prev, date: dateStr }));
+        setIsCreateAvailabilityOpen(true);
+      }
+    };
+    window.addEventListener('clearDateFilter', handleClearDateFilter);
+    window.addEventListener('createAvailabilityForDate', handleCreateAvailabilityForDate);
+    return () => {
+      window.removeEventListener('clearDateFilter', handleClearDateFilter);
+      window.removeEventListener('createAvailabilityForDate', handleCreateAvailabilityForDate);
+    };
+  }, []);
 
   // Cargar settings globales para auto-cancel
   useEffect(() => {
@@ -182,24 +207,21 @@ const AppointmentManagement = () => {
     })();
   }, []);
 
-  // Auto-refresco cada 90s en el día actual
+  // Auto-refresco cada 90s
   useEffect(() => {
-    const toYMD = (dt: Date) => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-    const selectedYMD = toYMD(date ?? new Date());
-    const todayYMD = toYMD(new Date());
-    if (selectedYMD !== todayYMD) return;
     const timer = setInterval(() => {
-      loadAvailabilities(selectedYMD);
+      loadAvailabilities();
     }, 90_000);
     return () => clearInterval(timer);
-  }, [date, loadAvailabilities]);
+  }, [loadAvailabilities]);
 
   // Filtros activos para mostrar como chips
   const activeFilters = [
     selectedLocation !== "all" && { key: "location", value: selectedLocation, label: `Sede: ${selectedLocation}` },
     selectedSpecialty !== "all" && { key: "specialty", value: selectedSpecialty, label: `Especialidad: ${selectedSpecialty}` },
     selectedStatus !== "all" && { key: "status", value: selectedStatus, label: `Estado: ${selectedStatus}` },
-    searchTerm && { key: "search", value: searchTerm, label: `Búsqueda: ${searchTerm}` }
+    searchTerm && { key: "search", value: searchTerm, label: `Búsqueda: ${searchTerm}` },
+    date && { key: "date", value: date.toISOString().split('T')[0], label: `Fecha: ${new Date(date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })}` }
   ].filter(Boolean) as Array<{ key: string; value: string; label: string }>;
 
   const clearFilter = (filterKey: string) => {
@@ -208,6 +230,7 @@ const AppointmentManagement = () => {
       case "specialty": setSelectedSpecialty("all"); break;
       case "status": setSelectedStatus("all"); break;
       case "search": setSearchTerm(""); break;
+      case "date": setDate(undefined); break;
     }
   };
 
@@ -216,13 +239,35 @@ const AppointmentManagement = () => {
     setSelectedSpecialty("all");
     setSelectedStatus("all");
     setSearchTerm("");
+    setDate(undefined);
   };
 
   const filteredAvailabilities = availabilities.filter(availability => {
+    // Normalizar fechas para comparación (solo fecha, sin hora)
+    const normalizeDate = (dateStr: string) => {
+      // Asegurar que la fecha se interprete en la zona horaria local
+      const [year, month, day] = dateStr.split('-').map(Number);
+      return new Date(year, month - 1, day);
+    };
+
+    // Mostrar solo citas futuras (desde hoy en adelante)
+    const availabilityDate = normalizeDate(availability.date);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    if (availabilityDate < today) {
+      return false;
+    }
+
+    // Filtrar por fecha seleccionada del calendario si existe
     if (date) {
-      const availabilityDate = new Date(availability.date);
+      // Normalizar ambas fechas para comparación exacta
       const selectedDate = new Date(date);
-      if (availabilityDate.toDateString() !== selectedDate.toDateString()) {
+      selectedDate.setHours(0, 0, 0, 0);
+      
+      const selectedDateStr = `${selectedDate.getFullYear()}-${String(selectedDate.getMonth() + 1).padStart(2, '0')}-${String(selectedDate.getDate()).padStart(2, '0')}`;
+      
+      if (availability.date !== selectedDateStr) {
         return false;
       }
     }
@@ -235,6 +280,11 @@ const AppointmentManagement = () => {
     const matchesStatus = selectedStatus === "all" || availability.status === selectedStatus;
     
     return matchesSearch && matchesLocation && matchesSpecialty && matchesStatus;
+  }).sort((a, b) => {
+    // Ordenar por fecha y luego por hora de inicio
+    const dateA = new Date(a.date + 'T' + a.startTime);
+    const dateB = new Date(b.date + 'T' + b.startTime);
+    return dateA.getTime() - dateB.getTime();
   });
 
   // Detección de agendas vencidas y confirmación antes de cancelar
@@ -244,20 +294,24 @@ const AppointmentManagement = () => {
     const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     const todayYMD = ymd(now);
     const selectedYMD = ymd(date ?? new Date());
-    const isPastDay = selectedYMD < todayYMD;
-    const isToday = selectedYMD === todayYMD;
+    
+    // NUEVA LÓGICA: Las agendas se vencen el día siguiente a su fecha asignada
+    const selectedDate = new Date(date ?? new Date());
+    const dayAfterSelected = new Date(selectedDate);
+    dayAfterSelected.setDate(selectedDate.getDate() + 1);
+    const dayAfterSelectedYMD = ymd(dayAfterSelected);
+    
+    // Una agenda está vencida si hoy es posterior al día después de su fecha asignada
+    const isExpired = todayYMD >= dayAfterSelectedYMD;
 
     const newCandidates: Array<{ id: number; label: string }> = [];
     for (const a of filteredAvailabilities) {
       if (a.status === 'Cancelada' || a.status === 'Completa') continue;
       if (autoCancelKnown.has(a.id)) continue; // ya procesada o descartada esta sesión
-      if (isPastDay) {
+      
+      // Solo marcar como vencida si ya pasó el día siguiente al asignado
+      if (isExpired) {
         newCandidates.push({ id: a.id, label: `${a.doctor} · ${a.startTime}-${a.endTime} · ${a.locationName}` });
-      } else if (isToday) {
-        const [eh, em] = a.endTime.split(':').map(Number);
-        const end = new Date(now);
-        end.setHours(eh, em, 0, 0);
-        if (now > end) newCandidates.push({ id: a.id, label: `${a.doctor} · ${a.startTime}-${a.endTime} · ${a.locationName}` });
       }
     }
     if (newCandidates.length) {
@@ -485,7 +539,7 @@ const AppointmentManagement = () => {
                     setSelectedStatus={setSelectedStatus}
                     getActiveLocations={getActiveLocations}
                     specialties={specialtiesAll}
-                    enhancedMode={enhancedMode}
+                    enhancedMode={true}
                     doctors={[]}
                     onEnhancedFiltersChange={handleEnhancedFiltersChange}
                   />
@@ -498,45 +552,21 @@ const AppointmentManagement = () => {
         {/* Contenido principal con tabs mejorado */}
         <Tabs value={viewMode} className="space-y-6">
           <TabsContent value="calendar" className="space-y-6">
-            <div className="grid grid-cols-1 lg:grid-cols-5 xl:grid-cols-12 gap-6">
-              {/* Calendario con diseño responsivo mejorado */}
-              <div className="lg:col-span-2 xl:col-span-4 space-y-6">
-                <Card className="border-0 shadow-xl bg-white/95 backdrop-blur-sm">
-                  <CardContent className="p-3 lg:p-4">
-                    {enhancedMode ? (
-                      <EnhancedAppointmentCalendar 
-                        date={date} 
-                        setDate={setDate} 
-                        summary={calendarSummary} 
-                        onMonthChange={(m, y) => loadCalendarSummary(m, y)}
-                        onCreateAvailability={handleCreateAvailabilityFromCalendar}
-                        onViewAppointments={handleViewAppointmentsFromCalendar}
-                        selectedFilters={{
-                          doctors: enhancedFilters.doctors,
-                          specialties: enhancedFilters.specialties,
-                          locations: enhancedFilters.locations
-                        }}
-                      />
-                    ) : (
-                      <AppointmentCalendar 
-                        date={date} 
-                        setDate={setDate} 
-                        summary={calendarSummary} 
-                        onMonthChange={(m, y) => loadCalendarSummary(m, y)} 
-                      />
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
+            {/* Navegación por semana con cards */}
+            <DateNavigationCards
+              date={date}
+              setDate={setDate}
+              summary={calendarSummary}
+              onCreateAvailability={handleCreateAvailabilityFromCalendar}
+              onViewAppointments={handleViewAppointmentsFromCalendar}
+              onMonthChange={(m, y) => loadCalendarSummary(m, y)}
+            />
 
-              {/* Lista de disponibilidades mejorada */}
-              <div className="lg:col-span-3 xl:col-span-8">
-                <AvailabilityList 
-                  date={date} 
-                  filteredAvailabilities={filteredAvailabilities} 
-                />
-              </div>
-            </div>
+            {/* Lista de disponibilidades mejorada */}
+            <AvailabilityList 
+              date={date} 
+              filteredAvailabilities={filteredAvailabilities} 
+            />
           </TabsContent>
 
           <TabsContent value="distribution" className="space-y-6">

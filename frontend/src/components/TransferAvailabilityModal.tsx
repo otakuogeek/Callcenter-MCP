@@ -176,7 +176,7 @@ Clínica Medical Center`;
     try {
       // Determinar el nuevo estatus basado en la fecha
       const today = new Date().toISOString().split('T')[0];
-      const newStatus = newDate >= today ? 'Activa' : 'Cancelada';
+      const newStatus = newDate >= today ? 'active' : 'cancelled';
 
       if (transferMode === 'copy') {
         // Crear nueva disponibilidad manteniendo la original
@@ -188,7 +188,7 @@ Clínica Medical Center`;
           start_time: availability.startTime,
           end_time: availability.endTime,
           capacity: availability.capacity,
-          status: newStatus as 'Activa' | 'Cancelada',
+          status: newStatus as 'active' | 'cancelled',
           notes: availability.notes || `Copiada desde ${availability.date}`,
         });
 
@@ -200,7 +200,7 @@ Clínica Medical Center`;
         // Mover la disponibilidad existente
         await api.updateAvailability(availability.id, {
           date: newDate,
-          status: newStatus as 'Activa' | 'Cancelada'
+          status: newStatus as 'active' | 'cancelled'
         });
 
         // También necesitaríamos actualizar las citas asociadas

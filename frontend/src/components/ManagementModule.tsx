@@ -17,7 +17,7 @@ const ManagementModule = () => {
       </div>
 
       <Tabs defaultValue="specialties" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-6">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="specialties" className="flex items-center gap-2">
             <Stethoscope className="w-4 h-4" />
             Especialidades
@@ -30,10 +30,12 @@ const ManagementModule = () => {
             <MapPin className="w-4 h-4" />
             Ubicaciones
           </TabsTrigger>
+          {/* Oculta: Servicios
           <TabsTrigger value="services" className="flex items-center gap-2">
             <Package className="w-4 h-4" />
             Servicios
           </TabsTrigger>
+          */}
           <TabsTrigger value="eps" className="flex items-center gap-2">
             <Shield className="w-4 h-4" />
             EPS

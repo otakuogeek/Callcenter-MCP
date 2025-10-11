@@ -192,6 +192,29 @@ router.get('/zones', requireAuth, async (req, res) => {
   }
 });
 
+// ===== EPS (ENTIDADES PROMOTORAS DE SALUD) =====
+router.get('/eps', requireAuth, async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, code, name, affiliation_type, phone, email, website, status, has_agreement
+       FROM eps 
+       WHERE status = 'Activa'
+       ORDER BY affiliation_type, name`
+    );
+
+    res.json({
+      success: true,
+      data: rows
+    });
+  } catch (error) {
+    console.error('Error getting EPS:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener EPS'
+    });
+  }
+});
+
 // ===== ENDPOINT COMBINADO PARA TODOS LOS LOOKUPS =====
 router.get('/all', requireAuth, async (req, res) => {
   try {
@@ -225,7 +248,10 @@ router.get('/all', requireAuth, async (req, res) => {
     );
 
     const [eps] = await pool.execute(
-      'SELECT id, name FROM eps ORDER BY name'
+      `SELECT id, code, name, affiliation_type, has_agreement, status 
+       FROM eps 
+       WHERE status = 'Activa'
+       ORDER BY affiliation_type, name`
     );
 
     res.json({
@@ -242,6 +268,8 @@ router.get('/all', requireAuth, async (req, res) => {
         insurance_affiliation_types: [
           { id: 'Contributivo', name: 'Contributivo' },
           { id: 'Subsidiado', name: 'Subsidiado' },
+          { id: 'Especial', name: 'Especial' },
+          { id: 'Mixto', name: 'Mixto' },
           { id: 'Vinculado', name: 'Vinculado' },
           { id: 'Particular', name: 'Particular' },
           { id: 'Otro', name: 'Otro' }

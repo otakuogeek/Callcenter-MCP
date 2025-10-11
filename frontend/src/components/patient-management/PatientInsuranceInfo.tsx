@@ -15,7 +15,14 @@ interface InsuranceForm {
 }
 
 interface LookupData {
-  eps: Array<{id: number, name: string}>;
+  eps: Array<{
+    id: number;
+    name: string;
+    code?: string;
+    affiliation_type?: string;
+    has_agreement?: boolean;
+    status?: string;
+  }>;
   insurance_affiliation_types: Array<{id: string, name: string}>;
 }
 
@@ -195,13 +202,26 @@ const PatientInsuranceInfo = ({ lookupData, patientId, onInsuranceUpdated }: Pat
                     <SelectContent>
                       {(lookupData?.eps || []).map(eps => (
                         <SelectItem key={eps.id} value={eps.id.toString()}>
-                          {eps.name}
+                          <div className="flex items-center justify-between w-full">
+                            <span>{eps.name}</span>
+                            <div className="flex items-center gap-1 ml-2">
+                              {eps.has_agreement && (
+                                <span className="text-green-600 text-xs">✓</span>
+                              )}
+                              {eps.affiliation_type && (
+                                <span className="text-xs text-muted-foreground">
+                                  ({eps.affiliation_type})
+                                </span>
+                              )}
+                            </div>
+                          </div>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground mt-1">
-                    Seleccione la Entidad Promotora de Salud del paciente
+                    Seleccione la Entidad Promotora de Salud del paciente. 
+                    Las EPS con ✓ tienen convenio activo con la IPS.
                   </p>
                 </div>
               </div>

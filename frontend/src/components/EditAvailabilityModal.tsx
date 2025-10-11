@@ -61,7 +61,7 @@ const EditAvailabilityModal = ({
     start_time: '',
     end_time: '',
     capacity: 1,
-    status: 'Activa',
+    status: 'active',
     notes: ''
   });
 
@@ -90,7 +90,7 @@ const EditAvailabilityModal = ({
           start_time: formatTime(availability.start_time || ''),
           end_time: formatTime(availability.end_time || ''),
           capacity: availability.capacity || 1,
-          status: availability.status || 'Activa',
+          status: availability.status || 'active',
           notes: availability.notes || ''
         });
         

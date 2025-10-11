@@ -28,7 +28,7 @@ export interface Availability {
   endTime: string;
   capacity: number;
   bookedSlots: number;
-  status: 'Activa' | 'Cancelada' | 'Completa';
+  status: 'active' | 'cancelled' | 'completed';
   notes?: string;
   createdAt: string;
 }
@@ -70,7 +70,8 @@ export const useAppointmentData = () => {
       try {
         const [locRows, docRows, specRows] = await Promise.all([
           api.getLocations(),
-          api.getDoctors(),
+          api.getDo
+          ctors(),
           api.getSpecialties(),
         ]);
 
@@ -127,7 +128,7 @@ export const useAppointmentData = () => {
     }));
   }, [doctorById, specialtyById, locationById]);
 
-  const loadAvailabilities = useCallback(async (date: string, dMap = doctorById, sMap = specialtyById, lMap = locationById) => {
+  const loadAvailabilities = useCallback(async (date?: string, dMap = doctorById, sMap = specialtyById, lMap = locationById) => {
     try {
       const rows = await api.getAvailabilities(date);
       setAvailabilities(mapAvailabilities(rows, dMap, sMap, lMap));
@@ -136,18 +137,39 @@ export const useAppointmentData = () => {
     }
   }, [doctorById, specialtyById, locationById, mapAvailabilities]);
 
-  const loadCalendarSummary = useCallback(async (month: number, year: number) => {
-    // month: 0-11
-    const startDate = new Date(Date.UTC(year, month, 1));
-    const endDate = new Date(Date.UTC(year, month + 1, 0));
-    const start = startDate.toISOString().slice(0, 10);
-    const end = endDate.toISOString().slice(0, 10);
+  const loadCalendarSummary = useCallback(async (month?: number, year?: number) => {
+    // month: 0-11, usar fecha actual si no se proporcionan parámetros
+    const now = new Date();
+    const targetMonth = month !== undefined ? month : now.getMonth();
+    const targetYear = year !== undefined ? year : now.getFullYear();
+    
+    // Validar que month y year sean valores válidos
+    if (isNaN(targetMonth) || isNaN(targetYear) || targetMonth < 0 || targetMonth > 11) {
+      console.warn('Invalid month/year for loadCalendarSummary:', { month, year, targetMonth, targetYear });
+      setCalendarSummary({});
+      return;
+    }
+    
     try {
+      const startDate = new Date(Date.UTC(targetYear, targetMonth, 1));
+      const endDate = new Date(Date.UTC(targetYear, targetMonth + 1, 0));
+      
+      // Verificar que las fechas sean válidas
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        console.warn('Invalid dates created in loadCalendarSummary:', { startDate, endDate, targetYear, targetMonth });
+        setCalendarSummary({});
+        return;
+      }
+      
+      const start = startDate.toISOString().slice(0, 10);
+      const end = endDate.toISOString().slice(0, 10);
+      
       const { by_day } = await api.getAppointmentsSummary(start, end);
       const map: Record<string, { appointments: number; availabilities: number }> = {};
       by_day.forEach(d => { map[d.date] = { appointments: d.appointments, availabilities: d.availabilities }; });
       setCalendarSummary(map);
-    } catch {
+    } catch (error) {
+      console.warn('Error loading calendar summary:', error);
       setCalendarSummary({});
     }
   }, []);

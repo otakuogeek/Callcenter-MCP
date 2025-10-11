@@ -49,6 +49,7 @@ import exportReports from './export-reports';
 // Sistema de asignación diaria y cola de espera
 import dailyQueue from './daily-queue';
 import autoAssignment from './auto-assignment';
+import consultations from './consultations';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -137,6 +138,8 @@ router.use('/notifications', notifications);
 // Sistema de asignación diaria y cola de espera
 router.use('/daily-queue', dailyQueue);
 router.use('/auto-assignment', autoAssignment);
+// Consultas telefónicas (ElevenLabs)
+router.use('/consultations', consultations);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)
