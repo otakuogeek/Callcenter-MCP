@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -76,6 +76,9 @@ const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalP
       <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl text-blue-600"><Calendar className="w-5 h-5" />Detalles del {formatDate(date)}</DialogTitle>
+          <DialogDescription>
+            Visualización de agendas médicas y citas programadas para la fecha seleccionada
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-6 mt-4">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">

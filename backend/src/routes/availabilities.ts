@@ -131,6 +131,98 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// Endpoint para actualizar cupos asignados de una distribución específica
+router.put('/distributions/:id/assigned', requireAuth, async (req: Request, res: Response) => {
+  const distributionId = Number(req.params.id);
+  const { assigned } = req.body;
+  
+  if (Number.isNaN(distributionId)) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'ID de distribución inválido' 
+    });
+  }
+  
+  if (typeof assigned !== 'number' || assigned < 0) {
+    return res.status(400).json({ 
+      success: false, 
+      message: 'El número de asignados debe ser un número mayor o igual a 0' 
+    });
+  }
+  
+  try {
+    // Verificar que la distribución existe
+    const [existing] = await pool.query(
+      'SELECT * FROM availability_distribution WHERE id = ?',
+      [distributionId]
+    );
+    
+    if (!Array.isArray(existing) || existing.length === 0) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Distribución no encontrada' 
+      });
+    }
+    
+    const distribution = existing[0] as any;
+    
+    // Verificar que no se exceda la cuota
+    if (assigned > distribution.quota) {
+      return res.status(400).json({ 
+        success: false, 
+        message: `No se pueden asignar ${assigned} cupos. La cuota máxima es ${distribution.quota}` 
+      });
+    }
+    
+    // Actualizar la distribución
+    await pool.query(
+      'UPDATE availability_distribution SET assigned = ? WHERE id = ?',
+      [assigned, distributionId]
+    );
+    
+    // Obtener la distribución actualizada con información completa
+    const [updated] = await pool.query(`
+      SELECT 
+        ad.id,
+        ad.availability_id,
+        ad.day_date,
+        ad.quota,
+        ad.assigned,
+        ad.created_at,
+        a.doctor_id,
+        a.specialty_id,
+        a.location_id,
+        d.name AS doctor_name,
+        s.name AS specialty_name,
+        l.name AS location_name,
+        a.date AS availability_date,
+        a.start_time,
+        a.end_time,
+        a.capacity AS total_capacity,
+        (ad.quota - ad.assigned) AS remaining
+      FROM availability_distribution ad
+      JOIN availabilities a ON a.id = ad.availability_id
+      JOIN doctors d ON d.id = a.doctor_id
+      JOIN specialties s ON s.id = a.specialty_id  
+      JOIN locations l ON l.id = a.location_id
+      WHERE ad.id = ?
+    `, [distributionId]);
+    
+    return res.json({
+      success: true,
+      message: 'Cupos asignados actualizados correctamente',
+      data: (updated as any[])[0]
+    });
+  } catch (error: any) {
+    console.error('Error updating assigned slots:', error);
+    return res.status(500).json({ 
+      success: false,
+      message: 'Error al actualizar cupos asignados', 
+      error: error.message 
+    });
+  }
+});
+
 router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id); if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
   const parsed = schema.partial().safeParse(req.body);
@@ -728,98 +820,6 @@ router.get('/distributions/stats', requireAuth, async (req: Request, res: Respon
     return res.status(500).json({ 
       success: false,
       message: 'Error al obtener estadísticas de distribución', 
-      error: error.message 
-    });
-  }
-});
-
-// Endpoint para actualizar cupos asignados de una distribución específica
-router.put('/distributions/:id/assigned', requireAuth, async (req: Request, res: Response) => {
-  const distributionId = Number(req.params.id);
-  const { assigned } = req.body;
-  
-  if (Number.isNaN(distributionId)) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'ID de distribución inválido' 
-    });
-  }
-  
-  if (typeof assigned !== 'number' || assigned < 0) {
-    return res.status(400).json({ 
-      success: false, 
-      message: 'El número de asignados debe ser un número mayor o igual a 0' 
-    });
-  }
-  
-  try {
-    // Verificar que la distribución existe
-    const [existing] = await pool.query(
-      'SELECT * FROM availability_distribution WHERE id = ?',
-      [distributionId]
-    );
-    
-    if (!Array.isArray(existing) || existing.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Distribución no encontrada' 
-      });
-    }
-    
-    const distribution = existing[0] as any;
-    
-    // Verificar que no se exceda la cuota
-    if (assigned > distribution.quota) {
-      return res.status(400).json({ 
-        success: false, 
-        message: `No se pueden asignar ${assigned} cupos. La cuota máxima es ${distribution.quota}` 
-      });
-    }
-    
-    // Actualizar la distribución
-    await pool.query(
-      'UPDATE availability_distribution SET assigned = ? WHERE id = ?',
-      [assigned, distributionId]
-    );
-    
-    // Obtener la distribución actualizada con información completa
-    const [updated] = await pool.query(`
-      SELECT 
-        ad.id,
-        ad.availability_id,
-        ad.day_date,
-        ad.quota,
-        ad.assigned,
-        ad.created_at,
-        a.doctor_id,
-        a.specialty_id,
-        a.location_id,
-        d.name AS doctor_name,
-        s.name AS specialty_name,
-        l.name AS location_name,
-        a.date AS availability_date,
-        a.start_time,
-        a.end_time,
-        a.capacity AS total_capacity,
-        (ad.quota - ad.assigned) AS remaining
-      FROM availability_distribution ad
-      JOIN availabilities a ON a.id = ad.availability_id
-      JOIN doctors d ON d.id = a.doctor_id
-      JOIN specialties s ON s.id = a.specialty_id  
-      JOIN locations l ON l.id = a.location_id
-      WHERE ad.id = ?
-    `, [distributionId]);
-    
-    return res.json({
-      success: true,
-      message: 'Cupos asignados actualizados correctamente',
-      data: (updated as any[])[0]
-    });
-  } catch (error: any) {
-    console.error('Error updating assigned slots:', error);
-    return res.status(500).json({ 
-      success: false,
-      message: 'Error al actualizar cupos asignados', 
       error: error.message 
     });
   }

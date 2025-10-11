@@ -10,7 +10,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: process.env.PORT || 4000,
-  HOST: process.env.HOST || '127.0.0.1',
+        HOST: process.env.HOST || '0.0.0.0',
         // CORS: permitir apex y www por defecto (se puede sobreescribir con env real)
         CORS_ORIGINS: process.env.CORS_ORIGINS || 'https://biosanarcall.site,https://www.biosanarcall.site',
       },

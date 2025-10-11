@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import api from '@/lib/api';
@@ -213,6 +213,9 @@ export function NotificationCenter() {
                   <DialogContent>
                     <DialogHeader>
                       <DialogTitle>Preferencias de Notificación</DialogTitle>
+                      <DialogDescription>
+                        Configura tus preferencias de notificaciones médicas y alertas del sistema
+                      </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
