@@ -49,7 +49,8 @@ const Dashboard = () => {
       try {
         const [patients, appts, logs, statuses] = await Promise.all([
           api.getPatients(),
-          api.getAppointments(undefined, todayStr),
+          // ✅ CORREGIDO: Usar objeto con date
+          api.getAppointments({ date: todayStr }),
           api.getCallLogs({ date: todayStr }),
           api.getCallStatuses(),
         ]);

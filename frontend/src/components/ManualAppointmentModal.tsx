@@ -127,7 +127,11 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
   const findNextSlot = async (fromTime?: string): Promise<string | null> => {
     if (!defaults?.availabilityId || !defaults?.startTime || !defaults?.endTime || !formData.date || !formData.doctorId) return null;
     try {
-      const appts = await api.getAppointments(undefined, formData.date, defaults.availabilityId);
+      // ✅ CORREGIDO: Usar objeto con date y availability_id
+      const appts = await api.getAppointments({ 
+        date: formData.date, 
+        availability_id: defaults.availabilityId 
+      });
       const busy: Array<{ start: number; end: number }> = (appts || [])
         .filter((a: any) => a.status !== 'Cancelada')
         .map((a: any) => {

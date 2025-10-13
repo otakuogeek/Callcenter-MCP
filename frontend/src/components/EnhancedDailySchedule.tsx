@@ -91,7 +91,8 @@ const EnhancedDailySchedule = () => {
       
       const [availabilitiesRes, appointmentsRes] = await Promise.all([
         api.getAvailabilities(dateStr),
-        api.getAppointments(undefined, dateStr)
+        // ✅ CORREGIDO: Usar objeto con date
+        api.getAppointments({ date: dateStr })
       ]);
 
       setAvailabilities(availabilitiesRes || []);

@@ -70,8 +70,7 @@ export const useAppointmentData = () => {
       try {
         const [locRows, docRows, specRows] = await Promise.all([
           api.getLocations(),
-          api.getDo
-          ctors(),
+          api.getDoctors(),
           api.getSpecialties(),
         ]);
 

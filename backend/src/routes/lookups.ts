@@ -195,10 +195,11 @@ router.get('/zones', requireAuth, async (req, res) => {
 // ===== EPS (ENTIDADES PROMOTORAS DE SALUD) =====
 router.get('/eps', requireAuth, async (req, res) => {
   try {
+    // Sin filtro de status para permitir seleccionar EPS inactivas
+    // (un paciente puede tener una EPS que ahora está inactiva)
     const [rows] = await pool.execute(
       `SELECT id, code, name, affiliation_type, phone, email, website, status, has_agreement
        FROM eps 
-       WHERE status = 'Activa'
        ORDER BY affiliation_type, name`
     );
 

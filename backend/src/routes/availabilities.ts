@@ -2,6 +2,11 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
+import { 
+  redistributeUnassignedQuota, 
+  redistributeAllActiveAvailabilities,
+  getUnassignedQuotaSummary 
+} from '../utils/redistribution';
 
 const router = Router();
 
@@ -295,7 +300,7 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   
   try {
     // 🔥 SI SE ESTÁ CANCELANDO LA AGENDA, MOVER CITAS A LISTA DE ESPERA
-    if (d.status === 'Cancelada') {
+    if (d.status === 'cancelled') {
       // Obtener todas las citas de esta agenda que NO están canceladas
       const [appointments] = await pool.query(`
         SELECT 
@@ -1392,6 +1397,116 @@ router.post('/recalculate-booked-slots', requireAuth, async (req: Request, res: 
     return res.status(500).json({
       success: false,
       message: 'Error al recalcular booked_slots',
+      error: error.message
+    });
+  }
+});
+
+// ===== REDISTRIBUCIÓN DE CUPOS NO ASIGNADOS =====
+
+/**
+ * POST /api/availabilities/:id/redistribute
+ * Redistribuye cupos no asignados de días pasados hacia días futuros
+ * para una disponibilidad específica
+ */
+router.post('/:id/redistribute', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const availabilityId = parseInt(req.params.id);
+    const { until_date } = req.body;
+
+    if (isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de disponibilidad inválido'
+      });
+    }
+
+    // Verificar que la disponibilidad existe
+    const [availRows] = await pool.query(
+      'SELECT id, status FROM availabilities WHERE id = ?',
+      [availabilityId]
+    );
+
+    if ((availRows as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Disponibilidad no encontrada'
+      });
+    }
+
+    // Ejecutar redistribución
+    const result = await redistributeUnassignedQuota(availabilityId, until_date);
+
+    return res.json({
+      success: true,
+      message: `Redistribución completada: ${result.redistributed_quota} cupos redistribuidos`,
+      data: result
+    });
+
+  } catch (error: any) {
+    console.error('Error en redistribución de cupos:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al redistribuir cupos',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/availabilities/redistribute/all
+ * Redistribuye cupos para todas las disponibilidades activas
+ */
+router.post('/redistribute/all', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { until_date } = req.body;
+
+    const result = await redistributeAllActiveAvailabilities(until_date);
+
+    return res.json({
+      success: true,
+      message: `Redistribución global completada: ${result.total_redistributed} cupos redistribuidos en ${result.total_availabilities} disponibilidades`,
+      data: result
+    });
+
+  } catch (error: any) {
+    console.error('Error en redistribución global:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al redistribuir cupos globalmente',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/availabilities/:id/unassigned-summary
+ * Obtiene resumen de cupos no asignados para una disponibilidad
+ */
+router.get('/:id/unassigned-summary', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const availabilityId = parseInt(req.params.id);
+
+    if (isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de disponibilidad inválido'
+      });
+    }
+
+    const summary = await getUnassignedQuotaSummary(availabilityId);
+
+    return res.json({
+      success: true,
+      data: summary,
+      total_unassigned: summary.reduce((sum, day) => sum + day.unassigned, 0)
+    });
+
+  } catch (error: any) {
+    console.error('Error obteniendo resumen de cupos no asignados:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener resumen',
       error: error.message
     });
   }

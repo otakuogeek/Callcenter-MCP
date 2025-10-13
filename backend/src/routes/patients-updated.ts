@@ -37,6 +37,30 @@ async function getEpsName(epsId: number): Promise<string | undefined> {
   }
 }
 
+// ===== OBTENER MUNICIPIOS (para portal público) =====
+// GET /api/patients-v2/public/municipalities
+// Endpoint público SIN autenticación - DEBE IR ANTES DE RUTAS DINÁMICAS
+router.get('/public/municipalities', async (req, res) => {
+  console.log('✅ Endpoint /public/municipalities ALCANZADO');
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, name 
+       FROM municipalities 
+       ORDER BY name ASC`
+    );
+
+    console.log(`✅ Municipios encontrados: ${(rows as any[]).length}`);
+    
+    res.json({ 
+      success: true, 
+      data: rows 
+    });
+  } catch (e) {
+    console.error('❌ Error getting municipalities:', e);
+    res.status(500).json({ success: false, message: 'Error al obtener municipios' });
+  }
+});
+
 // ===== CREAR PACIENTE CON CAMPOS EXTENDIDOS =====
 router.post('/', requireAuth, requireRole(['admin', 'recepcionista']), async (req, res) => {
   try {
@@ -220,6 +244,114 @@ router.get('/quick-search', requireAuth, async (req, res) => {
   }
 });
 
+// ===== BÚSQUEDA DE PACIENTES (para portal público) =====
+// GET /api/patients-v2/search?q=document
+// Búsqueda pública SIN autenticación para portal de pacientes
+router.get('/search', async (req, res) => {
+  try {
+    const q = req.query.q as string;
+    if (!q || q.trim().length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Parámetro de búsqueda requerido' 
+      });
+    }
+
+    // Buscar paciente por documento exacto con JOINs
+    const [rows] = await pool.execute(
+      `SELECT 
+        p.id as patient_id,
+        p.document,
+        p.name,
+        SUBSTRING_INDEX(p.name, ' ', 1) as first_name,
+        SUBSTRING_INDEX(p.name, ' ', -1) as last_name,
+        p.phone,
+        p.phone_alt,
+        p.email,
+        DATE_FORMAT(p.birth_date, '%Y-%m-%d') as birth_date,
+        p.gender,
+        p.address,
+        p.municipality_id,
+        p.zone_id,
+        p.insurance_eps_id,
+        p.insurance_affiliation_type,
+        p.blood_group_id,
+        p.notes,
+        p.status,
+        p.created_at,
+        m.name as municipality_name,
+        z.name as zone_name,
+        e.name as eps_name,
+        bg.name as blood_group_name,
+        bg.code as blood_group
+      FROM patients p
+      LEFT JOIN municipalities m ON p.municipality_id = m.id
+      LEFT JOIN zones z ON p.zone_id = z.id
+      LEFT JOIN eps e ON p.insurance_eps_id = e.id
+      LEFT JOIN blood_groups bg ON p.blood_group_id = bg.id
+      WHERE p.status = 'Activo' AND p.document = ?
+      LIMIT 1`, 
+      [q.trim()]
+    );
+
+    if ((rows as any[]).length === 0) {
+      return res.json({ 
+        success: true, 
+        patients: [],
+        message: 'No se encontró ningún paciente con ese documento'
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      patients: rows 
+    });
+  } catch (e) {
+    console.error('Error search patients:', e);
+    res.status(500).json({ success: false, message: 'Error en búsqueda de pacientes' });
+  }
+});
+
+// ===== OBTENER CITAS DE UN PACIENTE (para portal público) =====
+// GET /api/patients-v2/:id/appointments
+// Endpoint público SIN autenticación
+router.get('/:id/appointments', async (req, res) => {
+  try {
+    const patientId = parseInt(req.params.id);
+
+    // Obtener citas del paciente
+    const [rows] = await pool.execute(
+      `SELECT 
+        a.id as appointment_id,
+        DATE_FORMAT(a.scheduled_at, '%Y-%m-%d') as scheduled_date,
+        TIME_FORMAT(a.scheduled_at, '%H:%i') as scheduled_time,
+        DATE_FORMAT(a.scheduled_at, '%Y-%m-%d %H:%i:%s') as scheduled_at,
+        a.status,
+        a.reason,
+        a.created_at,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name
+      FROM appointments a
+      LEFT JOIN doctors d ON a.doctor_id = d.id
+      LEFT JOIN specialties s ON a.specialty_id = s.id
+      LEFT JOIN locations l ON a.location_id = l.id
+      WHERE a.patient_id = ?
+      ORDER BY a.scheduled_at DESC
+      LIMIT 50`,
+      [patientId]
+    );
+
+    res.json({ 
+      success: true, 
+      data: rows 
+    });
+  } catch (e) {
+    console.error('Error getting patient appointments:', e);
+    res.status(500).json({ success: false, message: 'Error al obtener citas del paciente' });
+  }
+});
+
 // ===== OBTENER PACIENTE CON TODOS LOS DATOS =====
 // Endpoint quick-search debe declararse antes de rutas dinámicas :id para evitar colisiones
 // (Movido al final superior)
@@ -276,7 +408,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     const [historialRows] = await pool.execute(
       `SELECT 
         a.id, 
-        a.scheduled_at as fecha_cita, 
+        DATE_FORMAT(a.scheduled_at, '%Y-%m-%d %H:%i:%s') as fecha_cita, 
         a.status as estado, 
         d.name as doctor_nombre, 
         s.name as especialidad_nombre,
@@ -439,7 +571,7 @@ router.get('/', requireAuth, async (req, res) => {
         p.name,
         p.phone,
         p.email,
-        p.birth_date,
+        DATE_FORMAT(p.birth_date, '%Y-%m-%d') as birth_date,
         p.gender,
         p.address,
         p.estrato,

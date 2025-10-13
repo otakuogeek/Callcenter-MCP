@@ -5,18 +5,35 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Clock, User, Phone, RefreshCw, Calendar, AlertCircle } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { CalendarIcon } from "lucide-react";
+import { format } from "date-fns";
+import { es } from "date-fns/locale";
+import { Calendar as CalendarComponent } from "@/components/ui/calendar";
+import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 
 export default function DailyQueue() {
   const [dailyData, setDailyData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
-  const refresh = async () => {
+  const refresh = async (date?: Date) => {
     setLoading(true);
     setError(null);
+    const dateToFetch = date || selectedDate;
     try {
-      const response = await api.getDailyQueue();
+      // Formatear la fecha como YYYY-MM-DD
+      const formattedDate = format(dateToFetch, 'yyyy-MM-dd');
+      console.log(`[DailyQueue] Consultando fecha: ${formattedDate}`);
+      const response = await api.getDailyQueue(formattedDate);
+      console.log('[DailyQueue] Respuesta recibida:', {
+        success: response.success,
+        date: response.date,
+        dataLength: response.data?.length || 0,
+        totalScheduled: response.stats?.total_scheduled || 0
+      });
       setDailyData(response);
     } catch (err: any) {
       console.error('Error al cargar cola diaria:', err);
@@ -29,9 +46,16 @@ export default function DailyQueue() {
   useEffect(() => {
     refresh();
     // Actualizar cada 30 segundos
-    const interval = setInterval(refresh, 30000);
+    const interval = setInterval(() => refresh(), 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedDate]);
+
+  const handleDateChange = (date: Date | undefined) => {
+    if (date) {
+      setSelectedDate(date);
+      refresh(date);
+    }
+  };
 
   const formatTime = (dateString: string) => {
     const date = new Date(dateString);
@@ -93,14 +117,41 @@ export default function DailyQueue() {
               <div>
                 <h1 className="text-3xl font-bold text-medical-800 mb-2">Gestión de Cola Diaria</h1>
                 <p className="text-medical-600">
-                  Asignación automática para hoy - {dailyData?.date ? formatDate(dailyData.date) : ''}
+                  Citas programadas para: {format(selectedDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
                 </p>
                 {error && <p className="text-red-600 text-sm mt-2">{error}</p>}
               </div>
-              <Button onClick={refresh} disabled={loading} variant="outline" size="sm">
-                <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-                Actualizar
-              </Button>
+              <div className="flex gap-2">
+                {/* Selector de Fecha */}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className={cn(
+                        "w-[240px] justify-start text-left font-normal",
+                        !selectedDate && "text-muted-foreground"
+                      )}
+                    >
+                      <CalendarIcon className="mr-2 h-4 w-4" />
+                      {selectedDate ? format(selectedDate, "PPP", { locale: es }) : <span>Seleccionar fecha</span>}
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-auto p-0" align="end">
+                    <CalendarComponent
+                      mode="single"
+                      selected={selectedDate}
+                      onSelect={handleDateChange}
+                      initialFocus
+                      locale={es}
+                    />
+                  </PopoverContent>
+                </Popover>
+                
+                <Button onClick={() => refresh()} disabled={loading} variant="outline" size="sm">
+                  <RefreshCw className={`w-4 h-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+                  Actualizar
+                </Button>
+              </div>
             </div>
 
             {/* Tarjetas de Estadísticas */}
@@ -157,7 +208,7 @@ export default function DailyQueue() {
             {/* Lista de Citas por Especialidad */}
             <div className="space-y-6">
               <h2 className="text-xl font-semibold text-medical-800">📋 Cola de Espera</h2>
-              <p className="text-sm text-gray-600">Pacientes en espera de asignación para hoy</p>
+              <p className="text-sm text-gray-600">Pacientes con citas programadas para la fecha seleccionada</p>
 
               {dailyData?.data && dailyData.data.length > 0 ? (
                 dailyData.data.map((specialty: any) => (

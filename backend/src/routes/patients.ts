@@ -56,11 +56,17 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
         p.*,
         z.name as zone,
         m.name as municipality,
-        eps.name as insurance_type
+        eps.name as eps_name,
+        el.name as education_level,
+        ms.name as marital_status,
+        pg.name as population_group
       FROM patients p
       LEFT JOIN zones z ON p.zone_id = z.id
       LEFT JOIN municipalities m ON p.municipality_id = m.id
       LEFT JOIN eps eps ON p.insurance_eps_id = eps.id
+      LEFT JOIN education_levels el ON p.education_level_id = el.id
+      LEFT JOIN marital_statuses ms ON p.marital_status_id = ms.id
+      LEFT JOIN population_groups pg ON p.population_group_id = pg.id
     `;
     
     if (q) {
@@ -90,11 +96,17 @@ router.get('/:id', requireAuth, async (req: Request, res: Response) => {
         p.*,
         z.name as zone,
         m.name as municipality,
-        eps.name as insurance_type
+        eps.name as eps_name,
+        el.name as education_level,
+        ms.name as marital_status,
+        pg.name as population_group
       FROM patients p
       LEFT JOIN zones z ON p.zone_id = z.id
       LEFT JOIN municipalities m ON p.municipality_id = m.id
       LEFT JOIN eps eps ON p.insurance_eps_id = eps.id
+      LEFT JOIN education_levels el ON p.education_level_id = el.id
+      LEFT JOIN marital_statuses ms ON p.marital_status_id = ms.id
+      LEFT JOIN population_groups pg ON p.population_group_id = pg.id
       WHERE p.id = ? 
       LIMIT 1
     `, [id]);

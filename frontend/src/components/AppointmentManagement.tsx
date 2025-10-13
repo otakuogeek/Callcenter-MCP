@@ -342,7 +342,8 @@ const AppointmentManagement = () => {
       let apptCancelled = 0;
       try {
         if (alsoAppointments) {
-          const appts = await api.getAppointments(undefined, undefined, c.id);
+          // ✅ CORREGIDO: Pasar availability_id como objeto
+          const appts = await api.getAppointments({ availability_id: c.id });
           const toCancel = (appts || []).filter(a => a.status !== 'Cancelada' && a.status !== 'Completada');
           for (const a of toCancel) {
             try {

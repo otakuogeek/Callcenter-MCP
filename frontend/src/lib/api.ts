@@ -131,8 +131,16 @@ export const api = {
     request<ApiResponse<unknown>>(`/patients/${id}`, { method: 'PUT', body: data }),
   deletePatient: (id: number) => 
     request<void>(`/patients/${id}`, { method: 'DELETE' }),
-  getPatientAppointments: (patient_id: number) => 
-    request<unknown[]>(`/appointments?patient_id=${patient_id}`),
+  getPatientAppointments: (patient_id: string | number) => 
+    request<{ success?: boolean; data?: any[] }>(`/appointments?patient_id=${patient_id}`)
+      .then(response => {
+        // Si la respuesta es un array directamente, envolver en objeto con data
+        if (Array.isArray(response)) {
+          return { success: true, data: response };
+        }
+        // Si ya viene como objeto con data, retornar tal cual
+        return response;
+      }),
   getPatientCallLogs: (patient_id: number) => 
     request<unknown[]>(`/call-logs?patient_id=${patient_id}`),
   
@@ -998,8 +1006,9 @@ export const api = {
       };
     }>(`/appointments/waiting-list`),
 
-  // Obtener cola diaria (citas del día actual)
-  async getDailyQueue() {
+  // Obtener cola diaria (citas del día actual o de una fecha específica)
+  async getDailyQueue(date?: string) {
+    const queryParams = date ? `?date=${date}` : '';
     return this.get<{
       success: boolean;
       date: string;
@@ -1027,7 +1036,7 @@ export const api = {
           baja: number;
         };
       };
-    }>('/appointments/daily-queue');
+    }>(`/appointments/daily-queue${queryParams}`);
   },
 
   // Obtener consultas telefónicas de ElevenLabs
@@ -1062,6 +1071,67 @@ export const api = {
       success: boolean;
       data: any;
     }>(`/consultations/elevenlabs/${conversationId}`);
+  },
+
+  // ===== GESTIÓN DE EMBARAZOS =====
+  
+  // Obtener embarazo activo de una paciente
+  async getActivePregnancy(patientId: number) {
+    return this.get<{
+      success: boolean;
+      data: any;
+      has_active_pregnancy: boolean;
+    }>(`/pregnancies/patient/${patientId}/active`);
+  },
+
+  // Obtener historial de embarazos
+  async getPregnancyHistory(patientId: number) {
+    return this.get<{
+      success: boolean;
+      data: any[];
+    }>(`/pregnancies/patient/${patientId}/history`);
+  },
+
+  // Crear nuevo embarazo
+  async createPregnancy(data: {
+    patient_id: number;
+    start_date: string;
+    expected_due_date?: string;
+    high_risk?: boolean;
+    risk_factors?: string;
+    notes?: string;
+  }) {
+    return this.post<{
+      success: boolean;
+      message: string;
+      data: any;
+    }>('/pregnancies', data);
+  },
+
+  // Actualizar embarazo
+  async updatePregnancy(pregnancyId: number, data: any) {
+    return this.put<{
+      success: boolean;
+      message: string;
+      data: any;
+    }>(`/pregnancies/${pregnancyId}`, data);
+  },
+
+  // Obtener controles prenatales
+  async getPrenatalControls(pregnancyId: number) {
+    return this.get<{
+      success: boolean;
+      data: any[];
+    }>(`/pregnancies/${pregnancyId}/controls`);
+  },
+
+  // Registrar control prenatal
+  async createPrenatalControl(data: any) {
+    return this.post<{
+      success: boolean;
+      message: string;
+      data: any;
+    }>('/pregnancies/controls', data);
   },
 };
 

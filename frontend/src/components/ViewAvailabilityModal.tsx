@@ -42,7 +42,8 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
       setLoading(true);
       setError(null);
       try {
-        const rows = await api.getAppointments(undefined, undefined, availability.id);
+        // ✅ CORREGIDO: Pasar parámetros como objeto con availability_id
+        const rows = await api.getAppointments({ availability_id: availability.id });
         setAppointments(rows as AppointmentRow[]);
       } catch (e: any) {
         setError(e?.message || "No se pudo cargar las citas");

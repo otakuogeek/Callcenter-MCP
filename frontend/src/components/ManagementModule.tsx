@@ -1,12 +1,13 @@
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Stethoscope, User, MapPin, Shield, Layers, Package } from "lucide-react";
+import { Stethoscope, User, MapPin, Shield, Layers, ShieldCheck } from "lucide-react";
 import SpecialtyManagement from "./SpecialtyManagement";
 import DoctorManagement from "./DoctorManagement";
 import LocationManagement from "./LocationManagement";
 import EpsManagement from "./EpsManagement";
 import LocationTypeManagement from "./LocationTypeManagement";
 import ServiceManagement from "./ServiceManagement";
+import EPSAuthorizationsManagement from "./EPSAuthorizationsManagement";
 
 const ManagementModule = () => {
   return (
@@ -17,7 +18,7 @@ const ManagementModule = () => {
       </div>
 
       <Tabs defaultValue="specialties" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-5">
+        <TabsList className="grid w-full grid-cols-6">
           <TabsTrigger value="specialties" className="flex items-center gap-2">
             <Stethoscope className="w-4 h-4" />
             Especialidades
@@ -39,6 +40,10 @@ const ManagementModule = () => {
           <TabsTrigger value="eps" className="flex items-center gap-2">
             <Shield className="w-4 h-4" />
             EPS
+          </TabsTrigger>
+          <TabsTrigger value="eps-authorizations" className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4" />
+            EPS/Especialidades
           </TabsTrigger>
           <TabsTrigger value="location-types" className="flex items-center gap-2">
             <Layers className="w-4 h-4" />
@@ -64,6 +69,10 @@ const ManagementModule = () => {
 
         <TabsContent value="eps">
           <EpsManagement />
+        </TabsContent>
+
+        <TabsContent value="eps-authorizations">
+          <EPSAuthorizationsManagement />
         </TabsContent>
 
         <TabsContent value="location-types">

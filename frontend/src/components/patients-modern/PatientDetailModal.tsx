@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -22,11 +22,27 @@ import {
   FileText,
   Edit,
   Download,
-  X
+  X,
+  CalendarDays,
+  Clock
 } from 'lucide-react';
 import { Patient, calculateAge, getInitials, getAvatarColor } from '@/types/patient';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
+import { api } from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+
+interface Appointment {
+  id: number;
+  scheduled_at: string;
+  status: string;
+  reason: string;
+  specialty_name: string;
+  doctor_name: string;
+  location_name: string;
+  start_time?: string;
+  created_at?: string; // Fecha y hora de solicitud de la cita
+}
 
 interface PatientDetailModalProps {
   patient: Patient | null;
@@ -44,6 +60,35 @@ export const PatientDetailModal = ({
   onGeneratePDF
 }: PatientDetailModalProps) => {
   const [activeTab, setActiveTab] = useState('basic');
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [loadingAppointments, setLoadingAppointments] = useState(false);
+  const { toast } = useToast();
+
+  // Cargar citas cuando se abre el modal
+  useEffect(() => {
+    if (patient && isOpen) {
+      loadPatientAppointments();
+    }
+  }, [patient, isOpen]);
+
+  const loadPatientAppointments = async () => {
+    if (!patient) return;
+    
+    setLoadingAppointments(true);
+    try {
+      const response = await api.getPatientAppointments(patient.id);
+      setAppointments(response.data || []);
+    } catch (error) {
+      console.error('Error loading patient appointments:', error);
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar las citas del paciente.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingAppointments(false);
+    }
+  };
 
   if (!patient) return null;
 
@@ -114,7 +159,7 @@ export const PatientDetailModal = ({
 
         {/* Tabs de información */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="mt-6">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="basic" className="text-xs">
               <User className="w-4 h-4 mr-1" />
               Básica
@@ -134,6 +179,10 @@ export const PatientDetailModal = ({
             <TabsTrigger value="demographic" className="text-xs">
               <GraduationCap className="w-4 h-4 mr-1" />
               Demográfica
+            </TabsTrigger>
+            <TabsTrigger value="appointments" className="text-xs">
+              <CalendarDays className="w-4 h-4 mr-1" />
+              Citas
             </TabsTrigger>
           </TabsList>
 
@@ -376,6 +425,180 @@ export const PatientDetailModal = ({
                 </div>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* TAB: Historial de Citas */}
+          <TabsContent value="appointments" className="space-y-4 mt-4">
+            {loadingAppointments ? (
+              <Card>
+                <CardContent className="py-12 text-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                    <p className="text-gray-500">Cargando historial de citas...</p>
+                  </div>
+                </CardContent>
+              </Card>
+            ) : appointments.length === 0 ? (
+              <Card>
+                <CardContent className="py-12 text-center">
+                  <CalendarDays className="h-16 w-16 mx-auto text-gray-300 mb-4" />
+                  <p className="text-gray-500 text-lg font-medium">No hay citas registradas</p>
+                  <p className="text-gray-400 text-sm mt-2">
+                    Este paciente aún no tiene citas programadas o realizadas.
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <>
+                {/* Próximas Citas */}
+                {appointments.filter(apt => new Date(apt.scheduled_at) >= new Date()).length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <CalendarDays className="h-5 w-5 text-blue-600" />
+                        Próximas Citas ({appointments.filter(apt => new Date(apt.scheduled_at) >= new Date()).length})
+                      </CardTitle>
+                      <CardDescription>Citas activas y programadas</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {appointments
+                        .filter(apt => new Date(apt.scheduled_at) >= new Date())
+                        .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime())
+                        .map(apt => {
+                          const appointmentDate = new Date(apt.scheduled_at);
+                          const requestDate = apt.created_at ? new Date(apt.created_at) : null;
+                          return (
+                            <div key={apt.id} className="p-4 border border-blue-200 rounded-lg bg-blue-50">
+                              <div className="flex justify-between items-start mb-2">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <CalendarDays className="h-4 w-4 text-blue-600" />
+                                    <span className="font-semibold text-gray-900">
+                                      {format(appointmentDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                                    <Clock className="h-3 w-3" />
+                                    <span>{apt.start_time || format(appointmentDate, 'HH:mm')}</span>
+                                  </div>
+                                  {requestDate && (
+                                    <div className="flex items-center gap-2 text-xs text-gray-500 mt-1 italic">
+                                      <FileText className="h-3 w-3" />
+                                      <span>
+                                        Solicitada: {format(requestDate, "d 'de' MMMM 'de' yyyy 'a las' HH:mm", { locale: es })}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                <Badge variant="default" className="bg-blue-600">
+                                  {apt.status}
+                                </Badge>
+                              </div>
+                              
+                              <div className="space-y-1 text-sm mt-3">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <span className="font-semibold text-gray-700">Especialidad:</span>
+                                    <p className="text-gray-900">{apt.specialty_name}</p>
+                                  </div>
+                                  <div>
+                                    <span className="font-semibold text-gray-700">Médico:</span>
+                                    <p className="text-gray-900">{apt.doctor_name}</p>
+                                  </div>
+                                  <div className="col-span-2">
+                                    <span className="font-semibold text-gray-700">Sede:</span>
+                                    <p className="text-gray-900">{apt.location_name}</p>
+                                  </div>
+                                  {apt.reason && (
+                                    <div className="col-span-2">
+                                      <span className="font-semibold text-gray-700">Motivo:</span>
+                                      <p className="text-gray-900">{apt.reason}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* Historial de Citas Pasadas */}
+                {appointments.filter(apt => new Date(apt.scheduled_at) < new Date()).length > 0 && (
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg flex items-center gap-2">
+                        <Clock className="h-5 w-5 text-gray-600" />
+                        Historial de Citas ({appointments.filter(apt => new Date(apt.scheduled_at) < new Date()).length})
+                      </CardTitle>
+                      <CardDescription>Citas realizadas anteriormente</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3 max-h-96 overflow-y-auto">
+                      {appointments
+                        .filter(apt => new Date(apt.scheduled_at) < new Date())
+                        .sort((a, b) => new Date(b.scheduled_at).getTime() - new Date(a.scheduled_at).getTime())
+                        .map(apt => {
+                          const appointmentDate = new Date(apt.scheduled_at);
+                          const requestDate = apt.created_at ? new Date(apt.created_at) : null;
+                          return (
+                            <div key={apt.id} className="p-4 border border-gray-200 rounded-lg bg-gray-50">
+                              <div className="flex justify-between items-start mb-2">
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <CalendarDays className="h-4 w-4 text-gray-600" />
+                                    <span className="font-semibold text-gray-900">
+                                      {format(appointmentDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-sm text-gray-600">
+                                    <Clock className="h-3 w-3" />
+                                    <span>{apt.start_time || format(appointmentDate, 'HH:mm')}</span>
+                                  </div>
+                                  {requestDate && (
+                                    <div className="flex items-center gap-2 text-xs text-gray-500 mt-1 italic">
+                                      <FileText className="h-3 w-3" />
+                                      <span>
+                                        Solicitada: {format(requestDate, "d 'de' MMMM 'de' yyyy 'a las' HH:mm", { locale: es })}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                                <Badge variant="secondary">
+                                  {apt.status}
+                                </Badge>
+                              </div>
+                              
+                              <div className="space-y-1 text-sm mt-3">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <span className="font-semibold text-gray-700">Especialidad:</span>
+                                    <p className="text-gray-900">{apt.specialty_name}</p>
+                                  </div>
+                                  <div>
+                                    <span className="font-semibold text-gray-700">Médico:</span>
+                                    <p className="text-gray-900">{apt.doctor_name}</p>
+                                  </div>
+                                  <div className="col-span-2">
+                                    <span className="font-semibold text-gray-700">Sede:</span>
+                                    <p className="text-gray-900">{apt.location_name}</p>
+                                  </div>
+                                  {apt.reason && (
+                                    <div className="col-span-2">
+                                      <span className="font-semibold text-gray-700">Motivo:</span>
+                                      <p className="text-gray-900">{apt.reason}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </CardContent>
+                  </Card>
+                )}
+              </>
+            )}
           </TabsContent>
         </Tabs>
 

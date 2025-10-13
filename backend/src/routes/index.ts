@@ -11,6 +11,7 @@ import doctors from './doctors';
 import availabilities from './availabilities';
 import appointments from './appointments';
 import eps from './eps';
+import epsAuthorizations from './eps-authorizations';
 import settings from './settings';
 import uploads from './uploads';
 import timezones from './timezones';
@@ -46,10 +47,13 @@ import outboundPublic from './outbound-public';
 // Nuevas rutas de endpoints avanzados
 import search from './search';
 import exportReports from './export-reports';
+// Sistema de gestión de embarazos
+import pregnancies from './pregnancies';
 // Sistema de asignación diaria y cola de espera
 import dailyQueue from './daily-queue';
 import autoAssignment from './auto-assignment';
 import consultations from './consultations';
+import publicRoutes from './public';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -97,6 +101,7 @@ router.use('/doctors', doctors);
 router.use('/availabilities', availabilities);
 router.use('/appointments', appointments);
 router.use('/eps', eps);
+router.use('/eps-authorizations', epsAuthorizations);
 router.use('/settings', settings);
 router.use('/uploads', uploads);
 router.use('/timezones', timezones);
@@ -117,6 +122,46 @@ router.use('/documents', documents);
 router.use('/metrics', metrics);
 router.use('/audit', audit);
 router.use('/sessions', sessions);
+// Rutas públicas (SIN autenticación)
+router.use('/public', publicRoutes);
+// Endpoint público de municipios (directo, antes de montar patients-v2)
+router.get('/patients-v2/public/municipalities', async (req, res) => {
+  try {
+    const zoneId = req.query.zone_id;
+    let query = `SELECT id, name, zone_id 
+                 FROM municipalities 
+                 WHERE 1=1`;
+    const params: any[] = [];
+    
+    if (zoneId) {
+      query += ` AND zone_id = ?`;
+      params.push(parseInt(zoneId as string));
+    }
+    
+    query += ` ORDER BY name ASC`;
+    
+    const [rows] = await pool.execute(query, params);
+    res.json({ success: true, data: rows });
+  } catch (e) {
+    console.error('Error getting municipalities:', e);
+    res.status(500).json({ success: false, message: 'Error al obtener municipios' });
+  }
+});
+
+router.get('/patients-v2/public/zones', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, name, description 
+       FROM zones 
+       ORDER BY name ASC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (e) {
+    console.error('Error getting zones:', e);
+    res.status(500).json({ success: false, message: 'Error al obtener zonas' });
+  }
+});
+
 // Nuevas rutas Biosanarcall 2025
 router.use('/patients-v2', patientsUpdated);
 router.use('/patients-enhanced', patientsEnhanced);
@@ -126,6 +171,8 @@ router.use('/webhooks', webhooks);
 router.use('/agenda-templates', agendaTemplates);
 router.use('/agenda-optimization', agendaOptimization);
 router.use('/agenda-conflicts', agendaConflicts);
+// Sistema de gestión de embarazos
+router.use('/pregnancies', pregnancies);
 // Ruta del agente de voz para procesamiento de llamadas
 router.use('/voice-agent', voiceAgent);
 router.use('/outbound', outbound);

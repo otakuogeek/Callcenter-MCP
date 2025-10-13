@@ -774,10 +774,30 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
 // Obtener cola diaria (citas del día actual: en espera + otorgadas)
 router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
   try {
-    const today = new Date();
-    const todayStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+    // Permitir parámetro de fecha opcional, por defecto usar hoy
+    const dateParam = req.query.date as string;
+    let targetDate: Date;
+    let targetDateStr: string;
+    
+    if (dateParam) {
+      // Validar formato YYYY-MM-DD
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(dateParam)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Formato de fecha inválido. Use YYYY-MM-DD'
+        });
+      }
+      targetDate = new Date(dateParam);
+      targetDateStr = dateParam;
+    } else {
+      targetDate = new Date();
+      targetDateStr = targetDate.toISOString().split('T')[0]; // YYYY-MM-DD
+    }
 
-    // 1. Obtener citas en espera creadas hoy
+    console.log(`[DAILY-QUEUE] Consultando fecha: ${targetDateStr}`);
+
+    // 1. Obtener citas en espera programadas para la fecha seleccionada
     const waitingQuery = `
       SELECT 
         'waiting' AS type,
@@ -808,11 +828,11 @@ router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
       INNER JOIN doctors d ON a.doctor_id = d.id
       INNER JOIN locations l ON a.location_id = l.id
       WHERE wl.status = 'pending'
-        AND DATE(wl.created_at) = ?
+        AND DATE(a.date) = ?
       ORDER BY wl.priority_level, wl.created_at
     `;
 
-    // 2. Obtener citas otorgadas creadas hoy
+    // 2. Obtener citas otorgadas programadas para la fecha seleccionada
     const appointmentsQuery = `
       SELECT 
         'appointment' AS type,
@@ -840,12 +860,12 @@ router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
       INNER JOIN specialties s ON app.specialty_id = s.id
       INNER JOIN doctors d ON app.doctor_id = d.id
       INNER JOIN locations l ON app.location_id = l.id
-      WHERE DATE(app.created_at) = ?
-      ORDER BY app.created_at
+      WHERE DATE(app.scheduled_at) = ?
+      ORDER BY app.scheduled_at
     `;
 
-    const [waitingRows]: any = await pool.query(waitingQuery, [todayStr]);
-    const [appointmentRows]: any = await pool.query(appointmentsQuery, [todayStr]);
+    const [waitingRows]: any = await pool.query(waitingQuery, [targetDateStr]);
+    const [appointmentRows]: any = await pool.query(appointmentsQuery, [targetDateStr]);
 
     // 3. Calcular estadísticas
     const stats = {
@@ -919,9 +939,16 @@ router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
 
     const data = Object.values(groupedBySpecialty);
 
+    console.log(`[DAILY-QUEUE] Resultados - Fecha: ${targetDateStr}, Waiting: ${waitingRows.length}, Appointments: ${appointmentRows.length}, Grupos: ${data.length}`);
+
+    // Desactivar caché para esta respuesta
+    res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+
     return res.json({
       success: true,
-      date: todayStr,
+      date: targetDateStr,
       data,
       stats
     });

@@ -35,7 +35,8 @@ const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalP
     setLoading(true);
     try {
       const [appointmentsData, availabilitiesData] = await Promise.all([
-        api.getAppointments(undefined, date),
+        // ✅ CORREGIDO: Usar objeto con date
+        api.getAppointments({ date }),
         api.getAvailabilities({ date }) // ✅ FIX: Pasar como objeto
       ]);
       setAppointments(appointmentsData || []);

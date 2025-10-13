@@ -291,7 +291,16 @@ const PatientsList = ({ lookupData, onPatientSelected, onPatientEdit }: Patients
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('es-CO');
+    if (!dateString) return 'No especificado';
+    
+    // Extraer la fecha sin conversión de zona horaria
+    const dateMatch = dateString.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (dateMatch) {
+      const [, year, month, day] = dateMatch;
+      return `${day}/${month}/${year}`;
+    }
+    
+    return 'Fecha inválida';
   };
 
   const getStatusBadge = (status?: string) => {

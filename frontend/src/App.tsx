@@ -26,6 +26,7 @@ const Settings = lazy(() => import("./pages/Settings"));
 const AgendaManagement = lazy(() => import("./pages/AgendaManagement"));
 const DistributionDashboard = lazy(() => import("./pages/DistributionDashboard"));
 const DailyQueue = lazy(() => import("./pages/DailyQueue"));
+const UserPortal = lazy(() => import("./pages/UserPortal"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient({
@@ -150,6 +151,7 @@ const App = () => (
                 <DailyQueue />
               </ProtectedRoute>
             } />
+            <Route path="/users" element={<UserPortal />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>

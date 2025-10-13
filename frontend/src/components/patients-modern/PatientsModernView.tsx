@@ -331,6 +331,18 @@ export const PatientsModernView = () => {
       .sort(([, a], [, b]) => b - a)
       .slice(0, 5);
 
+    // Debug: Log de EPS para verificar datos
+    if (topEPS.length > 0) {
+      console.log('📊 Top EPS:', topEPS);
+    } else {
+      console.warn('⚠️ No se encontraron datos de EPS en los pacientes');
+      console.log('Muestra de pacientes:', patientsData.slice(0, 2).map(p => ({ 
+        name: p.name, 
+        eps_name: p.eps_name, 
+        insurance_eps_id: p.insurance_eps_id 
+      })));
+    }
+
     // Nuevos este mes
     const thisMonth = new Date();
     thisMonth.setDate(1);

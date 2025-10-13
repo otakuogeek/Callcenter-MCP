@@ -23,6 +23,8 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim().length < 16) {
 const app = express();
 // Si se despliega detrás de Nginx/Proxy, habilitar trust proxy para IPs y HTTPS correctos
 app.set('trust proxy', true);
+// Desactivar ETag para evitar respuestas 304 que impiden actualizaciones en tiempo real
+app.set('etag', false);
 // CORS restringido: por defecto solo el dominio público; configurable vía CORS_ORIGINS (coma-separado)
 const defaultOrigins = ['https://biosanarcall.site'];
 const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',')

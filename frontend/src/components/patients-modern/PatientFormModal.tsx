@@ -47,6 +47,7 @@ import {
   Zap,
   ClipboardList,
 } from 'lucide-react';
+import { PregnancyManagement } from './PregnancyManagement';
 
 interface PatientFormModalProps {
   isOpen: boolean;
@@ -142,7 +143,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       setCurrentStep(1); // Asegurar que empiece en paso 1 para mostrar todos los campos
       
       // Función para convertir fecha ISO a formato yyyy-MM-dd
-      const formatDateForInput = (dateValue: string | null): string | null => {
+      const formatDateForInput = (dateValue: string | null | undefined): string | null => {
         if (!dateValue) return null;
         try {
           // Si es ISO string, convertir a yyyy-MM-dd
@@ -159,7 +160,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
         }
       };
       
-      const formData = {
+      const formData: PatientFullFormData = {
         document: patient.document || '',
         document_type_id: patient.document_type_id || null,
         name: patient.name || '',
@@ -187,12 +188,40 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
       console.log('📋 Datos a cargar en formulario:', formData);
       
       // Usar reset con valores para forzar actualización
-      setTimeout(() => {
-        completeForm.reset(formData, { keepDefaultValues: false });
+      // Esperamos a que React Query termine de cargar los datos de referencia
+      const timer = setTimeout(() => {
+        completeForm.reset(formData, { 
+          keepDefaultValues: false,
+          keepDirty: false,
+          keepTouched: false,
+          keepErrors: false
+        });
+        
+        // Forzar actualización de todos los Select components
+        // Esto es necesario porque usan watch() en lugar de register()
+        Object.keys(formData).forEach((key) => {
+          const value = formData[key as keyof PatientFullFormData];
+          if (value !== undefined && value !== null) {
+            completeForm.setValue(key as any, value, { 
+              shouldValidate: false,
+              shouldDirty: false,
+              shouldTouch: false
+            });
+          }
+        });
+        
         console.log('✅ Formulario reseteado con datos del paciente');
-      }, 50);
+        console.log('📊 Valores actuales del form:', completeForm.getValues());
+      }, 200); // Aumentado a 200ms para dar tiempo a React Query
+      
+      return () => clearTimeout(timer);
+    } else if (isOpen && !patient) {
+      // Modo creación: resetear a valores por defecto
+      completeForm.reset(defaultFullValues);
+      setFormMode('quick');
+      setCurrentStep(1);
     }
-  }, [isOpen, patient]);
+  }, [isOpen, patient, completeForm]);
 
   // Resetear al cerrar
   useEffect(() => {
@@ -494,16 +523,18 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('document_type_id', value ? parseInt(value) : null)
                     }
-                    value={completeForm.watch('document_type_id')?.toString() || undefined}
+                    value={completeForm.watch('document_type_id')?.toString() || ''}
+                    key={`doc-type-${completeForm.watch('document_type_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="1">Cédula de Ciudadanía</SelectItem>
-                      <SelectItem value="2">Tarjeta de Identidad</SelectItem>
-                      <SelectItem value="3">Cédula de Extranjería</SelectItem>
-                      <SelectItem value="4">Pasaporte</SelectItem>
+                      <SelectItem value="1">Cédula de Ciudadanía (CC)</SelectItem>
+                      <SelectItem value="2">Tarjeta de Identidad (TI)</SelectItem>
+                      <SelectItem value="3">Cédula de Extranjería (CE)</SelectItem>
+                      <SelectItem value="4">Pasaporte (PA)</SelectItem>
+                      <SelectItem value="5">Registro Civil (RC)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -545,7 +576,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('gender', (value || null) as 'Masculino' | 'Femenino' | 'Otro' | null)
                     }
-                    value={completeForm.watch('gender') || undefined}
+                    value={completeForm.watch('gender') || ''}
+                    key={`gender-${completeForm.watch('gender')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
@@ -566,7 +598,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                   onValueChange={(value) =>
                     completeForm.setValue('status', value as 'Activo' | 'Inactivo')
                   }
-                  value={completeForm.watch('status')}
+                  value={completeForm.watch('status') || 'Activo'}
+                  key={`status-${completeForm.watch('status')}`}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione" />
@@ -577,6 +610,17 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+          )}
+
+          {/* GESTIÓN DE EMBARAZO - Solo para pacientes femeninos en modo edición */}
+          {isEditMode && patient?.id && completeForm.watch('gender') === 'Femenino' && (
+            <div className="space-y-4">
+              <PregnancyManagement 
+                patientId={patient.id}
+                patientGender={completeForm.watch('gender') || ''}
+                isEditMode={isEditMode}
+              />
             </div>
           )}
 
@@ -651,6 +695,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                       completeForm.setValue('municipality_id', undefined as any);
                     }}
                     value={completeForm.watch('zone_id')?.toString() || ''}
+                    key={`zone-${completeForm.watch('zone_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione una zona" />
@@ -680,6 +725,7 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     }
                     value={completeForm.watch('municipality_id')?.toString() || ''}
                     disabled={!completeForm.watch('zone_id')}
+                    key={`municipality-${completeForm.watch('municipality_id')}-${completeForm.watch('zone_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder={
@@ -739,7 +785,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                   onValueChange={(value) =>
                     completeForm.setValue('blood_group_id', value ? parseInt(value) : null)
                   }
-                  value={completeForm.watch('blood_group_id')?.toString() || undefined}
+                  value={completeForm.watch('blood_group_id')?.toString() || ''}
+                  key={`blood-group-${completeForm.watch('blood_group_id')}`}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione" />
@@ -779,7 +826,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('disability_type_id', value ? parseInt(value) : null)
                     }
-                    value={completeForm.watch('disability_type_id')?.toString() || undefined}
+                    value={completeForm.watch('disability_type_id')?.toString() || ''}
+                    key={`disability-${completeForm.watch('disability_type_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
@@ -823,7 +871,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                   onValueChange={(value) =>
                     completeForm.setValue('insurance_eps_id', value ? parseInt(value) : null)
                   }
-                  value={completeForm.watch('insurance_eps_id')?.toString() || undefined}
+                  value={completeForm.watch('insurance_eps_id')?.toString() || ''}
+                  key={`eps-${completeForm.watch('insurance_eps_id')}`}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione una EPS" />
@@ -854,7 +903,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                       (value || null) as 'Contributivo' | 'Subsidiado' | 'Particular' | 'Otro' | null
                     )
                   }
-                  value={completeForm.watch('insurance_affiliation_type') || undefined}
+                  value={completeForm.watch('insurance_affiliation_type') || ''}
+                  key={`affiliation-${completeForm.watch('insurance_affiliation_type')}`}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione" />
@@ -886,7 +936,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('education_level_id', value ? parseInt(value) : null)
                     }
-                    value={completeForm.watch('education_level_id')?.toString() || undefined}
+                    value={completeForm.watch('education_level_id')?.toString() || ''}
+                    key={`education-${completeForm.watch('education_level_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
@@ -909,7 +960,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('marital_status_id', value ? parseInt(value) : null)
                     }
-                    value={completeForm.watch('marital_status_id')?.toString() || undefined}
+                    value={completeForm.watch('marital_status_id')?.toString() || ''}
+                    key={`marital-${completeForm.watch('marital_status_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
@@ -933,7 +985,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('population_group_id', value ? parseInt(value) : null)
                     }
-                    value={completeForm.watch('population_group_id')?.toString() || undefined}
+                    value={completeForm.watch('population_group_id')?.toString() || ''}
+                    key={`population-${completeForm.watch('population_group_id')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
@@ -956,7 +1009,8 @@ export const PatientFormModal: React.FC<PatientFormModalProps> = ({
                     onValueChange={(value) =>
                       completeForm.setValue('estrato', value ? parseInt(value) : null)
                     }
-                    value={completeForm.watch('estrato')?.toString() || undefined}
+                    value={completeForm.watch('estrato')?.toString() || ''}
+                    key={`estrato-${completeForm.watch('estrato')}`}
                   >
                     <SelectTrigger>
                       <SelectValue placeholder="Seleccione" />
