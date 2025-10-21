@@ -802,7 +802,7 @@ router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
       SELECT 
         'waiting' AS type,
         wl.id,
-        wl.patient_id,
+        wl.patient_id,pudes 
         wl.scheduled_date AS scheduled_at,
         wl.priority_level,
         wl.call_type,
