@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from "@/components/ui/button";
-import { Plus, Calendar, Filter, Search, X, Zap } from "lucide-react";
+import { Plus, Calendar, Filter, Search, X, Zap, Printer } from "lucide-react";
 import { useAppointmentData, type AvailabilityForm } from "@/hooks/useAppointmentData";
 import AppointmentFilters from "./AppointmentFilters";
 import DateNavigationCards from "./DateNavigationCards";
@@ -20,6 +20,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { safeDateFromString } from "@/utils/dateHelpers";
+import { generateDailyAgendaPDF } from "@/utils/pdfGenerators";
+import { format } from "date-fns";
 
 const AppointmentManagement = () => {
   const [date, setDate] = useState<Date | undefined>(new Date());
@@ -77,13 +79,14 @@ const AppointmentManagement = () => {
     startTime: "",
     endTime: "",
     capacity: 1,
-  notes: "",
-  autoPreallocate: false,
-  preallocationPublishDate: '',
-  autoDistribute: false,
-  distributionStartDate: '',
-  distributionEndDate: '',
-  excludeWeekends: true
+    durationMinutes: 30, // 🔥 Duración por defecto de 30 minutos
+    notes: "",
+    autoPreallocate: false,
+    preallocationPublishDate: '',
+    autoDistribute: false,
+    distributionStartDate: '',
+    distributionEndDate: '',
+    excludeWeekends: true
   });
 
   const validateAvailabilityForm = (form: AvailabilityForm): string[] => {
@@ -153,11 +156,120 @@ const AppointmentManagement = () => {
         startTime: "",
         endTime: "",
         capacity: 1,
-  notes: "",
-  autoPreallocate: false,
-  preallocationPublishDate: ''
+        durationMinutes: 30, // 🔥 Reset con duración por defecto
+        notes: "",
+        autoPreallocate: false,
+        preallocationPublishDate: ''
       });
       setIsCreateAvailabilityOpen(false);
+    }
+  };
+
+  // Función para imprimir agenda diaria
+  const handlePrintDailyAgenda = async () => {
+    if (!date) {
+      toast({
+        title: "Seleccione una fecha",
+        description: "Por favor seleccione una fecha para generar el reporte",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      const dateStr = format(date, 'yyyy-MM-dd');
+      
+      // Obtener todas las citas del día
+      const appointments = await api.getAppointments({ date: dateStr });
+      
+      // Obtener disponibilidades del día para info adicional
+      const availabilitiesOfDay = availabilities.filter(
+        (av: any) => av.date === dateStr
+      );
+      
+      if (!appointments || appointments.length === 0) {
+        toast({
+          title: "Sin citas",
+          description: "No hay citas programadas para esta fecha",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Agrupar citas por doctor y agenda
+      const agendaMap = new Map<string, any>();
+      
+      appointments.forEach((apt: any) => {
+        const key = `${apt.doctor_id}-${apt.availability_id || 'manual'}`;
+        
+        if (!agendaMap.has(key)) {
+          // Buscar info adicional de la disponibilidad
+          const availability = availabilitiesOfDay.find(
+            (av: any) => av.id === apt.availability_id && av.doctor === apt.doctor_name
+          );
+          
+          agendaMap.set(key, {
+            doctor_name: apt.doctor_name,
+            specialty_name: apt.specialty_name || availability?.specialty || 'N/A',
+            location_name: apt.location_name || availability?.locationName || 'N/A',
+            date: dateStr,
+            start_time: availability?.startTime || apt.scheduled_at,
+            end_time: availability?.endTime || apt.scheduled_at,
+            room: availability?.notes || '', // Notas puede contener el consultorio
+            appointments: []
+          });
+        }
+        
+        const agenda = agendaMap.get(key);
+        agenda.appointments.push({
+          id: apt.id,
+          patient_name: apt.patient_name,
+          patient_document: apt.patient_document,
+          patient_phone: apt.patient_phone,
+          patient_email: apt.patient_email,
+          patient_eps: apt.patient_eps,
+          scheduled_at: apt.scheduled_at,
+          duration_minutes: apt.duration_minutes,
+          status: apt.status,
+          reason: apt.reason,
+          age: apt.age
+        });
+        
+        // Actualizar horarios de inicio y fin basados en citas
+        const aptTime = apt.scheduled_at;
+        if (aptTime < agenda.start_time || !agenda.start_time) {
+          agenda.start_time = aptTime;
+        }
+        if (aptTime > agenda.end_time || !agenda.end_time) {
+          agenda.end_time = aptTime;
+        }
+      });
+
+      // Generar PDF
+      const agendaData = Array.from(agendaMap.values());
+      
+      if (agendaData.length === 0) {
+        toast({
+          title: "Sin agendas",
+          description: "No se pudo procesar la información de las agendas",
+          variant: "destructive"
+        });
+        return;
+      }
+      
+      generateDailyAgendaPDF(agendaData);
+      
+      toast({
+        title: "PDF generado",
+        description: `Se generó el reporte con ${agendaData.length} agenda(s) y ${appointments.length} cita(s)`,
+      });
+    } catch (error) {
+      console.error('Error al generar PDF:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo generar el reporte PDF",
+        variant: "destructive"
+      });
     }
   };
 
@@ -167,7 +279,8 @@ const AppointmentManagement = () => {
     // También cargar resumen mensual para marcar el calendario
     const ref = date || new Date();
     loadCalendarSummary(ref.getUTCMonth(), ref.getUTCFullYear());
-  }, [loadAvailabilities, loadCalendarSummary]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Solo cargar una vez al montar el componente
 
   // Event listener para limpiar filtro de fecha desde AvailabilityList
   useEffect(() => {
@@ -420,6 +533,17 @@ const AppointmentManagement = () => {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            
+            <Button 
+              onClick={handlePrintDailyAgenda}
+              variant="outline"
+              className="border-2 border-gray-300 hover:border-blue-600 hover:bg-blue-50 shadow-md hover:shadow-lg transform hover:scale-105 transition-all duration-200 flex items-center gap-2"
+              size="lg"
+            >
+              <Printer className="w-5 h-5" />
+              <span className="hidden sm:inline">Imprimir Agenda</span>
+              <span className="sm:hidden">Imprimir</span>
+            </Button>
             
             <Button 
               onClick={() => setIsSmartAppointmentOpen(true)}

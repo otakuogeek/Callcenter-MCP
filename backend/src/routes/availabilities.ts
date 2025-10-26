@@ -7,6 +7,13 @@ import {
   redistributeAllActiveAvailabilities,
   getUnassignedQuotaSummary 
 } from '../utils/redistribution';
+import {
+  syncAvailabilitySlots,
+  syncAllAvailabilities,
+  validateAvailabilityCapacity,
+  incrementBookedSlots,
+  decrementBookedSlots
+} from '../utils/availabilitySync';
 
 const router = Router();
 
@@ -18,6 +25,8 @@ const schema = z.object({
   start_time: z.string(),
   end_time: z.string(),
   capacity: z.number().int().min(1).default(1),
+  duration_minutes: z.number().int().min(5).max(240).optional().default(30),
+  booked_slots: z.number().int().min(0).optional(), // Para sincronización automática
   status: z.enum(['active','cancelled','completed']).default('active'),
   notes: z.string().optional().nullable(),
   auto_preallocate: z.boolean().optional(),
@@ -31,33 +40,31 @@ const schema = z.object({
 
 router.get('/', requireAuth, async (req: Request, res: Response) => {
   const date = String(req.query.date || '');
+  const specialtyId = req.query.specialty_id ? Number(req.query.specialty_id) : null;
+  
+  let whereClause = '';
+  let params: any[] = [];
+  
   try {
     if (date) {
-      const [rows] = await pool.query(
-        `SELECT a.id,
-                DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
-                a.start_time,
-                a.end_time,
-                a.doctor_id,
-                a.specialty_id,
-                a.location_id,
-                a.capacity,
-                a.booked_slots,
-                a.status,
-                a.created_at,
-                d.name AS doctor_name, 
-                s.name AS specialty_name, 
-                l.name AS location_name
-         FROM availabilities a
-         JOIN doctors d ON d.id = a.doctor_id
-         JOIN specialties s ON s.id = a.specialty_id  
-         JOIN locations l ON l.id = a.location_id
-         WHERE a.date = ? 
-         ORDER BY a.start_time ASC`, 
-        [date]
-      );
-      return res.json(rows);
+      whereClause = 'WHERE a.date = ?';
+      params.push(date);
+    } else {
+      whereClause = 'WHERE a.date >= CURDATE()';
     }
+    
+    // Agregar filtro por especialidad si se proporciona
+    if (specialtyId) {
+      whereClause += ' AND a.specialty_id = ?';
+      params.push(specialtyId);
+    }
+    
+    // Mostrar agendas activas y completas (para visualizar las asignaciones)
+    // Excluir solo las canceladas
+    whereClause += ' AND a.status IN ("Activa", "Completa")';
+    
+    console.log('[AVAILABILITIES] Query params:', { date, specialtyId, whereClause, params });
+    
     const [rows] = await pool.query(
       `SELECT a.id,
               DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
@@ -68,6 +75,8 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
               a.location_id,
               a.capacity,
               a.booked_slots,
+              GREATEST(0, CAST(a.capacity AS SIGNED) - CAST(a.booked_slots AS SIGNED)) AS available_slots,
+              a.duration_minutes,
               a.status,
               a.created_at,
               d.name AS doctor_name, 
@@ -77,17 +86,22 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
        JOIN doctors d ON d.id = a.doctor_id
        JOIN specialties s ON s.id = a.specialty_id  
        JOIN locations l ON l.id = a.location_id
-       WHERE a.date >= CURDATE()
+       ${whereClause}
        ORDER BY a.date ASC, a.start_time ASC 
-       LIMIT 200`
+       LIMIT 200`,
+      params
     );
+    
+    console.log(`[AVAILABILITIES] Found ${Array.isArray(rows) ? rows.length : 0} rows`);
     return res.json(rows);
   } catch (e: any) {
-    console.error('Error en GET /availabilities:', e);
+    console.error('[AVAILABILITIES] Error en GET /availabilities:', e);
+    console.error('[AVAILABILITIES] Params:', params);
+    console.error('[AVAILABILITIES] Where clause:', whereClause);
     if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
       return res.json([]);
     }
-    return res.status(500).json({ message: 'Server error' });
+    return res.status(500).json({ message: 'Server error', error: e.message });
   }
 });
 
@@ -95,6 +109,14 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data as any;
+  
+  // Mapear status de inglés a español para compatibilidad con BD
+  const statusMap: Record<string, string> = {
+    'active': 'Activa',
+    'cancelled': 'Cancelada',
+    'completed': 'Completa'
+  };
+  const dbStatus = statusMap[d.status] || 'Activa';
   
   // Validar que no sea sábado ni domingo
   // Usar formato ISO local para evitar problemas de zona horaria
@@ -110,9 +132,9 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   
   try {
     const [result] = await pool.query(
-      `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, booked_slots, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-      [d.location_id, d.specialty_id, d.doctor_id, d.date, d.start_time, d.end_time, d.capacity, d.status, d.notes ?? null]
+      `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, duration_minutes, booked_slots, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [d.location_id, d.specialty_id, d.doctor_id, d.date, d.start_time, d.end_time, d.capacity, d.duration_minutes ?? 30, dbStatus, d.notes ?? null]
     );
     // @ts-ignore
     const availabilityId = result.insertId as number;
@@ -183,7 +205,12 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     distribution 
   });
   } catch (e: any) {
-    return res.status(500).json({ message: 'Server error' });
+    console.error('[CREATE-AVAILABILITY] Error:', e);
+    return res.status(500).json({ 
+      message: 'Server error', 
+      error: e?.message || 'Unknown error',
+      details: e?.sqlMessage || e?.toString()
+    });
   }
 });
 
@@ -415,8 +442,8 @@ router.post('/batch', requireAuth, async (req: Request, res: Response) => {
       // Create availability for this date
       try {
         const [result] = await pool.query(
-          `INSERT INTO availabilities (doctor_id, location_id, specialty_id, date, start_time, end_time, capacity, booked_slots, batch_id, exclude_weekends, exclude_holidays) 
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+          `INSERT INTO availabilities (doctor_id, location_id, specialty_id, date, start_time, end_time, capacity, duration_minutes, booked_slots, batch_id, exclude_weekends, exclude_holidays) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
           [
             d.doctor_id,
             d.location_id,
@@ -425,6 +452,7 @@ router.post('/batch', requireAuth, async (req: Request, res: Response) => {
             d.start_time,
             d.end_time,
             d.capacity,
+            d.slot_duration_minutes ?? 30, // Usar slot_duration_minutes del batchSchema
             batchId,
             d.exclude_weekends,
             d.exclude_holidays
@@ -1509,6 +1537,697 @@ router.get('/:id/unassigned-summary', requireAuth, async (req: Request, res: Res
       message: 'Error al obtener resumen',
       error: error.message
     });
+  }
+});
+
+// Endpoint para sincronizar horas de citas secuencialmente
+router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    const availabilityId = parseInt(req.params.id);
+
+    if (isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de disponibilidad inválido'
+      });
+    }
+
+    await connection.beginTransaction();
+
+    // Obtener la availability completa
+    const [availabilityRows] = await connection.query(`
+      SELECT 
+        av.id,
+        av.location_id,
+        av.specialty_id,
+        av.doctor_id,
+        av.date,
+        av.start_time,
+        av.end_time,
+        av.capacity,
+        av.booked_slots,
+        av.duration_minutes,
+        av.break_between_slots,
+        l.name as location_name,
+        s.name as specialty_name,
+        d.name as doctor_name
+      FROM availabilities av
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN doctors d ON av.doctor_id = d.id
+      WHERE av.id = ?
+    `, [availabilityId]);
+
+    if (!Array.isArray(availabilityRows) || availabilityRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Availability no encontrada'
+      });
+    }
+
+    const availability = availabilityRows[0] as any;
+
+    // Obtener todas las citas confirmadas y pendientes de esta availability
+    const [appointments] = await connection.query(`
+      SELECT 
+        a.id,
+        a.patient_id,
+        a.scheduled_at,
+        a.duration_minutes,
+        a.status,
+        p.name as patient_name
+      FROM appointments a
+      LEFT JOIN patients p ON a.patient_id = p.id
+      WHERE a.availability_id = ?
+        AND a.status IN ('Pendiente', 'Confirmada')
+      ORDER BY a.scheduled_at, a.id
+    `, [availabilityId]);
+
+    if (!Array.isArray(appointments) || appointments.length === 0) {
+      await connection.rollback();
+      return res.json({
+        success: true,
+        message: 'No hay citas para sincronizar',
+        updated: 0
+      });
+    }
+
+    // Calcular hora de inicio base
+    const fechaFormateada = new Date(availability.date).toISOString().split('T')[0];
+    const fechaHoraInicio = `${fechaFormateada}T${availability.start_time}`;
+    let currentTime = new Date(fechaHoraInicio);
+
+    console.log('🔧 Sincronización de horas iniciada:');
+    console.log('  - Availability ID:', availabilityId);
+    console.log('  - Fecha:', fechaFormateada);
+    console.log('  - Hora inicio:', availability.start_time);
+    console.log('  - Hora fin:', availability.end_time);
+    console.log('  - Duration minutes:', availability.duration_minutes);
+    console.log('  - Break between slots:', availability.break_between_slots);
+    console.log('  - Total citas a reorganizar:', (appointments as any[]).length);
+
+    if (isNaN(currentTime.getTime())) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: `Fecha/hora inválida: ${fechaHoraInicio}`
+      });
+    }
+
+    const endTimeDate = new Date(`${fechaFormateada}T${availability.end_time}`);
+    let updatedCount = 0;
+    const updates: any[] = [];
+
+    // Reorganizar cada cita secuencialmente
+    for (let i = 0; i < (appointments as any[]).length; i++) {
+      const apt = (appointments as any[])[i];
+      
+      // Verificar si la cita excede el end_time de la availability
+      if (currentTime >= endTimeDate) {
+        console.log(`⚠️  ADVERTENCIA: Cita ${i + 1} excede el horario de fin (${availability.end_time})`);
+        break; // No procesar más citas que excedan el horario
+      }
+      
+      // Formatear la nueva hora para MySQL datetime
+      const newScheduledAt = currentTime.toISOString().slice(0, 19).replace('T', ' ');
+      const oldScheduledAt = new Date(apt.scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
+      
+      console.log(`  📅 Cita ${i + 1}: ${apt.patient_name}`);
+      console.log(`     Hora anterior: ${oldScheduledAt}`);
+      console.log(`     Hora nueva: ${newScheduledAt}`);
+      
+      // Actualizar la cita
+      await connection.execute(
+        `UPDATE appointments 
+         SET scheduled_at = ? 
+         WHERE id = ?`,
+        [newScheduledAt, apt.id]
+      );
+
+      updates.push({
+        id: apt.id,
+        patient_name: apt.patient_name,
+        old_time: oldScheduledAt,
+        new_time: newScheduledAt
+      });
+
+      updatedCount++;
+
+      // Calcular siguiente hora: sumar duration_minutes + break_between_slots
+      const totalMinutes = availability.duration_minutes + (availability.break_between_slots || 0);
+      console.log(`     Total minutos a sumar: ${totalMinutes} (duration: ${availability.duration_minutes} + break: ${availability.break_between_slots || 0})`);
+      currentTime = new Date(currentTime.getTime() + (totalMinutes * 60 * 1000));
+      console.log(`     Siguiente hora disponible: ${currentTime.toISOString().slice(11, 19)}`);
+    }
+
+    console.log(`✅ Sincronización completada: ${updatedCount} citas actualizadas`);
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: `${updatedCount} citas sincronizadas correctamente`,
+      updated: updatedCount,
+      total: (appointments as any[]).length,
+      updates: updates,
+      availability: {
+        id: availability.id,
+        doctor: availability.doctor_name,
+        specialty: availability.specialty_name,
+        location: availability.location_name,
+        date: fechaFormateada,
+        start_time: availability.start_time,
+        end_time: availability.end_time,
+        duration_minutes: availability.duration_minutes,
+        break_between_slots: availability.break_between_slots
+      }
+    });
+
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error sincronizando horas de citas:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al sincronizar horas',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// Obtener agendas disponibles para reasignación (misma especialidad, con cupos)
+router.get('/:id/available-for-reassignment', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    const availabilityId = parseInt(req.params.id);
+
+    if (isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de disponibilidad inválido'
+      });
+    }
+
+    // Obtener la availability original para conocer su especialidad
+    const [originalRows] = await connection.query(`
+      SELECT 
+        av.specialty_id,
+        s.name as specialty_name
+      FROM availabilities av
+      LEFT JOIN specialties s ON av.specialty_id = s.id
+      WHERE av.id = ?
+    `, [availabilityId]);
+
+    if (!Array.isArray(originalRows) || originalRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Availability original no encontrada'
+      });
+    }
+
+    const original = originalRows[0] as any;
+
+    // Buscar agendas de la misma especialidad con cupos disponibles
+    // Excluir la agenda actual y solo mostrar agendas con cupos disponibles REALES
+    // (basado en booked_slots < capacity, independiente del status)
+    const [availableRows] = await connection.query(`
+      SELECT 
+        av.id,
+        av.location_id,
+        av.specialty_id,
+        av.doctor_id,
+        DATE_FORMAT(av.date, '%Y-%m-%d') as date,
+        av.start_time,
+        av.end_time,
+        av.capacity,
+        av.booked_slots,
+        (av.capacity - av.booked_slots) as available_slots,
+        av.duration_minutes,
+        av.status,
+        l.name as location_name,
+        s.name as specialty_name,
+        d.name as doctor_name
+      FROM availabilities av
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN doctors d ON av.doctor_id = d.id
+      WHERE av.specialty_id = ?
+        AND av.id != ?
+        AND av.status IN ('Activa', 'Completa')
+        AND av.booked_slots < av.capacity
+        AND av.date >= CURDATE()
+      ORDER BY av.date ASC, av.start_time ASC
+      LIMIT 50
+    `, [original.specialty_id, availabilityId]);
+
+    return res.json({
+      success: true,
+      data: {
+        original_availability_id: availabilityId,
+        specialty_id: original.specialty_id,
+        specialty_name: original.specialty_name,
+        available_agendas: availableRows
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error obteniendo agendas disponibles:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener agendas disponibles',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// Reasignar una cita a otra agenda
+router.post('/reassign-appointment', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    const { appointment_id, new_availability_id } = req.body;
+
+    if (!appointment_id || !new_availability_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'appointment_id y new_availability_id son requeridos'
+      });
+    }
+
+    await connection.beginTransaction();
+
+    // Obtener la cita actual
+    const [appointmentRows] = await connection.query(`
+      SELECT 
+        a.id,
+        a.patient_id,
+        a.availability_id as old_availability_id,
+        a.scheduled_at,
+        a.duration_minutes,
+        a.reason,
+        a.status,
+        p.name as patient_name
+      FROM appointments a
+      LEFT JOIN patients p ON a.patient_id = p.id
+      WHERE a.id = ?
+    `, [appointment_id]);
+
+    if (!Array.isArray(appointmentRows) || appointmentRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Cita no encontrada'
+      });
+    }
+
+    const appointment = appointmentRows[0] as any;
+
+    // Verificar que la cita esté confirmada o pendiente
+    if (appointment.status === 'Cancelada' || appointment.status === 'Completada') {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'No se puede reasignar una cita cancelada o completada'
+      });
+    }
+
+    // Obtener la nueva availability
+    const [newAvailRows] = await connection.query(`
+      SELECT 
+        av.id,
+        av.location_id,
+        av.specialty_id,
+        av.doctor_id,
+        av.date,
+        av.start_time,
+        av.end_time,
+        av.capacity,
+        av.booked_slots,
+        av.duration_minutes,
+        av.status,
+        l.name as location_name,
+        s.name as specialty_name,
+        d.name as doctor_name
+      FROM availabilities av
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN doctors d ON av.doctor_id = d.id
+      WHERE av.id = ?
+    `, [new_availability_id]);
+
+    if (!Array.isArray(newAvailRows) || newAvailRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Nueva agenda no encontrada'
+      });
+    }
+
+    const newAvail = newAvailRows[0] as any;
+
+    // Verificar que la nueva agenda esté activa
+    if (newAvail.status !== 'Activa') {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'La agenda de destino no está activa'
+      });
+    }
+
+    // Verificar que haya cupos disponibles
+    if (newAvail.booked_slots >= newAvail.capacity) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'La agenda de destino no tiene cupos disponibles'
+      });
+    }
+
+    // Calcular la nueva hora de la cita (primer slot disponible en la nueva agenda)
+    const fechaFormateada = new Date(newAvail.date).toISOString().split('T')[0];
+    const fechaHoraInicio = `${fechaFormateada}T${newAvail.start_time}`;
+    let newScheduledTime = new Date(fechaHoraInicio);
+
+    // Obtener las citas ya agendadas en la nueva availability para encontrar el primer slot libre
+    const [existingAppointments] = await connection.query(`
+      SELECT scheduled_at
+      FROM appointments
+      WHERE availability_id = ?
+        AND status IN ('Confirmada', 'Pendiente')
+      ORDER BY scheduled_at ASC
+    `, [new_availability_id]);
+
+    // Calcular el primer slot disponible
+    if (Array.isArray(existingAppointments) && existingAppointments.length > 0) {
+      const durationMinutes = newAvail.duration_minutes || 15;
+      let currentSlot = newScheduledTime;
+      
+      for (const existingApt of existingAppointments as any[]) {
+        const existingTime = new Date(existingApt.scheduled_at);
+        
+        // Si el slot actual está ocupado, avanzar al siguiente
+        if (Math.abs(currentSlot.getTime() - existingTime.getTime()) < 60000) { // Menos de 1 minuto de diferencia
+          currentSlot = new Date(currentSlot.getTime() + (durationMinutes * 60 * 1000));
+        }
+      }
+      
+      newScheduledTime = currentSlot;
+    }
+
+    const newScheduledAt = newScheduledTime.toISOString().slice(0, 19).replace('T', ' ');
+
+    // Actualizar la cita con la nueva availability, doctor, location, specialty y hora
+    await connection.execute(
+      `UPDATE appointments 
+       SET availability_id = ?,
+           doctor_id = ?,
+           location_id = ?,
+           specialty_id = ?,
+           scheduled_at = ?,
+           duration_minutes = ?
+       WHERE id = ?`,
+      [
+        new_availability_id,
+        newAvail.doctor_id,
+        newAvail.location_id,
+        newAvail.specialty_id,
+        newScheduledAt,
+        newAvail.duration_minutes || appointment.duration_minutes,
+        appointment_id
+      ]
+    );
+
+    // Actualizar cupos de la agenda antigua (decrementar)
+    await connection.execute(
+      `UPDATE availabilities 
+       SET booked_slots = GREATEST(0, booked_slots - 1)
+       WHERE id = ?`,
+      [appointment.old_availability_id]
+    );
+
+    // Actualizar cupos de la nueva agenda (incrementar)
+    await connection.execute(
+      `UPDATE availabilities 
+       SET booked_slots = LEAST(capacity, booked_slots + 1)
+       WHERE id = ?`,
+      [new_availability_id]
+    );
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: `Cita de ${appointment.patient_name} reasignada exitosamente`,
+      data: {
+        appointment_id: appointment_id,
+        patient_name: appointment.patient_name,
+        old_availability_id: appointment.old_availability_id,
+        new_availability_id: new_availability_id,
+        new_doctor: newAvail.doctor_name,
+        new_location: newAvail.location_name,
+        new_date: fechaFormateada,
+        new_time: newScheduledTime.toISOString().slice(11, 19),
+        new_scheduled_at: newScheduledAt
+      }
+    });
+
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error reasignando cita:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al reasignar la cita',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// ============================================
+// ENDPOINTS DE SINCRONIZACIÓN DE DISPONIBILIDADES
+// ============================================
+
+/**
+ * POST /sync/:id - Sincroniza una disponibilidad específica
+ */
+router.post('/sync/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const availabilityId = Number(req.params.id);
+    
+    if (!availabilityId || isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de disponibilidad inválido'
+      });
+    }
+    
+    const success = await syncAvailabilitySlots(availabilityId);
+    
+    if (success) {
+      // Obtener datos actualizados
+      const [rows]: any = await pool.query(
+        'SELECT id, capacity, booked_slots, status FROM availabilities WHERE id = ?',
+        [availabilityId]
+      );
+      
+      return res.json({
+        success: true,
+        message: 'Disponibilidad sincronizada correctamente',
+        data: rows[0]
+      });
+    } else {
+      return res.status(500).json({
+        success: false,
+        message: 'Error al sincronizar la disponibilidad'
+      });
+    }
+    
+  } catch (error: any) {
+    console.error('[SYNC] Error en endpoint /sync/:id:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error en el servidor',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * POST /sync-all - Sincroniza todas las disponibilidades activas
+ */
+router.post('/sync-all', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await syncAllAvailabilities();
+    
+    return res.json({
+      success: true,
+      message: `Sincronización completada: ${result.synced} exitosas, ${result.errors} errores`,
+      data: result
+    });
+    
+  } catch (error: any) {
+    console.error('[SYNC] Error en endpoint /sync-all:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error en el servidor',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * GET /validate/:id - Valida si se puede agregar una cita
+ */
+router.get('/validate/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const availabilityId = Number(req.params.id);
+    
+    if (!availabilityId || isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de disponibilidad inválido'
+      });
+    }
+    
+    const validation = await validateAvailabilityCapacity(availabilityId);
+    
+    return res.json({
+      success: true,
+      data: validation
+    });
+    
+  } catch (error: any) {
+    console.error('[SYNC] Error en endpoint /validate/:id:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error en el servidor',
+      error: error.message
+    });
+  }
+});
+
+// 🔄 SINCRONIZACIÓN AUTOMÁTICA DE TODAS LAS AGENDAS
+router.post('/sync-all', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    console.log('[SYNC-ALL] Iniciando sincronización global de availabilities');
+    
+    // Ejecutar el procedimiento almacenado
+    const [results] = await connection.query('CALL sync_all_availability_slots()');
+    
+    const stats = (results as any)[0][0];
+    
+    console.log('[SYNC-ALL] Sincronización completada:', stats);
+    
+    return res.json({
+      success: true,
+      message: 'Sincronización completada exitosamente',
+      data: {
+        total_agendas: stats.total_agendas,
+        activas: stats.activas,
+        completas: stats.completas,
+        con_cupos_disponibles: stats.con_cupos,
+        timestamp: new Date().toISOString()
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('[SYNC-ALL] Error en sincronización global:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al sincronizar agendas',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// 🔄 SINCRONIZACIÓN DE UNA AGENDA ESPECÍFICA
+router.post('/:id/sync-slots', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    const availabilityId = parseInt(req.params.id);
+    
+    if (isNaN(availabilityId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de availability inválido'
+      });
+    }
+    
+    console.log(`[SYNC] Sincronizando availability ${availabilityId}`);
+    
+    // Contar citas confirmadas reales
+    const [countResult] = await connection.query(`
+      SELECT COUNT(*) as confirmed_count
+      FROM appointments
+      WHERE availability_id = ? AND status = 'Confirmada'
+    `, [availabilityId]);
+    
+    const realBookedSlots = (countResult as any[])[0].confirmed_count;
+    
+    // Obtener capacidad actual
+    const [avResult] = await connection.query(`
+      SELECT capacity, booked_slots, status
+      FROM availabilities
+      WHERE id = ?
+    `, [availabilityId]);
+    
+    if (!Array.isArray(avResult) || avResult.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Availability no encontrada'
+      });
+    }
+    
+    const availability = avResult[0] as any;
+    const newStatus = realBookedSlots >= availability.capacity ? 'Completa' : 'Activa';
+    
+    // Actualizar booked_slots y status
+    await connection.query(`
+      UPDATE availabilities
+      SET booked_slots = ?,
+          status = ?
+      WHERE id = ?
+    `, [realBookedSlots, newStatus, availabilityId]);
+    
+    console.log(`[SYNC] Availability ${availabilityId} actualizada: ${availability.booked_slots} → ${realBookedSlots} cupos, status: ${newStatus}`);
+    
+    return res.json({
+      success: true,
+      message: 'Sincronización completada',
+      data: {
+        availability_id: availabilityId,
+        previous_booked_slots: availability.booked_slots,
+        current_booked_slots: realBookedSlots,
+        capacity: availability.capacity,
+        available_slots: availability.capacity - realBookedSlots,
+        previous_status: availability.status,
+        current_status: newStatus,
+        updated: availability.booked_slots !== realBookedSlots || availability.status !== newStatus
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('[SYNC] Error en sincronización:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al sincronizar availability',
+      error: error.message
+    });
+  } finally {
+    connection.release();
   }
 });
 

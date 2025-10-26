@@ -314,7 +314,7 @@ router.get('/search', async (req, res) => {
 
 // ===== OBTENER CITAS DE UN PACIENTE (para portal público) =====
 // GET /api/patients-v2/:id/appointments
-// Endpoint público SIN autenticación
+// Endpoint público SIN autenticación - incluye citas y lista de espera
 router.get('/:id/appointments', async (req, res) => {
   try {
     const patientId = parseInt(req.params.id);
@@ -342,9 +342,56 @@ router.get('/:id/appointments', async (req, res) => {
       [patientId]
     );
 
+    // Obtener lista de espera del paciente con posición calculada
+    const [waitingList] = await pool.execute(
+      `SELECT 
+        awl.id,
+        awl.created_at,
+        awl.priority_level,
+        awl.reason,
+        awl.status,
+        awl.call_type,
+        awl.scheduled_date,
+        awl.specialty_id,
+        awl.availability_id,
+        COALESCE(s.name, s2.name) AS specialty_name,
+        d.name AS doctor_name,
+        l.name AS location_name,
+        c.code AS cups_code,
+        c.name AS cups_name,
+        c.category AS cups_category,
+        (
+          SELECT COUNT(*) + 1
+          FROM appointments_waiting_list awl2
+          LEFT JOIN availabilities av2 ON awl2.availability_id = av2.id
+          WHERE awl2.status = 'pending'
+            AND (
+              (awl.specialty_id IS NOT NULL AND (awl2.specialty_id = awl.specialty_id OR av2.specialty_id = awl.specialty_id))
+              OR
+              (awl.availability_id IS NOT NULL AND av2.specialty_id = (SELECT specialty_id FROM availabilities WHERE id = awl.availability_id))
+            )
+            AND (
+              awl2.priority_level > awl.priority_level
+              OR (awl2.priority_level = awl.priority_level AND awl2.created_at < awl.created_at)
+            )
+        ) AS queue_position
+      FROM appointments_waiting_list awl
+      LEFT JOIN availabilities av ON awl.availability_id = av.id
+      LEFT JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN specialties s2 ON awl.specialty_id = s2.id
+      LEFT JOIN doctors d ON av.doctor_id = d.id
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN cups c ON awl.cups_id = c.id
+      WHERE awl.patient_id = ?
+        AND awl.status = 'pending'
+      ORDER BY awl.id ASC`,
+      [patientId]
+    );
+
     res.json({ 
       success: true, 
-      data: rows 
+      data: rows,
+      waiting_list: waitingList || []
     });
   } catch (e) {
     console.error('Error getting patient appointments:', e);
@@ -509,7 +556,7 @@ router.get('/', requireAuth, async (req, res) => {
     } = req.query;
 
     const pageNumber = Math.max(1, parseInt(page as string) || 1);
-    const limitNumber = Math.max(1, Math.min(100, parseInt(limit as string) || 20));
+    const limitNumber = Math.max(1, Math.min(50000, parseInt(limit as string) || 20));
     const offsetNumber = (pageNumber - 1) * limitNumber;
     
     let whereConditions = ['1=1']; // Cambiar de status = 1 a condición que siempre sea true
@@ -674,37 +721,106 @@ router.delete('/:id', requireAuth, requireRole(['admin']), async (req, res) => {
 });
 
 // ===== OBTENER ESTADÍSTICAS DE PACIENTES =====
-router.get('/stats/demographics', requireAuth, requireRole(['admin', 'doctor']), async (req, res) => {
+router.get('/stats/demographics', requireAuth, requireRole(['admin', 'doctor', 'recepcionista']), async (req, res) => {
   try {
+    // Total de pacientes
+    const [totalCount] = await pool.execute(
+      'SELECT COUNT(*) as total FROM patients WHERE status = 1'
+    );
+
     // Estadísticas por género
     const [genderStats] = await pool.execute(
-      `SELECT gender, COUNT(*) as count 
+      `SELECT 
+        COALESCE(gender, 'No especificado') as gender, 
+        COUNT(*) as count 
        FROM patients 
        WHERE status = 1 
        GROUP BY gender`
     );
 
+    // Estadísticas por rangos de edad
+    const [ageStats] = await pool.execute(
+      `SELECT 
+        CASE 
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) < 1 THEN 'Menores de 1 año'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) BETWEEN 1 AND 5 THEN '1-5 años'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) BETWEEN 6 AND 12 THEN '6-12 años'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) BETWEEN 13 AND 17 THEN '13-17 años'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) BETWEEN 18 AND 25 THEN '18-25 años'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) BETWEEN 26 AND 40 THEN '26-40 años'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) BETWEEN 41 AND 60 THEN '41-60 años'
+          WHEN TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) > 60 THEN 'Mayores de 60'
+          ELSE 'Sin edad registrada'
+        END as age_range,
+        COUNT(*) as count
+       FROM patients 
+       WHERE status = 1
+       GROUP BY age_range
+       ORDER BY 
+         CASE age_range
+           WHEN 'Menores de 1 año' THEN 1
+           WHEN '1-5 años' THEN 2
+           WHEN '6-12 años' THEN 3
+           WHEN '13-17 años' THEN 4
+           WHEN '18-25 años' THEN 5
+           WHEN '26-40 años' THEN 6
+           WHEN '41-60 años' THEN 7
+           WHEN 'Mayores de 60' THEN 8
+           ELSE 9
+         END`
+    );
+
+    // Promedio de edad
+    const [avgAge] = await pool.execute(
+      `SELECT 
+        AVG(TIMESTAMPDIFF(YEAR, birth_date, CURDATE())) as avg_age,
+        MIN(TIMESTAMPDIFF(YEAR, birth_date, CURDATE())) as min_age,
+        MAX(TIMESTAMPDIFF(YEAR, birth_date, CURDATE())) as max_age
+       FROM patients 
+       WHERE status = 1 AND birth_date IS NOT NULL`
+    );
+
     // Estadísticas por grupo sanguíneo
     const [bloodGroupStats] = await pool.execute(
-      `SELECT bg.name, COUNT(*) as count 
+      `SELECT 
+        COALESCE(bg.code, 'No registrado') as name, 
+        COUNT(*) as count 
        FROM patients p 
        LEFT JOIN blood_groups bg ON p.blood_group_id = bg.id 
        WHERE p.status = 1 
-       GROUP BY bg.name`
+       GROUP BY bg.code
+       ORDER BY count DESC`
+    );
+
+    // Estadísticas por EPS
+    const [epsStats] = await pool.execute(
+      `SELECT 
+        COALESCE(e.name, 'Sin EPS') as name, 
+        COUNT(*) as count 
+       FROM patients p 
+       LEFT JOIN eps e ON p.insurance_eps_id = e.id 
+       WHERE p.status = 1 
+       GROUP BY e.name 
+       ORDER BY count DESC 
+       LIMIT 10`
     );
 
     // Estadísticas por estrato
     const [estratoStats] = await pool.execute(
-      `SELECT estrato, COUNT(*) as count 
+      `SELECT 
+        COALESCE(estrato, 0) as estrato, 
+        COUNT(*) as count 
        FROM patients 
-       WHERE status = 1 AND estrato IS NOT NULL 
+       WHERE status = 1
        GROUP BY estrato 
        ORDER BY estrato`
     );
 
     // Estadísticas por municipio
     const [municipioStats] = await pool.execute(
-      `SELECT m.name, COUNT(*) as count 
+      `SELECT 
+        COALESCE(m.name, 'No especificado') as name, 
+        COUNT(*) as count 
        FROM patients p 
        LEFT JOIN municipalities m ON p.municipality_id = m.id 
        WHERE p.status = 1 
@@ -713,19 +829,42 @@ router.get('/stats/demographics', requireAuth, requireRole(['admin', 'doctor']),
        LIMIT 10`
     );
 
-    // Total de pacientes
-    const [totalCount] = await pool.execute(
-      'SELECT COUNT(*) as total FROM patients WHERE status = 1'
+    // Niños por género (menores de 18 años)
+    const [childrenByGender] = await pool.execute(
+      `SELECT 
+        COALESCE(gender, 'No especificado') as gender,
+        COUNT(*) as count
+       FROM patients
+       WHERE status = 1 
+         AND birth_date IS NOT NULL
+         AND TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) < 18
+       GROUP BY gender`
+    );
+
+    // Personas de la tercera edad (mayores de 60)
+    const [elderlyCount] = await pool.execute(
+      `SELECT COUNT(*) as count
+       FROM patients
+       WHERE status = 1 
+         AND birth_date IS NOT NULL
+         AND TIMESTAMPDIFF(YEAR, birth_date, CURDATE()) >= 60`
     );
 
     res.json({
       success: true,
       data: {
         total_patients: (totalCount as any[])[0].total,
+        average_age: Math.round((avgAge as any[])[0]?.avg_age || 0),
+        min_age: (avgAge as any[])[0]?.min_age || 0,
+        max_age: (avgAge as any[])[0]?.max_age || 0,
         by_gender: genderStats,
+        by_age_range: ageStats,
         by_blood_group: bloodGroupStats,
+        by_eps: epsStats,
         by_estrato: estratoStats,
-        by_municipality: municipioStats
+        by_municipality: municipioStats,
+        children_by_gender: childrenByGender,
+        elderly_count: (elderlyCount as any[])[0]?.count || 0
       }
     });
 

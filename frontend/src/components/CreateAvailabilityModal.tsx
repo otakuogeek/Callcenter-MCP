@@ -211,6 +211,52 @@ const CreateAvailabilityModal = ({
               />
             </div>
 
+            {/* 🔥 NUEVO: Campo de Duración por Agenda */}
+            <div className="p-4 border rounded-lg bg-blue-50 border-blue-200 space-y-2">
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <span className="font-medium text-sm text-blue-900">Duración de cada cita</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <AnimatedInputField
+                  label="Minutos por cita"
+                  type="number"
+                  value={availabilityForm.durationMinutes?.toString() || "30"}
+                  onChange={(value) => setAvailabilityForm({...availabilityForm, durationMinutes: Number(value) || 30})}
+                  placeholder="30"
+                  inputProps={{ min: 15, max: 240, step: 5 }}
+                  required
+                />
+                <div className="flex flex-col justify-center">
+                  <span className="text-xs text-gray-600 mb-1">Opciones rápidas:</span>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setAvailabilityForm({...availabilityForm, durationMinutes: 15})}
+                      className="px-2 py-1 text-xs bg-white border rounded hover:bg-blue-100"
+                    >
+                      15 min
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAvailabilityForm({...availabilityForm, durationMinutes: 20})}
+                      className="px-2 py-1 text-xs bg-white border rounded hover:bg-blue-100"
+                    >
+                      20 min
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAvailabilityForm({...availabilityForm, durationMinutes: 30})}
+                      className="px-2 py-1 text-xs bg-white border rounded hover:bg-blue-100"
+                    >
+                      30 min
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <AnimatedTextareaField
               label="Observaciones"
               placeholder="Información adicional sobre este horario..."

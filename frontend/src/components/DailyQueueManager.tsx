@@ -148,7 +148,7 @@ export function DailyQueueManager() {
     try {
       const [specialtiesRes, patientsRes] = await Promise.all([
         api.getSpecialties(),
-        api.getPatientsV2({ limit: 100 })
+        api.getPatientsV2({ limit: 50000 })
       ]);
       
       setSpecialties(specialtiesRes || []);

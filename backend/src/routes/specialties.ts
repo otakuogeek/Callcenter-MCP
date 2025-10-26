@@ -55,8 +55,22 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     values.push(id);
     await pool.query(`UPDATE specialties SET ${fields.join(', ')} WHERE id = ?`, values);
     return res.json({ id, ...s });
-  } catch {
-    return res.status(500).json({ message: 'Server error' });
+  } catch (e: any) {
+    console.error('[UPDATE-SPECIALTY] Error:', e);
+    
+    // Manejo específico de error de duplicado
+    if (e?.code === 'ER_DUP_ENTRY' || e?.sqlMessage?.includes('Duplicate entry')) {
+      return res.status(409).json({ 
+        message: 'Ya existe una especialidad con ese nombre',
+        error: 'duplicate_name'
+      });
+    }
+    
+    return res.status(500).json({ 
+      message: 'Server error',
+      error: e?.message || 'Unknown error',
+      details: e?.sqlMessage || e?.toString()
+    });
   }
 });
 

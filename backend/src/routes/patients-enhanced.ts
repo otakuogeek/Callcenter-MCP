@@ -92,7 +92,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     if (q) {
       const like = `%${q}%`;
       const [rows] = await pool.query(
-        baseQuery + ' WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ? ORDER BY p.id DESC LIMIT 100',
+        baseQuery + ' WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ? ORDER BY p.id DESC LIMIT 5000',
         [like, like, like]
       );
       
@@ -107,7 +107,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       return res.json(formattedRows);
     }
     
-    const [rows] = await pool.query(baseQuery + ' ORDER BY p.id DESC LIMIT 100');
+    const [rows] = await pool.query(baseQuery + ' ORDER BY p.id DESC LIMIT 5000');
     
     // Formatear fechas de forma segura
     const formattedRows = (rows as any[]).map(patient => ({

@@ -12,11 +12,18 @@ import path from 'path';
 import fs from 'fs';
 import { initializeOutboundCallManager, shutdownOutboundCallManager } from './config/outbound';
 import { getRateLimitKey } from './middleware/rateLimiters';
+// ✅ NUEVAS IMPORTACIONES DE MEJORAS FASE 1
+import { logger as appLogger, loggingMiddleware, setupConsoleOverrides } from './lib/logger';
+import { errorHandler, asyncHandler } from './middleware/errorHandler';
+import { sanitizeInput } from './middleware/validate';
+
+// ✅ Configurar overrides de console en producción
+setupConsoleOverrides();
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim().length < 16) {
   // Forzar configuración segura de JWT
-  console.error('❌ JWT_SECRET faltante o demasiado corto (>=16 chars requerido).');
+  appLogger.error('JWT_SECRET missing or too short (>=16 chars required)');
   process.exit(1);
 }
 
@@ -50,6 +57,10 @@ app.use(compression({
   },
 }));
 app.use(pinoHttp({ logger }));
+// ✅ MIDDLEWARE DE LOGGING CENTRALIZADO (Fase 1)
+app.use(loggingMiddleware());
+// ✅ MIDDLEWARE DE SANITIZACIÓN (Fase 1)
+app.use(sanitizeInput);
 
 // Rate limiting GENERAL (muy permisivo - solo para prevenir abusos extremos)
 // Los endpoints autenticados ya tienen seguridad vía JWT
@@ -128,17 +139,15 @@ app.use((req, res, next) => {
 // Inicializaciones DB ligeras (no bloqueantes si fallan)
 bootstrap().catch(() => {/* ignora errores de bootstrap para no bloquear el arranque */});
 
+// ✅ ERROR HANDLER CENTRALIZADO (Fase 1) - DEBE SER ÚLTIMO
+// Este middleware captura TODOS los errores de rutas anteriores
+app.use(errorHandler);
+
 const port = process.env.PORT ? Number(process.env.PORT) : 4000;
 const host = process.env.HOST || '0.0.0.0';
-// Central error handler (fallback)
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  logger.error({ err }, 'Unhandled error');
-  res.status(500).json({ message: 'Internal server error' });
-});
 
 app.listen(port, host as any, () => {
-  logger.info({ port, host, origins }, 'API listening');
+  appLogger.info('API listening', { port, host, origins });
 });
 
 // Graceful shutdown

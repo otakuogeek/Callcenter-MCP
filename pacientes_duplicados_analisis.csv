@@ -1,0 +1,63 @@
+id,name,document,phone,email,birth_date,gender,address,eps_name,zone_name,created_at,total_duplicados,recomendacion,razon
+1446,Alonso Porras Mesa,55743830,3108889573,,1950-10-24,Masculino,,NUEVA EPS,4,2025-10-21 16:15:16,2,CONSERVAR,Documento más completo y registro más reciente
+1156,Alonso Porras Mesa,5743830,3108889573,,1950-10-24,Masculino,,NUEVA EPS,Zona de Socorro,2025-10-15 14:55:52,2,ELIMINAR,"Documento incompleto, Registro más antiguo"
+1983,ANA INES ALONSO SOLANO,37887527,3015174202,,1943-12-14,Femenino,CL 20A N 6A 09 ROJAS PINILLA SAN GIL SAASS,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1402,Ana Inés Alonso Solano,373887527,3112091080,,1959-12-24,Femenino,,FAMISANAR,4,2025-10-20 21:21:47,2,CONSERVAR,Documento más completo y registro más reciente
+1307,ANA MATILDE RINCON MORENO,37893941,3214385011,,1982-03-25,Femenino,RURAL SANTA BARBARA FLORIANA SANGILSA,FAMISANAR,4,2025-10-17 20:21:33,2,CONSERVAR,Documento más completo y registro más reciente
+1274,Ana Matilde Rincón Moreno,893941,31017804,,1968-01-30,Femenino,,FAMISANAR,4,2025-10-17 16:57:15,2,CONSERVAR,Documento más completo y registro más reciente
+1963,ANDRES FELIPE RUIZ MEDINA,1101624232,3013572423,,1981-05-05,Masculino,CL 20 A 9 25 VERGEL VERGBEL SAN GIL,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+3281,ANDRES FELIPE RUIZ MEDINA,1222255525,3174688820,,1983-03-25,Masculino,CR 7 A 27 89 SANTANDER SNANDER SANA,FAMISANAR,4,2025-10-23 03:44:44,2,ELIMINAR,Duplicado
+3611,ANIBAL ARIAS AGUILAR,91065674,3208640704,,1973-07-12,Masculino,FCA VILLA FLOR SAN GIL SATNANDERS,FAMISANAR,4,2025-10-23 03:44:45,2,CONSERVAR,Documento más completo y registro más reciente
+1347,Aníbal Arias Aguilar,91065634,3157481791,,1955-05-28,Masculino,,FAMISANAR,4,2025-10-20 14:51:55,2,CONSERVAR,Documento más completo y registro más reciente
+2203,BENITO ROMERO ORTIZ,91074628,3105815877,,1980-10-26,Masculino,CL 28 3 11 SIMON BOLIVAR SAN GIL SASAS,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1122,Benito Romero Ortiz,91074028,3181096071,,1974-02-27,Masculino,,FAMISANAR,4,2025-10-14 21:12:58,2,CONSERVAR,Documento más completo y registro más reciente
+1154,Briseida Figueroa de Montañez,28377324,3154149394,,1946-03-09,Femenino,,NUEVA EPS,4,2025-10-15 14:49:41,2,CONSERVAR,Documento más completo y registro más reciente
+1260,Briseida Figueroa de Montañez,2837324,3154149394,,1946-03-09,Femenino,,CAPITAL SALUD (Subsidiado),Zona de Socorro,2025-10-17 15:00:36,2,ELIMINAR,Documento incompleto
+1984,CESAR LUIS ZAMBRANO ALONSO,1005150626,3015299368,,2010-09-30,Masculino,CL 20A N 6A 09 ROJAS PINILLA SAN GIL SANRASDER,FAMISANAR,4,2025-10-23 03:44:44,3,CONSERVAR,Documento más completo y registro más reciente
+1401,César Luis Zambrano Alonso,1500150626,3112091080,,2001-10-28,Masculino,,FAMISANAR,4,2025-10-20 21:18:55,3,CONSERVAR,Documento más completo y registro más reciente
+1404,César Luis Zambrano Alonso,155626,3113227784250,,2001-10-28,Masculino,,FAMISANAR,4,2025-10-20 21:25:28,3,ELIMINAR,Documento incompleto
+1350,Daisy Tatiana Castro Ruiz,100963544,3212892065,,1993-06-06,Femenino,,FAMISANAR,4,2025-10-20 14:58:08,2,CONSERVAR,Documento más completo y registro más reciente
+1334,DAISY TATIANA CASTRO RUIZ,1100963544,,,2015-04-16,Femenino,VRD SAN GIL,FAMISANAR,4,2025-10-20 13:38:47,2,CONSERVAR,Documento más completo y registro más reciente
+1368,DAVID SANTIAGO MEJIA DIAZ,1099213512,3118376277,,2020-05-05,Masculino,CL 6 N 12 40 BRR BUENA VISTA SAN GIL SATNANDER,FAMISANAR,4,2025-10-20 17:09:11,2,CONSERVAR,Documento más completo y registro más reciente
+1365,David Santiago Mejía Díaz,10992135122,3102188186,,2013-10-12,Masculino,,FAMISANAR,4,2025-10-20 16:41:24,2,CONSERVAR,Documento más completo y registro más reciente
+1372,Diana Cecilia Ferreira Ortiz,3790460,3105667036,,1983-05-18,Femenino,,FAMISANAR,4,2025-10-20 18:22:50,2,CONSERVAR,Documento más completo y registro más reciente
+1158,DIANA CECILIA FERREIRA ORTIZ,37900460,3023609616,,2021-11-03,Femenino,CL 21A 2 19 SANTA CATALINA SAN GIL SANTAS,FAMISANAR,4,2025-10-15 15:01:12,2,CONSERVAR,Documento más completo y registro más reciente
+1226,Fabián Andrés Pérez Romero,1186963807,3115942354,,2015-05-13,Masculino,,NUEVA EPS,4,2025-10-16 20:20:44,2,CONSERVAR,Documento más completo y registro más reciente
+1224,Fabián Andrés Pérez Romero,1186966807,3115942354,,2015-05-13,Masculino,,CAPITAL SALUD (Subsidiado),Zona de Socorro,2025-10-16 20:09:17,2,ELIMINAR,Registro más antiguo
+1493,Hilda Smith García Rueda,1095793195,3203941473,,1987-08-30,Femenino,,NUEVA EPS,4,2025-10-22 13:38:05,2,CONSERVAR,Documento más completo y registro más reciente
+1155,Hilda Smith García Rueda,793195,3203941473,,1987-08-30,Femenino,,NUEVA EPS,Zona de Socorro,2025-10-15 14:53:40,2,ELIMINAR,"Documento incompleto, Registro más antiguo"
+1417,Isidro Ayala Velázquez,91069908,3187219354,,1960-08-18,Masculino,,NUEVA EPS,4,2025-10-21 13:51:05,2,CONSERVAR,Documento más completo y registro más reciente
+1358,Isidro Ayala Velázquez,91066908,3138330738,,1960-08-18,Masculino,,NUEVA EPS,4,2025-10-20 15:49:23,2,ELIMINAR,Registro más antiguo
+3469,JORGE SANTIAGO ARCINIEGAS GOMEZ,1100468856,3197673856,,1978-10-19,Masculino,CR 9 7 49 MARIA AUXILIADORA SSS,FAMISANAR,4,2025-10-23 03:44:45,2,CONSERVAR,Documento más completo y registro más reciente
+1530,JORGE SANTIAGO ARCINIEGAS GOMEZ,1100968856,3197432672,,2007-11-16,Masculino,CR 9 7 49 MARIA AUXILIADORA SAN GIL SANTAS,FAMISANAR,4,2025-10-22 19:00:14,2,ELIMINAR,Registro más antiguo
+2220,JUAN PABLO ALVAREZ MARTINEZ,1100978416,3106610326,,2022-09-19,Masculino,CL 28 B  10 12 DIVINO NINO SAN GIL SANT,FAMISANAR,4,2025-10-23 03:44:44,4,CONSERVAR,Documento más completo y registro más reciente
+1276,Juan Pablo Álvarez Martínez,100978416,3144673349,,2021-11-12,Masculino,,FAMISANAR,4,2025-10-17 17:03:01,4,CONSERVAR,Documento más completo y registro más reciente
+1275,Juan Pablo Álvarez Martínez,10978416,3144673349,,2021-11-12,Masculino,,FAMISANAR,4,2025-10-17 16:59:30,4,ELIMINAR,"Documento incompleto, Registro más antiguo"
+1273,Juan Pablo Álvarez Martínez,1179846,3144673349,,2021-11-12,Masculino,,FAMISANAR,4,2025-10-17 16:48:35,4,ELIMINAR,"Documento incompleto, Registro más antiguo"
+1463,Lorena Silvana Castillo González,10053111312,124-38-9752,,2011-08-17,Femenino,,NUEVA EPS,4,2025-10-21 19:32:33,2,CONSERVAR,Documento más completo y registro más reciente
+1462,Lorena Silvana Castillo González,1005311312,3124324752,,2001-08-17,Femenino,,NUEVA EPS,4,2025-10-21 19:25:40,2,ELIMINAR,"Documento incompleto, Registro más antiguo"
+1333,Luis Ángel Gámez Guacarapare,1101049887,3205510772,,2018-09-30,Masculino,,NUEVA EPS,4,2025-10-20 13:31:45,2,CONSERVAR,Documento más completo y registro más reciente
+1335,Luis Ángel Gámez Guacarapare,110104987,3205510772,,2018-09-30,Masculino,,NUEVA EPS,4,2025-10-20 13:44:02,2,ELIMINAR,Documento incompleto
+1099,Luisa Fernanda Pinilla Pinto,10100223127,3144542237,,2017-05-11,Femenino,,NUEVA EPS,4,2025-10-14 15:07:25,2,CONSERVAR,Documento más completo y registro más reciente
+1522,Luisa Fernanda Pinilla Pinto,1100223127,3144542237,,2017-05-11,Femenino,,NUEVA EPS,4,2025-10-22 16:37:43,2,ELIMINAR,Documento incompleto
+4128,NATALIA ROMERO ROMERO,1095700942,,,2007-05-05,Femenino,VRD EL CAPO BARICHARA SAN GIL SANTAS,FAMISANAR,4,2025-10-23 03:44:45,2,CONSERVAR,Documento más completo y registro más reciente
+1427,Natalia Romero Romero,109570942,3208061115,,1991-12-25,Femenino,,FAMISANAR,4,2025-10-21 14:42:34,2,CONSERVAR,Documento más completo y registro más reciente
+2295,NELLY VILLAMIZAR SIERRA,60254736,3112074320,,2012-03-22,Femenino,CL 3 C N 7 29 ALTAMIRA SAN GIL VIA SATNNDERS,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1138,Nelly Villamizar Sierra,602547366,3175864129,,1965-09-04,Femenino,,FAMISANAR,4,2025-10-15 12:30:46,2,CONSERVAR,Documento más completo y registro más reciente
+2339,NUBIA CECILIA REYES GOMEZ,37888552,3114411944,,1934-09-02,Femenino,CL 33 N 17 93 PS REAL SAN GIL SANAS,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1288,Nubia Cecilia Reyes Gómez,3,3114730058,,1962-08-15,Femenino,,FAMISANAR,4,2025-10-17 19:05:18,2,CONSERVAR,Documento más completo y registro más reciente
+1443,Orlando Aparicio Aparicio,11204617000,3168401246,,1978-04-03,Masculino,,NUEVA EPS,4,2025-10-21 16:00:19,2,CONSERVAR,Documento más completo y registro más reciente
+1460,Orlando Aparicio Aparicio,212461,316401246,,1978-04-03,Masculino,,NUEVA EPS,4,2025-10-21 19:20:15,2,ELIMINAR,Documento incompleto
+1499,PAULINA ARENAS MARTINEZ,37886661,,,2007-09-16,Femenino,VRD BOQUERON SANTANDER SAN GIL SASAS,FAMISANAR,4,2025-10-22 14:34:08,3,CONSERVAR,Documento más completo y registro más reciente
+1101,Paulina Arenas Martínez,37897893,3187702455,,1955-01-18,Femenino,,COOMEVA,4,2025-10-14 15:27:32,3,CONSERVAR,Documento más completo y registro más reciente
+1199,Paulina Arenas Martínez,3788661,3187702455,,1955-01-19,Femenino,,FAMISANAR,4,2025-10-16 14:56:51,3,ELIMINAR,Documento incompleto
+3891,RAFAEL REYES BECERRA,5744898,3224287257,,2004-07-23,Masculino,SRA 19 14 44 BRR LOS LAGOS SAN GIL SANTAS,FAMISANAR,4,2025-10-23 03:44:45,2,CONSERVAR,Documento más completo y registro más reciente
+1423,Rafael Reyes Becerra,574498,3103277472,,1953-02-20,Masculino,,FAMISANAR,4,2025-10-21 14:15:41,2,CONSERVAR,Documento más completo y registro más reciente
+2417,SANTIAGO CAMACHO RAMIREZ,1186713027,3115782103,,2005-09-19,Masculino,CL 57A  34D 04 BRR 1 MAYO SAN GIL SANTASSS,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1486,Santiago Camacho Ramirez,118671327,3108821744,,2010-11-18,Masculino,,FAMISANAR,4,2025-10-22 12:09:08,2,CONSERVAR,Documento más completo y registro más reciente
+2347,SILVIA JULIANA QUECHO HERNANDEZ,1007358266,3114519893,,1968-01-17,Femenino,CL 3C 6 11 ALTAMIRA SNAT,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1265,Silvia Juliana Quecho Hernández,10073558266,3133931716,,2000-05-31,Femenino,,FAMISANAR,4,2025-10-17 15:25:31,2,CONSERVAR,Documento más completo y registro más reciente
+2350,SONIA ROMERO,37894055,3114663147,,1988-07-01,Femenino,CL 3C 7 68 ALTAMIRA SAN GIL ANT,FAMISANAR,4,2025-10-23 03:44:44,2,CONSERVAR,Documento más completo y registro más reciente
+1535,Sonia Romero,78937894055,3138473547,,1990-01-01,Femenino,,FAMISANAR,4,2025-10-22 20:14:30,2,CONSERVAR,Documento más completo y registro más reciente
+1135,Xiomara Cárdenas Castro,10731073,6990799,,2007-12-28,Femenino,,NUEVA EPS,Zona de Socorro,2025-10-14 22:08:01,2,CONSERVAR,Documento más completo y registro más reciente
+1394,Xiomara Cárdenas Castro,985028,3186990799,,2007-12-28,Femenino,,NUEVA EPS,4,2025-10-20 20:19:02,2,ELIMINAR,Documento incompleto

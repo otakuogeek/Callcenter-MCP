@@ -72,13 +72,13 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     if (q) {
       const like = `%${q}%`;
       const [rows] = await pool.query(
-        baseQuery + ' WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ? ORDER BY p.id DESC LIMIT 100',
+        baseQuery + ' WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ? ORDER BY p.id DESC LIMIT 5000',
         [like, like, like]
       );
       return res.json(rows);
     }
     
-    const [rows] = await pool.query(baseQuery + ' ORDER BY p.id DESC LIMIT 100');
+    const [rows] = await pool.query(baseQuery + ' ORDER BY p.id DESC LIMIT 5000');
     return res.json(rows);
   } catch (error) {
     console.error('Error fetching patients:', error);

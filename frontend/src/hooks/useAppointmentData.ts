@@ -41,6 +41,7 @@ export interface AvailabilityForm {
   startTime: string;
   endTime: string;
   capacity: number;
+  durationMinutes: number; // 🔥 Duración por agenda (independiente de especialidad)
   notes: string;
   autoPreallocate?: boolean;
   preallocationPublishDate?: string; // YYYY-MM-DD opcional
@@ -121,7 +122,7 @@ export const useAppointmentData = () => {
       endTime: r.end_time,
       capacity: r.capacity,
       bookedSlots: r.booked_slots ?? 0,
-      status: (r.status === 'active' ? 'Activa' : r.status === 'cancelled' ? 'Cancelada' : r.status === 'full' ? 'Completa' : r.status) as any,
+      status: r.status as any, // El backend ya devuelve: "Activa", "Cancelada", "Completa"
       notes: r.notes || '',
       createdAt: r.created_at,
     }));
@@ -229,6 +230,7 @@ export const useAppointmentData = () => {
           start_time: availabilityData.startTime,
           end_time: availabilityData.endTime,
           capacity: availabilityData.capacity,
+          duration_minutes: availabilityData.durationMinutes, // 🔥 Duración específica de la agenda
           notes: availabilityData.notes,
           auto_preallocate: availabilityData.autoPreallocate || false,
           preallocation_publish_date: availabilityData.preallocationPublishDate || undefined,

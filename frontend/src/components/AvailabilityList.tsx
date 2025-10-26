@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus } from "lucide-react";
+import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus, Printer, FileSpreadsheet } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { safeFormatDate } from "@/utils/dateHelpers";
@@ -16,6 +16,9 @@ import EditAvailabilityModal from "./EditAvailabilityModal";
 import TransferAvailabilityModal from "./TransferAvailabilityModal";
 import ManualAppointmentModal from "./ManualAppointmentModal";
 import QuickAppointmentModal from "./QuickAppointmentModal";
+import { generateDailyAgendaPDF, exportSingleAgendaToExcel } from "@/utils/pdfGenerators";
+import { useToast } from "@/hooks/use-toast";
+import api from "@/lib/api";
 
 interface AvailabilityListProps {
   date: Date | undefined;
@@ -24,6 +27,7 @@ interface AvailabilityListProps {
 
 const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProps) => {
   const { updateAvailabilityStatus, updateAvailability, addAvailability, getLocationSpecialtyOptions, fetchLocationSpecialties, doctors } = useAppointmentData();
+  const { toast } = useToast();
   const [selectedAvailability, setSelectedAvailability] = useState<Availability | null>(null);
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [isViewModalOpen, setIsViewModalOpen] = useState(false);
@@ -62,6 +66,11 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
       default:
         return <AlertCircle className="w-4 h-4" />;
     }
+  };
+
+  // Función auxiliar para calcular cupos disponibles (protegida contra negativos)
+  const getAvailableSlots = (capacity: number, bookedSlots: number): number => {
+    return Math.max(0, capacity - bookedSlots);
   };
 
   const handleCancelAvailability = (availability: Availability) => {
@@ -139,6 +148,174 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
     // Aquí se actualizaría la lista de disponibilidades
     setIsTransferModalOpen(false);
     setSelectedAvailability(null);
+  };
+
+  const handlePrintSingleAgenda = async (availability: Availability) => {
+    try {
+      toast({
+        title: "Generando PDF",
+        description: "Por favor espere...",
+      });
+
+      // Obtener la fecha formateada
+      const dateStr = availability.date;
+      
+      // Obtener las citas para esta fecha específica
+      const appointments = await api.getAppointments({ date: dateStr });
+      
+      console.log('Disponibilidad seleccionada:', availability);
+      console.log('Total de citas obtenidas:', appointments.length);
+      console.log('Ejemplo de cita completa:', JSON.stringify(appointments[0], null, 2));
+      
+      // Filtrar citas para este doctor y la disponibilidad específica
+      const doctorAppointments = appointments.filter((apt: any) => {
+        // Extraer solo la fecha del scheduled_at (formato ISO: 2025-10-20T08:00:00.000Z)
+        const scheduledAt = apt.scheduled_at || apt.scheduled_date || '';
+        const aptDate = scheduledAt.includes('T') 
+          ? scheduledAt.split('T')[0] 
+          : scheduledAt.split(' ')[0];
+        
+        const matchDoctor = apt.doctor_name === availability.doctor;
+        const matchDate = aptDate === dateStr;
+        
+        // Filtrar también por availability_id si está disponible
+        const matchAvailability = !apt.availability_id || apt.availability_id === availability.id;
+        
+        console.log(`Cita ${apt.id}: aptDate="${aptDate}", matchDoctor=${matchDoctor}, matchDate=${matchDate}, matchAvailability=${matchAvailability}`);
+        
+        return matchDoctor && matchDate && matchAvailability;
+      });
+      
+      console.log('Citas filtradas para el doctor:', doctorAppointments.length, doctorAppointments);
+
+      if (doctorAppointments.length === 0) {
+        toast({
+          title: "Sin citas",
+          description: `No hay citas programadas para ${availability.doctor} en esta fecha`,
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Agrupar por doctor con el formato correcto
+      const agendaByDoctor = [{
+        doctor_name: availability.doctor,
+        specialty_name: availability.specialty,
+        location_name: availability.locationName,
+        date: availability.date,
+        start_time: availability.startTime,
+        end_time: availability.endTime,
+        appointments: doctorAppointments.map((apt: any) => ({
+          id: apt.id,
+          patient_name: apt.patient_name,
+          patient_document: apt.patient_document,
+          patient_phone: apt.patient_phone,
+          patient_email: apt.patient_email,
+          patient_eps: apt.patient_eps,
+          scheduled_at: apt.scheduled_at,
+          duration_minutes: apt.duration_minutes,
+          status: apt.status,
+          reason: apt.reason,
+          age: apt.age
+        }))
+      }];
+
+      console.log('Datos para PDF:', agendaByDoctor);
+
+      // Generar el PDF
+      generateDailyAgendaPDF(agendaByDoctor as any);
+
+      toast({
+        title: "PDF Generado",
+        description: `Agenda de ${availability.doctor} con ${doctorAppointments.length} citas`,
+      });
+    } catch (error) {
+      console.error('Error generando PDF:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo generar el PDF",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleExportSingleAgenda = async (availability: Availability) => {
+    try {
+      toast({
+        title: "Generando Excel",
+        description: "Por favor espere...",
+      });
+
+      // Obtener la fecha formateada
+      const dateStr = availability.date;
+      
+      // Obtener las citas para esta fecha específica
+      const appointments = await api.getAppointments({ date: dateStr });
+      
+      // Filtrar citas para este doctor y la disponibilidad específica
+      const doctorAppointments = appointments.filter((apt: any) => {
+        // Extraer solo la fecha del scheduled_at (formato ISO: 2025-10-20T08:00:00.000Z)
+        const scheduledAt = apt.scheduled_at || apt.scheduled_date || '';
+        const aptDate = scheduledAt.includes('T') 
+          ? scheduledAt.split('T')[0] 
+          : scheduledAt.split(' ')[0];
+        
+        const matchDoctor = apt.doctor_name === availability.doctor;
+        const matchDate = aptDate === dateStr;
+        
+        // Filtrar también por availability_id si está disponible
+        const matchAvailability = !apt.availability_id || apt.availability_id === availability.id;
+        
+        return matchDoctor && matchDate && matchAvailability;
+      });
+
+      if (doctorAppointments.length === 0) {
+        toast({
+          title: "Sin citas",
+          description: `No hay citas programadas para ${availability.doctor} en esta fecha`,
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Preparar datos para Excel
+      const agendaData = {
+        doctor_name: availability.doctor,
+        specialty_name: availability.specialty,
+        location_name: availability.locationName,
+        date: availability.date,
+        start_time: availability.startTime,
+        end_time: availability.endTime,
+        appointments: doctorAppointments.map((apt: any) => ({
+          id: apt.id,
+          patient_name: apt.patient_name,
+          patient_document: apt.patient_document,
+          patient_phone: apt.patient_phone,
+          patient_email: apt.patient_email,
+          patient_eps: apt.patient_eps,
+          scheduled_at: apt.scheduled_at,
+          duration_minutes: apt.duration_minutes,
+          status: apt.status,
+          reason: apt.reason,
+          age: apt.age
+        }))
+      };
+
+      // Generar el archivo Excel
+      exportSingleAgendaToExcel(agendaData as any);
+
+      toast({
+        title: "Excel Generado",
+        description: `Agenda de ${availability.doctor} con ${doctorAppointments.length} citas`,
+      });
+    } catch (error) {
+      console.error('Error generando Excel:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo generar el archivo Excel",
+        variant: "destructive",
+      });
+    }
   };
 
   const getAvailabilityPercentage = (booked: number, capacity: number) => {
@@ -494,6 +671,32 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                   >
                                     <Eye className="w-4 h-4" />
                                     Ver detalles
+                                  </Button>
+                                  
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="flex items-center gap-2 bg-indigo-50 border-indigo-300 text-indigo-700 hover:bg-indigo-100"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handlePrintSingleAgenda(availability);
+                                    }}
+                                  >
+                                    <Printer className="w-4 h-4" />
+                                    Imprimir
+                                  </Button>
+                                  
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="flex items-center gap-2 bg-green-50 border-green-300 text-green-700 hover:bg-green-100"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleExportSingleAgenda(availability);
+                                    }}
+                                  >
+                                    <FileSpreadsheet className="w-4 h-4" />
+                                    Exportar Excel
                                   </Button>
                                   
                                   <Button

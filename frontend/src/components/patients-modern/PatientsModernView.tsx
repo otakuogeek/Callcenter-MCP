@@ -43,6 +43,7 @@ import {
   PatientFullFormData 
 } from '@/schemas/patientSchemas';
 import { generatePatientPDF, generatePatientsListPDF } from '@/utils/pdfGenerators';
+import { StatisticsModal } from './StatisticsModal';
 
 export const PatientsModernView = () => {
   const { toast } = useToast();
@@ -65,12 +66,13 @@ export const PatientsModernView = () => {
   const [formPatient, setFormPatient] = useState<Patient | null>(null);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [deletePatient, setDeletePatient] = useState<Patient | null>(null);
+  const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
 
   // Consultar pacientes
   const { data: patientsData, isLoading } = useQuery({
     queryKey: ['patients', 'all'],
     queryFn: async () => {
-      const response = await fetch('/api/patients', {
+      const response = await fetch('/api/patients-v2?limit=50000', {
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         }
@@ -79,7 +81,7 @@ export const PatientsModernView = () => {
       if (!response.ok) throw new Error('Error al cargar pacientes');
       
       const result = await response.json();
-      return result.data || result;
+      return result.data?.patients || result.patients || result.data || result;
     },
   });
 
@@ -343,14 +345,14 @@ export const PatientsModernView = () => {
       })));
     }
 
-    // Nuevos este mes
-    const thisMonth = new Date();
-    thisMonth.setDate(1);
-    thisMonth.setHours(0, 0, 0, 0);
+    // Nuevos hoy
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const newThisMonth = patientsData.filter((p: Patient) => {
       if (!p.created_at) return false;
       const createdDate = new Date(p.created_at);
-      return createdDate >= thisMonth;
+      createdDate.setHours(0, 0, 0, 0);
+      return createdDate.getTime() === today.getTime();
     }).length;
 
     return {
@@ -513,6 +515,15 @@ export const PatientsModernView = () => {
         
         <div className="flex gap-2">
           <Button 
+            onClick={() => setIsStatsModalOpen(true)} 
+            variant="outline"
+            className="bg-gradient-to-r from-blue-50 to-purple-50 border-blue-200 hover:from-blue-100 hover:to-purple-100"
+            aria-label="Ver estadísticas demográficas"
+          >
+            <Activity className="w-4 h-4 mr-2" />
+            Gráficos
+          </Button>
+          <Button 
             onClick={handleGenerateListPDF} 
             variant="outline"
             aria-label="Exportar lista de pacientes a PDF"
@@ -555,7 +566,7 @@ export const PatientsModernView = () => {
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-gray-600">
-                Nuevos Este Mes
+                Nuevos Hoy
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -563,7 +574,7 @@ export const PatientsModernView = () => {
                 <div>
                   <p className="text-3xl font-bold text-green-600">{stats.newThisMonth}</p>
                   <p className="text-xs text-gray-500 mt-1">
-                    Registrados en {new Date().toLocaleDateString('es', { month: 'long' })}
+                    Registrados hoy {new Date().toLocaleDateString('es', { day: 'numeric', month: 'long' })}
                   </p>
                 </div>
                 <TrendingUp className="w-12 h-12 text-green-500 opacity-20" />
@@ -859,6 +870,12 @@ export const PatientsModernView = () => {
         onConfirm={handleConfirmDelete}
         patient={deletePatient}
         isLoading={deletePatientMutation.isPending}
+      />
+
+      {/* Modal de estadísticas */}
+      <StatisticsModal 
+        open={isStatsModalOpen} 
+        onOpenChange={setIsStatsModalOpen} 
       />
     </div>
   );

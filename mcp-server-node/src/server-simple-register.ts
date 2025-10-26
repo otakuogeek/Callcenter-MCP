@@ -112,7 +112,7 @@ const MCP_TOOLS = [
   },
   {
     name: 'registerPatientSimple',
-    description: 'Registro simplificado de pacientes con datos mínimos requeridos: nombre, cédula, teléfono y EPS. Use listActiveEPS para obtener los IDs válidos de EPS antes de registrar.',
+    description: 'Registro simplificado de pacientes con datos mínimos requeridos: nombre, cédula y teléfono. La EPS es opcional y puede agregarse posteriormente.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -135,13 +135,13 @@ const MCP_TOOLS = [
         minLength: 7,
         maxLength: 15
       },
-      insurance_eps_id: { 
-        type: 'number', 
-        description: 'ID de la EPS (requerido)',
-        minimum: 1
-      },
       
       // Datos opcionales adicionales
+      insurance_eps_id: { 
+        type: 'number', 
+        description: 'ID de la EPS (opcional). Use listActiveEPS para obtener IDs válidos',
+        minimum: 1
+      },
       email: { 
         type: 'string', 
         description: 'Correo electrónico (opcional)',
@@ -180,7 +180,7 @@ const MCP_TOOLS = [
         maxLength: 500
       }
     },
-    required: ['document', 'name', 'phone', 'insurance_eps_id']
+    required: ['document', 'name', 'phone']
   }
 }
 ];
@@ -223,7 +223,7 @@ async function listActiveEPS(): Promise<any> {
       count: epsList.length,
       eps_list: epsList,
       message: `Se encontraron ${epsList.length} EPS activas disponibles`,
-      usage_note: 'Use el campo "id" para registrar pacientes con registerPatientSimple'
+      usage_note: 'Use el campo "id" como insurance_eps_id para registrar pacientes con registerPatientSimple (opcional)'
     };
     
   } catch (error: any) {
@@ -275,18 +275,20 @@ async function registerPatientSimple(args: any): Promise<any> {
       }
     }
     
-    // 2. Verificar que la EPS existe
-    const [epsCheck] = await connection.execute(`
-      SELECT id, name FROM eps WHERE id = ? AND status = 'active'
-    `, [args.insurance_eps_id]);
-    
-    if ((epsCheck as any[]).length === 0) {
-      await connection.rollback();
-      return {
-        success: false,
-        error: 'EPS no válida',
-        suggestion: 'Verificar que el ID de EPS exista y esté activa'
-      };
+    // 2. Verificar que la EPS existe (solo si se proporciona)
+    if (args.insurance_eps_id) {
+      const [epsCheck] = await connection.execute(`
+        SELECT id, name FROM eps WHERE id = ? AND status = 'active'
+      `, [args.insurance_eps_id]);
+      
+      if ((epsCheck as any[]).length === 0) {
+        await connection.rollback();
+        return {
+          success: false,
+          error: 'EPS no válida',
+          suggestion: 'Verificar que el ID de EPS exista y esté activa. Use listActiveEPS para obtener IDs válidos.'
+        };
+      }
     }
     
     // 3. Verificar municipio si se proporciona
@@ -310,7 +312,7 @@ async function registerPatientSimple(args: any): Promise<any> {
       document: args.document,
       name: args.name.trim(),
       phone: args.phone,
-      insurance_eps_id: args.insurance_eps_id,
+      insurance_eps_id: args.insurance_eps_id || null,
       email: args.email || null,
       birth_date: args.birth_date || null,
       gender: args.gender || 'No especificado',
@@ -396,8 +398,9 @@ async function registerPatientSimple(args: any): Promise<any> {
       },
       registration_summary: {
         total_fields_completed: Object.values(insertData).filter(v => v !== null && v !== '').length,
-        required_fields_completed: 4, // document, name, phone, eps
-        optional_fields_completed: Object.values(insertData).filter(v => v !== null && v !== '').length - 4
+        required_fields_completed: 3, // document, name, phone
+        optional_fields_completed: Object.values(insertData).filter(v => v !== null && v !== '').length - 3,
+        eps_provided: args.insurance_eps_id ? true : false
       }
     };
     

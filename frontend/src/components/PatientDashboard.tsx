@@ -86,7 +86,7 @@ export function PatientDashboard() {
       setLoading(true);
       try {
         const [patientsResponse, docTypes] = await Promise.all([
-          api.getPatientsV2({ limit: 100 }).catch(err => {
+          api.getPatientsV2({ limit: 50000 }).catch(err => {
             console.error('Error loading patients:', err);
             return { data: { patients: [] } };
           }),
@@ -109,6 +109,17 @@ export function PatientDashboard() {
           { id: '4', name: 'Barranquilla' },
           { id: '5', name: 'Cartagena' }
         ]);
+        
+        // Calcular pacientes registrados HOY
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayPatientsCount = normalized.filter((p: any) => {
+          if (!p.created_at) return false;
+          const createdDate = new Date(p.created_at);
+          createdDate.setHours(0, 0, 0, 0);
+          return createdDate.getTime() === today.getTime();
+        }).length;
+        
         setStats({
           total: normalized.length || 0,
           byGender: [
@@ -120,7 +131,7 @@ export function PatientDashboard() {
             { group: '31-50', count: Math.floor((normalized.length || 0) * 0.4) },
             { group: '51-70', count: Math.floor((normalized.length || 0) * 0.3) }
           ],
-          recentlyAdded: Math.floor((normalized.length || 0) * 0.1)
+          recentlyAdded: todayPatientsCount
         });
       } catch (err) {
         console.error('Error cargando datos del dashboard:', err);
@@ -346,12 +357,12 @@ export function PatientDashboard() {
             </Card>
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Nuevos este mes</CardTitle>
+                <CardTitle className="text-sm font-medium">Nuevos Hoy</CardTitle>
                 <UserPlus className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">{stats?.recentlyAdded || 0}</div>
-                <p className="text-xs text-muted-foreground">+12% desde el mes pasado</p>
+                <p className="text-xs text-muted-foreground">Registrados en octubre</p>
               </CardContent>
             </Card>
             <Card>

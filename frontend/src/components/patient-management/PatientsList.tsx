@@ -109,7 +109,7 @@ const PatientsList = ({ lookupData, onPatientSelected, onPatientEdit }: Patients
     try {
       // Usar la URL base de la API configurada
       const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
-      const response = await fetch(`${apiBase}/patients-v2`, {
+      const response = await fetch(`${apiBase}/patients-v2?limit=50000`, {
         headers: { 
           'Authorization': `Bearer ${localStorage.getItem('token')}`,
           'Content-Type': 'application/json'

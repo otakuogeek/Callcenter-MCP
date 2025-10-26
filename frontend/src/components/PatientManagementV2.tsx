@@ -152,7 +152,7 @@ export default function PatientManagementV2() {
   const loadPatients = async () => {
     try {
       setLoading(true);
-      const response = await api.getPatientsV2({ limit: 100 });
+      const response = await api.getPatientsV2({ limit: 50000 });
       const patientsData = response.data?.patients || [];
       setPatients(patientsData);
       setFilteredPatients(patientsData);

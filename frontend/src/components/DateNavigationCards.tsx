@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { format, addDays, startOfWeek, isSameDay, isToday, isPast, getMonth, getYear } from "date-fns";
+import { format, addDays, startOfWeek, isSameDay, isToday, isPast } from "date-fns";
 import { es } from "date-fns/locale";
 import { 
   ChevronLeft, 
@@ -11,10 +11,8 @@ import {
   Users, 
   Stethoscope,
   Eye,
-  Plus,
-  TrendingUp
+  Plus
 } from "lucide-react";
-import { motion } from "framer-motion";
 
 interface DateNavigationCardsProps {
   date: Date | undefined;
@@ -54,25 +52,6 @@ const DateNavigationCards = ({
   const weekDays = useMemo(() => {
     return Array.from({ length: 7 }, (_, i) => addDays(currentWeekStart, i));
   }, [currentWeekStart]);
-
-  // Notificar cambios de mes cuando cambia la semana
-  useEffect(() => {
-    if (onMonthChange && weekDays.length > 0) {
-      // Obtener todos los meses únicos de la semana
-      const uniqueMonths = new Set<string>();
-      weekDays.forEach(day => {
-        const month = day.getMonth();
-        const year = day.getFullYear();
-        uniqueMonths.add(`${year}-${month}`);
-      });
-      
-      // Cargar el summary para cada mes único
-      uniqueMonths.forEach(monthYear => {
-        const [year, month] = monthYear.split('-').map(Number);
-        onMonthChange(month, year);
-      });
-    }
-  }, [currentWeekStart, onMonthChange, weekDays]);
 
   // Navegar a la semana anterior
   const goToPreviousWeek = () => {
@@ -176,7 +155,7 @@ const DateNavigationCards = ({
 
       <CardContent className="p-6">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-4">
-          {weekDays.map((day, index) => {
+          {weekDays.map((day) => {
             const dayData = getDayData(day);
             const isSelected = date && isSameDay(day, date);
             const isDayToday = isToday(day);
@@ -185,104 +164,101 @@ const DateNavigationCards = ({
             const isoDate = format(day, 'yyyy-MM-dd');
 
             return (
-              <motion.div
+              <Card
                 key={isoDate}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3, delay: index * 0.05 }}
+                className={`cursor-pointer transition-all duration-200 hover:shadow-lg ${getCardStyle(day)}`}
+                onClick={() => selectDay(day)}
               >
-                <Card
-                  className={`cursor-pointer transition-all duration-300 hover:scale-105 ${getCardStyle(day)}`}
-                  onClick={() => selectDay(day)}
-                >
-                  <CardContent className="p-4">
-                    {/* Header del día */}
-                    <div className="mb-3">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs font-medium text-gray-600 uppercase">
-                          {format(day, 'EEEE', { locale: es })}
-                        </span>
-                        {isDayToday && (
-                          <Badge variant="default" className="bg-green-500 text-white text-xs px-2 py-0">
-                            Hoy
-                          </Badge>
-                        )}
-                        {isSelected && !isDayToday && (
-                          <Badge variant="default" className="bg-blue-500 text-white text-xs px-2 py-0">
-                            Seleccionado
-                          </Badge>
-                        )}
+                <CardContent className="p-4">
+                  {/* Header del día */}
+                  <div className="mb-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs font-medium text-gray-600 uppercase">
+                        {format(day, 'EEEE', { locale: es })}
+                      </span>
+                      {isDayToday && (
+                        <Badge variant="default" className="bg-green-500 text-white text-xs px-2 py-0">
+                          Hoy
+                        </Badge>
+                      )}
+                      {isSelected && !isDayToday && (
+                        <Badge variant="default" className="bg-blue-500 text-white text-xs px-2 py-0">
+                          Seleccionado
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="text-3xl font-bold text-gray-900">
+                      {format(day, 'd')}
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {format(day, 'MMMM yyyy', { locale: es })}
+                    </div>
+                  </div>
+
+                  {/* Información estática del día - SIN EXPANSIÓN */}
+                  {hasActivity ? (
+                    <div className="space-y-2 mb-3">
+                      {/* Agendas */}
+                      <div className="flex items-center justify-between p-2 bg-green-50 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <Stethoscope className="w-4 h-4 text-green-600" />
+                          <span className="text-xs font-medium text-gray-700">Agendas</span>
+                        </div>
+                        <Badge variant="secondary" className="bg-green-100 text-green-800">
+                          {dayData.availabilities}
+                        </Badge>
                       </div>
-                      <div className="text-3xl font-bold text-gray-900">
-                        {format(day, 'd')}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        {format(day, 'MMMM yyyy', { locale: es })}
+
+                      {/* Citas */}
+                      <div className="flex items-center justify-between p-2 bg-blue-50 rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <Users className="w-4 h-4 text-blue-600" />
+                          <span className="text-xs font-medium text-gray-700">Citas</span>
+                        </div>
+                        <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                          {dayData.appointments}
+                        </Badge>
                       </div>
                     </div>
+                  ) : (
+                    <div className="mb-3 p-3 bg-gray-50 rounded-lg text-center">
+                      <p className="text-xs text-gray-500">Sin actividad</p>
+                    </div>
+                  )}
 
-                    {/* Estadísticas del día */}
-                    {hasActivity ? (
-                      <div className="space-y-2 mb-3">
-                        <div className="flex items-center justify-between p-2 bg-white/80 rounded-lg">
-                          <div className="flex items-center gap-2">
-                            <Stethoscope className="w-4 h-4 text-green-600" />
-                            <span className="text-xs font-medium text-gray-700">Agendas</span>
-                          </div>
-                          <Badge variant="secondary" className="bg-green-100 text-green-800">
-                            {dayData.availabilities}
-                          </Badge>
-                        </div>
-                        <div className="flex items-center justify-between p-2 bg-white/80 rounded-lg">
-                          <div className="flex items-center gap-2">
-                            <Users className="w-4 h-4 text-blue-600" />
-                            <span className="text-xs font-medium text-gray-700">Citas</span>
-                          </div>
-                          <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-                            {dayData.appointments}
-                          </Badge>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mb-3 p-3 bg-gray-50 rounded-lg text-center">
-                        <p className="text-xs text-gray-500">Sin actividad</p>
-                      </div>
-                    )}
-
-                    {/* Acciones */}
-                    {showActions(day) && (
-                      <div className="space-y-2">
-                        {hasActivity && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full text-xs"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onViewAppointments(isoDate);
-                            }}
-                          >
-                            <Eye className="w-3 h-3 mr-1" />
-                            Ver Detalles
-                          </Button>
-                        )}
+                  {/* Acciones */}
+                  {showActions(day) && (
+                    <div className="space-y-2">
+                      {hasActivity && (
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           size="sm"
-                          className="w-full text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                          className="w-full text-xs"
                           onClick={(e) => {
                             e.stopPropagation();
-                            onCreateAvailability(isoDate);
+                            onViewAppointments(isoDate);
                           }}
                         >
-                          <Plus className="w-3 h-3 mr-1" />
-                          {hasActivity ? 'Agregar Agenda' : 'Crear Agenda'}
+                          <Eye className="w-3 h-3 mr-1" />
+                          Ver Detalles
                         </Button>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </motion.div>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full text-xs text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCreateAvailability(isoDate);
+                        }}
+                      >
+                        <Plus className="w-3 h-3 mr-1" />
+                        {hasActivity ? 'Agregar Agenda' : 'Crear Agenda'}
+                      </Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             );
           })}
         </div>

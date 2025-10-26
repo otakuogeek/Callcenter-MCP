@@ -4,7 +4,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Clock, User, Phone, RefreshCw, Calendar, AlertCircle } from "lucide-react";
+import { Clock, User, Phone, RefreshCw, Calendar, AlertCircle, ArrowRight, RotateCcw } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CalendarIcon } from "lucide-react";
 import { format } from "date-fns";
@@ -12,18 +12,57 @@ import { es } from "date-fns/locale";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import ReassignAppointmentModal from "@/components/ReassignAppointmentModal";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useToast } from "@/hooks/use-toast";
 
 export default function DailyQueue() {
+  const { toast } = useToast();
   const [dailyData, setDailyData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  
+  // Estados para el modal de reasignación
+  const [reassignModalOpen, setReassignModalOpen] = useState(false);
+  const [selectedAppointment, setSelectedAppointment] = useState<{
+    id: number;
+    patientName: string;
+    availabilityId: number;
+  } | null>(null);
+
+  // Estados para el modal de devolver a espera
+  const [returnToQueueOpen, setReturnToQueueOpen] = useState(false);
+  const [appointmentToReturn, setAppointmentToReturn] = useState<any>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
+  const [autoAssign, setAutoAssign] = useState(false);
+  const [returningToQueue, setReturningToQueue] = useState(false);
 
   const refresh = async (date?: Date) => {
     setLoading(true);
     setError(null);
     const dateToFetch = date || selectedDate;
     try {
+      // 🔄 SINCRONIZAR todas las agendas antes de cargar datos
+      try {
+        await api.syncAllAvailabilities();
+        console.log('[DailyQueue] Agendas sincronizadas automáticamente');
+      } catch (syncError) {
+        console.warn('[DailyQueue] No se pudo sincronizar:', syncError);
+      }
+      
       // Formatear la fecha como YYYY-MM-DD
       const formattedDate = format(dateToFetch, 'yyyy-MM-dd');
       console.log(`[DailyQueue] Consultando fecha: ${formattedDate}`);
@@ -83,6 +122,79 @@ export default function DailyQueue() {
 
   const getTypeBadgeVariant = (type: string) => {
     return type === 'waiting' ? 'outline' : 'default';
+  };
+
+  const handleReassignClick = (item: any) => {
+    // Solo permitir reasignación de citas agendadas (no en espera)
+    if (item.type === 'scheduled' && item.id && item.availability_id) {
+      setSelectedAppointment({
+        id: item.id,
+        patientName: item.patient_name,
+        availabilityId: item.availability_id
+      });
+      setReassignModalOpen(true);
+    }
+  };
+
+  const handleReassignSuccess = () => {
+    // Refrescar la cola después de una reasignación exitosa
+    refresh();
+  };
+
+  const handleReturnToQueueClick = (item: any) => {
+    if (item.type === 'scheduled' && item.id) {
+      setAppointmentToReturn(item);
+      setCancellationReason("");
+      setAutoAssign(false);
+      setReturnToQueueOpen(true);
+    }
+  };
+
+  const handleReturnToQueue = async () => {
+    if (!appointmentToReturn) return;
+
+    setReturningToQueue(true);
+    try {
+      const response = await api.cancelAndReassign(
+        appointmentToReturn.id,
+        cancellationReason || "Devuelto a cola de espera",
+        autoAssign
+      );
+
+      if (response.success) {
+        toast({
+          title: "Cita cancelada",
+          description: autoAssign && response.data.reassignment?.assigned
+            ? `Cupo liberado y reasignado a: ${response.data.reassignment.patient_assigned}`
+            : response.data.next_in_queue
+            ? `Siguiente en cola: ${response.data.next_in_queue.patient_name}`
+            : "Cupo liberado exitosamente",
+        });
+
+        // Refrescar la cola
+        refresh();
+        
+        // Cerrar modal
+        setReturnToQueueOpen(false);
+        setAppointmentToReturn(null);
+        setCancellationReason("");
+      } else {
+        toast({
+          title: "Error",
+          description: response.error || "No se pudo devolver a cola",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Error al devolver a cola:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Error al procesar la solicitud",
+        variant: "destructive",
+      });
+    } finally {
+      setReturningToQueue(false);
+    }
   };
 
   if (loading && !dailyData) {
@@ -276,11 +388,34 @@ export default function DailyQueue() {
                                   )}
                                 </div>
                               </div>
-                              <div className="text-right">
+                              <div className="text-right flex items-center gap-2">
                                 {item.status && (
                                   <Badge variant="outline" className="text-xs">
                                     {item.status}
                                   </Badge>
+                                )}
+                                {/* Botones solo para citas agendadas */}
+                                {item.type === 'scheduled' && item.availability_id && (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-orange-600 hover:bg-orange-50 hover:text-orange-700"
+                                      onClick={() => handleReturnToQueueClick(item)}
+                                    >
+                                      <RotateCcw className="w-4 h-4 mr-1" />
+                                      Devolver a Espera
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="text-medical-600 hover:bg-medical-50 hover:text-medical-700"
+                                      onClick={() => handleReassignClick(item)}
+                                    >
+                                      <ArrowRight className="w-4 h-4 mr-1" />
+                                      Reasignar
+                                    </Button>
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -305,6 +440,90 @@ export default function DailyQueue() {
           </div>
         </main>
       </div>
+
+      {/* Modal de Reasignación */}
+      {selectedAppointment && (
+        <ReassignAppointmentModal
+          isOpen={reassignModalOpen}
+          onClose={() => {
+            setReassignModalOpen(false);
+            setSelectedAppointment(null);
+          }}
+          appointmentId={selectedAppointment.id}
+          patientName={selectedAppointment.patientName}
+          currentAvailabilityId={selectedAppointment.availabilityId}
+          onReassignSuccess={handleReassignSuccess}
+        />
+      )}
+
+      {/* Modal de Devolver a Espera */}
+      <AlertDialog open={returnToQueueOpen} onOpenChange={setReturnToQueueOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Devolver Cita a Cola de Espera</AlertDialogTitle>
+            <AlertDialogDescription>
+              ¿Está seguro de cancelar la cita de <strong>{appointmentToReturn?.patient_name}</strong> y devolver el cupo a cola de espera?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="reason">Motivo de cancelación (opcional)</Label>
+              <Input
+                id="reason"
+                placeholder="Ingrese el motivo..."
+                value={cancellationReason}
+                onChange={(e) => setCancellationReason(e.target.value)}
+              />
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <Checkbox
+                id="auto-assign"
+                checked={autoAssign}
+                onCheckedChange={(checked) => setAutoAssign(checked as boolean)}
+              />
+              <label
+                htmlFor="auto-assign"
+                className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+              >
+                Asignar automáticamente al siguiente en cola
+              </label>
+            </div>
+
+            {appointmentToReturn && (
+              <div className="bg-gray-50 p-3 rounded-md text-sm space-y-1">
+                <p><strong>Paciente:</strong> {appointmentToReturn.patient_name}</p>
+                <p><strong>Doctor:</strong> Dr. {appointmentToReturn.doctor_name}</p>
+                <p><strong>Especialidad:</strong> {appointmentToReturn.specialty_name}</p>
+                <p><strong>Sede:</strong> {appointmentToReturn.location_name}</p>
+                <p><strong>Hora:</strong> {appointmentToReturn.scheduled_time ? formatTime(appointmentToReturn.scheduled_time) : 'N/A'}</p>
+              </div>
+            )}
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={returningToQueue}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleReturnToQueue}
+              disabled={returningToQueue}
+              className="bg-orange-600 hover:bg-orange-700"
+            >
+              {returningToQueue ? (
+                <>
+                  <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                  Procesando...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Devolver a Espera
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </SidebarProvider>
   );
 }

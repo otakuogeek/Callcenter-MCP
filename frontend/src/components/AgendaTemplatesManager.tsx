@@ -212,7 +212,7 @@ export default function AgendaTemplatesManager(){
 
 	const dayBadges = (tpl: AgendaTemplate) => {
 		const days: number[] = JSON.parse(tpl.days_of_week);
-		return <div className="flex flex-wrap gap-1">{days.map(d=> <Badge key={d} variant="secondary" className="text-xs">{DAYS.find(x=>x.value===d)?.label}</Badge>)}</div>;
+		return <div className="flex flex-wrap gap-1">{days.map(d=> <Badge key={d} variant="secondary" className="text-xs">{DAYS.find(day => day.value === d)?.label}</Badge>)}</div>;
 	};
 
 	return (

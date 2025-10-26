@@ -115,6 +115,14 @@ const AppointmentsDashboard = () => {
   const loadDashboardData = async () => {
     setLoading(true);
     try {
+      // 🔄 SINCRONIZAR todas las agendas antes de cargar estadísticas
+      try {
+        await api.syncAllAvailabilities();
+        console.log('[AppointmentsDashboard] Agendas sincronizadas');
+      } catch (syncError) {
+        console.warn('[AppointmentsDashboard] Error en sincronización:', syncError);
+      }
+      
       await Promise.all([
         loadAppointmentStats(),
         loadSpecialtyStats(),

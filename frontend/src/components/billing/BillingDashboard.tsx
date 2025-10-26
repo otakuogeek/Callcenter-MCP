@@ -362,7 +362,7 @@ const BillingDashboard = () => {
         {/* Simple inline bar visualization */}
         <div className="space-y-1">
           {chartData.slice(0,15).map(c => {
-            const max = Math.max(...chartData.map(x=>x.final||0),1);
+            const max = Math.max(...chartData.map(item => item.final || 0), 1);
             const width = (c.final / max) * 100;
             return (
               <div key={c.label} className="flex items-center gap-2 text-xs">

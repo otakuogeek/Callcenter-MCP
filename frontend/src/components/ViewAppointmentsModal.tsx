@@ -14,7 +14,7 @@ import RescheduleAvailabilityModal from "./RescheduleAvailabilityModal";
 
 interface ViewAppointmentsModalProps { isOpen: boolean; onClose: () => void; date: string | null; }
 
-type Appointment = { id: number; patient_name: string; patient_phone?: string | null; patient_email?: string | null; scheduled_at: string; duration_minutes: number; status: string; doctor_name: string; specialty_name: string; location_name: string; appointment_type: string; reason?: string | null; notes?: string | null; insurance_type?: string | null; availability_id?: number; };
+type Appointment = { id: number; patient_name: string; patient_document?: string; patient_phone?: string | null; patient_email?: string | null; scheduled_at: string; duration_minutes: number; status: string; doctor_name: string; specialty_name: string; location_name: string; appointment_type: string; reason?: string | null; notes?: string | null; insurance_type?: string | null; availability_id?: number; };
 type Availability = { id: number; doctor_id: number; specialty_id: number; location_id: number; location_name: string; specialty_name: string; doctor_name: string; date: string; start_time: string; end_time: string; capacity: number; booked_slots: number; status: string; notes?: string; appointments?: Appointment[] };
 
 const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalProps) => {
@@ -141,11 +141,15 @@ const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalP
                                   <Badge className={`${getStatusColor(apt.status)} text-xs`}>{apt.status}</Badge>
                                   <div>
                                     <p className="font-medium text-gray-900">{apt.patient_name}</p>
-                                    <p className="text-xs text-gray-600">{formatTime(apt.scheduled_at)} <span className="ml-2">({apt.duration_minutes} min)</span>{apt.reason && (<span className="ml-2 text-blue-600">• {apt.reason}</span>)}</p>
+                                    <p className="text-xs text-gray-600">
+                                      {formatTime(apt.scheduled_at)} <span className="ml-2">({apt.duration_minutes} min)</span>
+                                      {apt.reason && (<span className="ml-2 text-blue-600">• {apt.reason}</span>)}
+                                    </p>
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">
                                   {apt.patient_phone && (<div className="text-xs text-gray-500"><Phone className="w-3 h-3 inline mr-1" />{apt.patient_phone}</div>)}
+                                  {apt.patient_document && (<div className="text-xs text-gray-600 font-medium">CC: {apt.patient_document}</div>)}
                                   <Button variant="ghost" size="sm" onClick={() => handleCancelAppointment(apt)} className="h-8 w-8 p-0" title="Gestionar cita"><Edit className="w-3 h-3" /></Button>
                                 </div>
                               </div>

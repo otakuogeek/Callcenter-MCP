@@ -1,0 +1,78 @@
+═══════════════════════════════════════════════════════════════════════
+                    ANÁLISIS DE PACIENTES DUPLICADOS
+                       Sistema Biosanar - IPS
+                       Fecha: 23 de Octubre 2025
+═══════════════════════════════════════════════════════════════════════
+
+ESTADÍSTICAS GENERALES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total de registros duplicados encontrados: 62
+• Registros recomendados para CONSERVAR: 46
+• Registros recomendados para ELIMINAR: 16
+• Nombres únicos con duplicados: 46
+
+CRITERIOS DE ANÁLISIS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. ✅ Documento más completo (mayor cantidad de dígitos)
+2. ✅ Registro más reciente (created_at más actual)
+3. ✅ Presencia de datos adicionales (dirección, teléfono)
+
+EJEMPLOS DE DUPLICADOS ENCONTRADOS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CASO 1: Alonso Porras Mesa
+  ✅ CONSERVAR - ID: 1446
+     • Documento: 55743830 (completo)
+     • Teléfono: 3108889573
+     • Fecha registro: 2025-10-21
+  
+  ❌ ELIMINAR - ID: 1156
+     • Documento: 5743830 (incompleto - le falta un dígito)
+     • Teléfono: 3108889573
+     • Fecha registro: 2025-10-15
+
+CASO 2: César Luis Zambrano Alonso (3 registros)
+  ✅ CONSERVAR - ID: 1984
+     • Documento: 1005150626 (completo)
+     • Teléfono: 3015299368
+     
+  ✅ CONSERVAR - ID: 1401
+     • Documento: 1500150626 (completo pero diferente)
+     • Teléfono: 3112091080
+  
+  ❌ ELIMINAR - ID: 1404
+     • Documento: 155626 (incompleto)
+     • Teléfono: 3113227784250
+
+NOTA: Algunos casos tienen nombres similares pero documentos muy 
+      diferentes, sugiriendo que pueden ser personas diferentes con
+      nombres parecidos.
+
+ARCHIVOS GENERADOS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 📄 pacientes_duplicados.csv 
+   • Lista básica de todos los duplicados
+   • 63 registros (incluye encabezado)
+
+2. 📄 pacientes_duplicados_analisis.csv
+   • Análisis completo con recomendaciones
+   • Columnas: id, name, document, phone, email, birth_date, gender,
+     address, eps_name, zone_name, created_at, total_duplicados,
+     recomendacion, razon
+   • Disponible en: https://biosanarcall.site/pacientes_duplicados_analisis.csv
+
+PRÓXIMOS PASOS RECOMENDADOS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. 📋 Revisar manualmente el archivo CSV de análisis
+2. ✅ Verificar que los registros marcados como "ELIMINAR" sean correctos
+3. ⚠️  IMPORTANTE: Hacer backup antes de eliminar cualquier registro
+4. 🗑️  Ejecutar script de limpieza (si se confirma)
+5. ✔️  Verificar integridad de datos post-limpieza
+
+ADVERTENCIAS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  NO eliminar registros sin revisión manual previa
+⚠️  Algunos duplicados pueden tener citas o consultas asociadas
+⚠️  Verificar si hay relaciones con otras tablas antes de eliminar
+
+═══════════════════════════════════════════════════════════════════════

@@ -3,10 +3,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Calendar, User, Phone, FileText, LogOut, QrCode, Download } from "lucide-react";
+import { Calendar, LogOut, QrCode, Download } from "lucide-react";
 import { api } from "@/lib/api";
 import QRCode from 'qrcode';
 
@@ -182,50 +180,8 @@ export default function UserPortal() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [patient, setPatient] = useState<any>(null);
-  const [municipalities, setMunicipalities] = useState<any[]>([]);
-  const [zones, setZones] = useState<any[]>([]);
-  const [epsList, setEpsList] = useState<any[]>([]);
   const [appointments, setAppointments] = useState<any[]>([]);
-
-  // Cargar municipios filtrados por zona
-  const loadMunicipalities = async (zoneId?: number) => {
-    try {
-      const url = zoneId 
-        ? `${import.meta.env.VITE_API_URL || 'http://localhost:4000/api'}/patients-v2/public/municipalities?zone_id=${zoneId}`
-        : `${import.meta.env.VITE_API_URL || 'http://localhost:4000/api'}/patients-v2/public/municipalities`;
-      
-      const municipalitiesResponse = await fetch(url);
-      if (municipalitiesResponse.ok) {
-        const municipalitiesJson: any = await municipalitiesResponse.json();
-        setMunicipalities(municipalitiesJson.data || []);
-      }
-    } catch (err) {
-      console.error('Error cargando municipios:', err);
-      setMunicipalities([]);
-    }
-  };
-
-  // Cargar datos complementarios
-  const loadSupportData = async () => {
-    try {
-      // Cargar zonas primero
-      const zonesResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000/api'}/patients-v2/public/zones`);
-      if (zonesResponse.ok) {
-        const zonesJson: any = await zonesResponse.json();
-        setZones(zonesJson.data || []);
-      }
-      
-      // Si el paciente ya tiene zona, cargar municipios de esa zona
-      if (patient?.zone_id) {
-        await loadMunicipalities(patient.zone_id);
-      } else {
-        // Cargar todos los municipios
-        await loadMunicipalities();
-      }
-    } catch (err) {
-      console.error('Error cargando datos:', err);
-    }
-  };
+  const [waitingList, setWaitingList] = useState<any[]>([]);
 
   // Login del paciente
   const handleLogin = async (e: React.FormEvent) => {
@@ -242,21 +198,22 @@ export default function UserPortal() {
         setPatient(foundPatient);
         setIsAuthenticated(true);
         
-        // Cargar citas del paciente
+        // Cargar citas y lista de espera del paciente
         try {
           const appointmentsResponse = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:4000/api'}/patients-v2/${foundPatient.patient_id}/appointments`);
           if (appointmentsResponse.ok) {
             const appointmentsJson: any = await appointmentsResponse.json();
             setAppointments(appointmentsJson.data || []);
+            setWaitingList(appointmentsJson.waiting_list || []);
           } else {
             setAppointments([]);
+            setWaitingList([]);
           }
         } catch (err) {
           console.error('Error cargando citas:', err);
           setAppointments([]);
+          setWaitingList([]);
         }
-        
-        await loadSupportData();
       } else {
         setError('No se encontró ningún paciente con ese documento');
       }
@@ -273,58 +230,80 @@ export default function UserPortal() {
     setPatient(null);
     setDocumentNumber('');
     setAppointments([]);
+    setWaitingList([]);
     setError('');
-  };
-
-  // Actualizar información del paciente
-  const handleUpdateInfo = async (field: string, value: any) => {
-    if (!patient) return;
-
-    try {
-      const updateData: any = { [field]: value };
-      await api.updatePatientV2(patient.patient_id.toString(), updateData);
-      
-      // Actualizar estado local
-      setPatient({ ...patient, [field]: value });
-      
-      alert('Información actualizada correctamente');
-    } catch (err: any) {
-      alert('Error al actualizar: ' + (err.message || 'Error desconocido'));
-    }
   };
 
   // Pantalla de login
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100 p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <CardTitle className="text-2xl font-bold">Portal del Paciente</CardTitle>
-            <CardDescription>Fundación Biosanar IPS</CardDescription>
+      <div className="min-h-screen w-full flex items-center justify-center bg-gradient-to-br from-blue-600 via-blue-500 to-purple-600 p-3 sm:p-4">
+        {/* Decoración de fondo */}
+        <div className="absolute top-0 left-0 w-72 h-72 bg-blue-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
+        <div className="absolute top-40 right-0 w-72 h-72 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
+        <div className="absolute -bottom-8 left-20 w-72 h-72 bg-pink-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
+
+        <Card className="w-full max-w-md relative z-10 shadow-2xl border-0">
+          <CardHeader className="text-center space-y-3 bg-white rounded-t-lg pt-8 pb-6">
+            {/* Logo dentro del header */}
+            <div className="flex justify-center mb-2">
+              <img 
+                src="/assets/images/logo.png" 
+                alt="Fundación Biosanarcall IPS" 
+                className="h-[200px] w-auto object-contain"
+              />
+            </div>
+            <CardTitle className="text-2xl sm:text-3xl font-bold text-blue-600">Portal del Paciente</CardTitle>
+            <CardDescription className="text-blue-600">Fundación Biosanar IPS</CardDescription>
           </CardHeader>
-          <CardContent>
-            <form onSubmit={handleLogin} className="space-y-4">
+          <CardContent className="pt-6 space-y-5">
+            <form onSubmit={handleLogin} className="space-y-5">
               <div className="space-y-2">
-                <Label htmlFor="document">Número de Documento</Label>
-                <Input
-                  id="document"
-                  type="text"
-                  placeholder="Ingrese su número de cédula"
-                  value={documentNumber}
-                  onChange={(e) => setDocumentNumber(e.target.value)}
-                  required
-                />
+                <Label htmlFor="document" className="text-sm font-semibold text-gray-700">
+                  Número de Documento
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="document"
+                    type="text"
+                    placeholder="Ej: 1234567890"
+                    value={documentNumber}
+                    onChange={(e) => setDocumentNumber(e.target.value)}
+                    className="pl-10 py-3 text-base border-2 border-gray-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 rounded-lg transition-all"
+                    required
+                  />
+                  <span className="absolute left-3 top-3 text-gray-400">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H5a2 2 0 00-2 2v10a2 2 0 002 2h5m0 0h5a2 2 0 002-2V8a2 2 0 00-2-2h-5m0 0V5a2 2 0 012-2h.217a2 2 0 011.738 1.002l.001.002l1.06 1.998" />
+                    </svg>
+                  </span>
+                </div>
               </div>
 
               {error && (
-                <Alert variant="destructive">
-                  <AlertDescription>{error}</AlertDescription>
+                <Alert variant="destructive" className="border-2 border-red-200 bg-red-50">
+                  <AlertDescription className="text-sm text-red-800">{error}</AlertDescription>
                 </Alert>
               )}
 
-              <Button type="submit" className="w-full" disabled={loading}>
-                {loading ? 'Verificando...' : 'Ingresar'}
+              <Button 
+                type="submit" 
+                disabled={loading}
+                className="w-full py-3 text-base font-semibold bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg transition-all transform hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                    Verificando...
+                  </span>
+                ) : (
+                  'Ingresar'
+                )}
               </Button>
+
+              <p className="text-center text-xs text-gray-500">
+                Ingrese su número de cédula para acceder a sus citas
+              </p>
             </form>
           </CardContent>
         </Card>
@@ -334,290 +313,80 @@ export default function UserPortal() {
 
   // Dashboard del paciente
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <Card className="mb-6">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div>
-              <CardTitle className="text-2xl">
-                Bienvenido(a), {patient?.first_name} {patient?.last_name}
-              </CardTitle>
-              <CardDescription>Documento: {patient?.document}</CardDescription>
+    <div className="min-h-screen w-full bg-gradient-to-br from-gray-50 to-gray-100">
+      {/* Header responsivo */}
+      <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0">
+          {/* Logo y bienvenida */}
+          <div className="flex items-center gap-3 sm:gap-4 flex-1">
+            {/* Logo */}
+            <div className="flex-shrink-0 w-12 h-12 sm:w-14 sm:h-14 bg-white rounded-lg border border-gray-200 p-1 flex items-center justify-center">
+              <img 
+                src="/assets/images/logo.png" 
+                alt="Fundación Biosanarcall IPS" 
+                className="w-full h-full object-contain"
+                onError={(e) => {
+                  console.error('Error loading logo:', e);
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
             </div>
-            <Button variant="outline" onClick={handleLogout}>
-              <LogOut className="w-4 h-4 mr-2" />
-              Salir
-            </Button>
-          </CardHeader>
-        </Card>
+            
+            {/* Información del paciente */}
+            <div className="flex-1 min-w-0">
+              <h1 className="text-lg sm:text-xl md:text-2xl font-bold text-gray-900 truncate">
+                Bienvenido(a), {patient?.first_name}
+              </h1>
+              <p className="text-xs sm:text-sm text-gray-600 mt-0.5">
+                <span className="font-semibold">Cédula:</span> {patient?.document}
+              </p>
+            </div>
+          </div>
+          <Button 
+            variant="outline" 
+            onClick={handleLogout}
+            className="w-full sm:w-auto flex items-center justify-center gap-2 border-2 border-gray-300 text-gray-700 hover:bg-red-50 hover:border-red-300 hover:text-red-700 transition-all"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Salir</span>
+          </Button>
+        </div>
+      </div>
 
-        {/* Tabs principales */}
-        <Tabs defaultValue="info" className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="info">
-              <User className="w-4 h-4 mr-2" />
-              Mi Información
-            </TabsTrigger>
-            <TabsTrigger value="appointments">
-              <Calendar className="w-4 h-4 mr-2" />
-              Mis Citas
-            </TabsTrigger>
-            <TabsTrigger value="medical">
-              <FileText className="w-4 h-4 mr-2" />
-              Información Médica
-            </TabsTrigger>
-          </TabsList>
+      {/* Contenido principal */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {/* Título de Sección */}
+        <div className="mb-6 sm:mb-8">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="bg-blue-600 p-2 rounded-lg">
+              <Calendar className="w-6 h-6 text-white" />
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">Mis Citas</h2>
+          </div>
+          <p className="text-sm sm:text-base text-gray-600">Consulta y gestiona tus citas médicas</p>
+        </div>
 
-          {/* Tab 1: Información Personal */}
-          <TabsContent value="info">
-            <Card>
-              <CardHeader>
-                <CardTitle>Mi Información Personal</CardTitle>
-                <CardDescription>Actualiza tus datos personales (excepto documento de identidad)</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
+        {/* Grid de Citas */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+          {appointments.length === 0 ? (
+            <div className="lg:col-span-2 bg-white rounded-2xl shadow-sm border border-gray-200 p-8 sm:p-12 text-center">
+              <div className="bg-blue-100 w-20 h-20 sm:w-24 sm:h-24 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Calendar className="w-10 h-10 sm:w-12 sm:h-12 text-blue-600" />
+              </div>
+              <h3 className="text-lg sm:text-2xl font-bold text-gray-900 mb-2">No tienes citas programadas</h3>
+              <p className="text-sm sm:text-base text-gray-600 mb-6 max-w-md mx-auto">Comunícate con nosotros para agendar tu próxima consulta médica</p>
+              <Button className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg transition-all">
+                Agendar Cita
+              </Button>
+            </div>
+          ) : (
+            appointments.map((apt) => {
+              // Formatear fecha SIN conversión de timezone
+              const formatDate = (dateStr: string) => {
+                // Extraer fecha directamente sin crear objeto Date
+                const dateMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+                if (!dateMatch) return { day: 0, month: '', year: 0 };
                 
-                {/* Documento - Solo lectura */}
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground">Documento de Identidad</Label>
-                  <Input 
-                    value={patient?.document || ''} 
-                    disabled 
-                    className="bg-gray-100 cursor-not-allowed"
-                  />
-                  <p className="text-xs text-muted-foreground">Este campo no se puede modificar</p>
-                </div>
-
-                {/* Fecha de Registro - Solo lectura */}
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground">Fecha de Registro</Label>
-                  <Input 
-                    value={patient?.created_at ? new Date(patient.created_at).toLocaleDateString('es-ES', {
-                      year: 'numeric',
-                      month: 'long',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    }) : ''} 
-                    disabled 
-                    className="bg-gray-100 cursor-not-allowed"
-                  />
-                  <p className="text-xs text-muted-foreground">Fecha en que se registró en el sistema</p>
-                </div>
-
-                {/* Nombre Completo */}
-                <div className="space-y-2">
-                  <Label htmlFor="name">Nombre Completo</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="name"
-                      type="text"
-                      value={patient?.name || ''}
-                      onChange={(e) => setPatient({ ...patient, name: e.target.value })}
-                    />
-                    <Button onClick={() => handleUpdateInfo('name', patient?.name)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Teléfono */}
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Teléfono</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="phone"
-                      type="text"
-                      value={patient?.phone || ''}
-                      onChange={(e) => setPatient({ ...patient, phone: e.target.value })}
-                    />
-                    <Button onClick={() => handleUpdateInfo('phone', patient?.phone)}>
-                      <Phone className="w-4 h-4 mr-2" />
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Email */}
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="email"
-                      type="email"
-                      value={patient?.email || ''}
-                      onChange={(e) => setPatient({ ...patient, email: e.target.value })}
-                    />
-                    <Button onClick={() => handleUpdateInfo('email', patient?.email)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Fecha de Nacimiento */}
-                <div className="space-y-2">
-                  <Label htmlFor="birth_date">Fecha de Nacimiento</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="birth_date"
-                      type="date"
-                      value={patient?.birth_date ? patient.birth_date.split('T')[0] : ''}
-                      onChange={(e) => setPatient({ ...patient, birth_date: e.target.value })}
-                    />
-                    <Button onClick={() => handleUpdateInfo('birth_date', patient?.birth_date)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Género */}
-                <div className="space-y-2">
-                  <Label htmlFor="gender">Género</Label>
-                  <div className="flex gap-2">
-                    <Select
-                      value={patient?.gender || ''}
-                      onValueChange={(value) => setPatient({ ...patient, gender: value })}
-                    >
-                      <SelectTrigger className="flex-1">
-                        <SelectValue placeholder="Seleccione género" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Masculino">Masculino</SelectItem>
-                        <SelectItem value="Femenino">Femenino</SelectItem>
-                        <SelectItem value="Otro">Otro</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button onClick={() => handleUpdateInfo('gender', patient?.gender)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Dirección */}
-                <div className="space-y-2">
-                  <Label htmlFor="address">Dirección</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="address"
-                      type="text"
-                      value={patient?.address || ''}
-                      onChange={(e) => setPatient({ ...patient, address: e.target.value })}
-                    />
-                    <Button onClick={() => handleUpdateInfo('address', patient?.address)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Zona - PRIMERO */}
-                <div className="space-y-2">
-                  <Label htmlFor="zone">Zona</Label>
-                  <div className="flex gap-2">
-                    <Select
-                      value={patient?.zone_id?.toString() || ''}
-                      onValueChange={(value) => {
-                        const zoneId = parseInt(value);
-                        setPatient({ ...patient, zone_id: zoneId, municipality_id: undefined });
-                        loadMunicipalities(zoneId);
-                      }}
-                    >
-                      <SelectTrigger className="flex-1">
-                        <SelectValue placeholder="Seleccione zona" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {zones.length === 0 ? (
-                          <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                            Cargando zonas...
-                          </div>
-                        ) : (
-                          zones.map((zone: any) => (
-                            <SelectItem key={zone.id} value={zone.id.toString()}>
-                              {zone.name}
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-                    <Button 
-                      onClick={() => handleUpdateInfo('zone_id', patient?.zone_id)}
-                    >
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-
-                {/* Municipio - SEGUNDO (filtrado por zona) */}
-                <div className="space-y-2">
-                  <Label htmlFor="municipality">Municipio</Label>
-                  <div className="flex gap-2">
-                    <Select
-                      value={patient?.municipality_id?.toString() || ''}
-                      onValueChange={(value) => setPatient({ ...patient, municipality_id: parseInt(value) })}
-                      disabled={!patient?.zone_id}
-                    >
-                      <SelectTrigger className="flex-1">
-                        <SelectValue placeholder={!patient?.zone_id ? "Primero seleccione zona" : "Seleccione municipio"} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {municipalities.length === 0 ? (
-                          <div className="px-2 py-1.5 text-sm text-muted-foreground">
-                            {!patient?.zone_id ? 'Primero seleccione una zona' : 'Cargando municipios...'}
-                          </div>
-                        ) : (
-                          municipalities.map((mun: any) => (
-                            <SelectItem key={mun.id} value={mun.id.toString()}>
-                              {mun.name}
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-                    <Button 
-                      onClick={() => handleUpdateInfo('municipality_id', patient?.municipality_id)}
-                      disabled={!patient?.zone_id || !patient?.municipality_id}
-                    >
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          {/* Tab 2: Citas */}
-          <TabsContent value="appointments">
-            <div className="space-y-4">
-              {appointments.length === 0 ? (
-                <Card>
-                  <CardContent className="py-16">
-                    <div className="text-center">
-                      <svg 
-                        className="mx-auto h-12 w-12 text-muted-foreground/50 mb-4" 
-                        fill="none" 
-                        viewBox="0 0 24 24" 
-                        stroke="currentColor"
-                      >
-                        <path 
-                          strokeLinecap="round" 
-                          strokeLinejoin="round" 
-                          strokeWidth={1.5} 
-                          d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" 
-                        />
-                      </svg>
-                      <p className="text-lg font-medium text-muted-foreground">No tienes citas programadas</p>
-                      <p className="text-sm text-muted-foreground/75 mt-1">Comunícate con nosotros para agendar tu próxima consulta</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              ) : (
-                appointments.map((apt) => {
-                  // Formatear fecha SIN conversión de timezone
-                  const formatDate = (dateStr: string) => {
-                    // Extraer fecha directamente sin crear objeto Date
-                    const dateMatch = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
-                    if (!dateMatch) return { day: 0, month: '', year: 0 };
-                    
                     const [, year, monthNum, day] = dateMatch;
                     const months = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 
                                    'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
@@ -641,210 +410,312 @@ export default function UserPortal() {
                   const statusColor = statusColors[apt.status] || 'bg-gray-100 text-gray-800 border-gray-200';
 
                   return (
-                    <Card key={apt.appointment_id} className="overflow-hidden hover:shadow-lg transition-shadow duration-300">
-                      <div className="flex flex-col md:flex-row">
-                        {/* Sección de Fecha - Lateral izquierdo */}
-                        <div className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-6 md:w-32 flex flex-row md:flex-col items-center justify-center gap-2 md:gap-0">
-                          <div className="text-center">
-                            <div className="text-4xl font-bold">{formattedDate.day}</div>
-                            <div className="text-sm uppercase tracking-wide opacity-90">{formattedDate.month}</div>
-                            <div className="text-xs opacity-75">{formattedDate.year}</div>
-                          </div>
-                        </div>
-
-                        {/* Contenido Principal */}
-                        <div className="flex-1 p-6">
-                          <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-                            {/* Información Principal */}
-                            <div className="flex-1 space-y-3">
-                              {/* Hora y Estado */}
-                              <div className="flex items-center gap-3 flex-wrap">
-                                <div className="flex items-center gap-2">
-                                  <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                  </svg>
-                                  <span className="text-lg font-semibold text-gray-900">
-                                    {apt.scheduled_time || 'Hora por confirmar'}
-                                  </span>
-                                </div>
-                                <span className={`px-3 py-1 rounded-full text-xs font-medium border ${statusColor}`}>
-                                  {apt.status}
-                                </span>
-                              </div>
-
-                              {/* Doctor */}
-                              <div className="flex items-start gap-2">
-                                <svg className="w-5 h-5 text-gray-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                    <div 
+                      key={apt.appointment_id} 
+                      className="group bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden"
+                    >
+                      {/* Header con fecha */}
+                      <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 sm:px-6 py-4 sm:py-5">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                          {/* Fecha */}
+                          <div className="flex items-center gap-4">
+                            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-3 text-center min-w-fit">
+                              <div className="text-2xl sm:text-3xl font-bold">{formattedDate.day}</div>
+                              <div className="text-xs sm:text-sm uppercase tracking-widest opacity-90">{formattedDate.month}</div>
+                              <div className="text-xs opacity-75">{formattedDate.year}</div>
+                            </div>
+                            <div>
+                              <div className="text-lg sm:text-xl font-semibold flex items-center gap-2">
+                                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z" />
                                 </svg>
-                                <div>
-                                  <p className="text-sm text-gray-500">Doctor(a)</p>
-                                  <p className="font-medium text-gray-900">{apt.doctor_name || 'Por asignar'}</p>
-                                </div>
+                                {apt.scheduled_time || 'Hora por confirmar'}
                               </div>
-
-                              {/* Especialidad */}
-                              {apt.specialty_name && (
-                                <div className="flex items-start gap-2">
-                                  <svg className="w-5 h-5 text-gray-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                                  </svg>
-                                  <div>
-                                    <p className="text-sm text-gray-500">Especialidad</p>
-                                    <p className="font-medium text-gray-900">{apt.specialty_name}</p>
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Sede */}
-                              {apt.location_name && (
-                                <div className="flex items-start gap-2">
-                                  <svg className="w-5 h-5 text-gray-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                                  </svg>
-                                  <div>
-                                    <p className="text-sm text-gray-500">Sede</p>
-                                    <p className="font-medium text-gray-900">{apt.location_name}</p>
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Motivo */}
-                              {apt.reason && (
-                                <div className="mt-4 pt-4 border-t border-gray-200">
-                                  <p className="text-sm font-medium text-gray-700 mb-1">Motivo de consulta:</p>
-                                  <p className="text-sm text-gray-600 italic">{apt.reason}</p>
-                                </div>
-                              )}
-
-                              {/* Botón de descarga de QR */}
-                              <div className="mt-4 pt-4 border-t border-gray-200">
-                                <Button 
-                                  onClick={() => generateAppointmentQR(apt, patient)}
-                                  variant="outline"
-                                  className="w-full md:w-auto gap-2 bg-gradient-to-r from-blue-500 to-blue-600 text-white hover:from-blue-600 hover:to-blue-700 border-none"
-                                >
-                                  <QrCode className="w-4 h-4" />
-                                  <Download className="w-4 h-4" />
-                                  Descargar QR de Cita
-                                </Button>
-                                <p className="text-xs text-gray-500 mt-2">
-                                  Descarga el código QR para presentarlo al llegar a tu cita
-                                </p>
-                              </div>
+                              <p className="text-xs sm:text-sm opacity-90 mt-1">Hora de consulta</p>
                             </div>
+                          </div>
 
-                            {/* ID de cita - Esquina superior derecha */}
+                          {/* Estado y ID */}
+                          <div className="flex items-center gap-3">
                             <div className="text-right">
-                              <p className="text-xs text-gray-500">Cita N°</p>
-                              <p className="text-sm font-mono font-semibold text-gray-700">#{apt.appointment_id}</p>
+                              <p className="text-xs opacity-75">Cita N°</p>
+                              <p className="text-sm sm:text-base font-mono font-bold">#{apt.appointment_id}</p>
                             </div>
+                            <span className={`px-3 py-1 rounded-full text-xs font-bold border-2 whitespace-nowrap ${statusColor}`}>
+                              {apt.status}
+                            </span>
                           </div>
                         </div>
                       </div>
-                    </Card>
+
+                      {/* Contenido principal */}
+                      <div className="px-4 sm:px-6 py-5 sm:py-6 space-y-4">
+                        {/* Grid de información */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Doctor */}
+                          <div className="flex items-start gap-3">
+                            <div className="bg-blue-100 rounded-lg p-2.5 mt-0.5">
+                              <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                              </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs sm:text-sm text-gray-500 font-medium">Doctor(a)</p>
+                              <p className="text-sm sm:text-base font-semibold text-gray-900 truncate">{apt.doctor_name || 'Por asignar'}</p>
+                            </div>
+                          </div>
+
+                          {/* Especialidad */}
+                          {apt.specialty_name && (
+                            <div className="flex items-start gap-3">
+                              <div className="bg-purple-100 rounded-lg p-2.5 mt-0.5">
+                                <svg className="w-5 h-5 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2V17zm4 0h-2V7h2V17zm4 0h-2v-4h2V17z" />
+                                </svg>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs sm:text-sm text-gray-500 font-medium">Especialidad</p>
+                                <p className="text-sm sm:text-base font-semibold text-gray-900 truncate">{apt.specialty_name}</p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Sede */}
+                          {apt.location_name && (
+                            <div className="flex items-start gap-3">
+                              <div className="bg-green-100 rounded-lg p-2.5 mt-0.5">
+                                <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" />
+                                </svg>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs sm:text-sm text-gray-500 font-medium">Sede</p>
+                                <p className="text-sm sm:text-base font-semibold text-gray-900 truncate">{apt.location_name}</p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Motivo de consulta */}
+                        {apt.reason && (
+                          <div className="bg-gray-50 rounded-xl p-4 border border-gray-100">
+                            <p className="text-xs sm:text-sm font-bold text-gray-700 mb-2">Motivo de consulta:</p>
+                            <p className="text-sm text-gray-600 leading-relaxed">{apt.reason}</p>
+                          </div>
+                        )}
+
+                        {/* Botón QR */}
+                        <button
+                          onClick={() => generateAppointmentQR(apt, patient)}
+                          className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold py-3 px-4 rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 group/btn"
+                        >
+                          <QrCode className="w-5 h-5 group-hover/btn:scale-110 transition-transform" />
+                          <Download className="w-5 h-5 group-hover/btn:scale-110 transition-transform" />
+                          <span>Descargar QR de Cita</span>
+                        </button>
+                      </div>
+                    </div>
                   );
                 })
               )}
-            </div>
-          </TabsContent>
+        </div>
 
-          {/* Tab 3: Información Médica */}
-          <TabsContent value="medical">
-            <Card>
-              <CardHeader>
-                <CardTitle>Información Médica</CardTitle>
-                <CardDescription>Actualiza tu información de salud</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                
-                {/* Grupo Sanguíneo */}
-                <div className="space-y-2">
-                  <Label htmlFor="blood_group">Grupo Sanguíneo</Label>
-                  <div className="flex gap-2">
-                    <Select
-                      value={patient?.blood_group || ''}
-                      onValueChange={(value) => setPatient({ ...patient, blood_group: value })}
+              {/* Sección de Lista de Espera */}
+              {waitingList.length > 0 && (
+                <div className="mt-10 space-y-6">
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-yellow-100 rounded-xl p-2.5">
+                        <svg className="w-6 h-6 text-yellow-700" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 6.5c2.33 0 4.31-1.46 5.11-3.5H6.89c.8 2.04 2.78 3.5 5.11 3.5z" />
+                        </svg>
+                      </div>
+                      <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">
+                        Lista de Espera
+                      </h2>
+                    </div>
+                    <p className="text-sm sm:text-base text-gray-600 pl-14">
+                      Tienes <span className="font-bold text-yellow-700">{waitingList.length}</span> {waitingList.length === 1 ? 'solicitud pendiente' : 'solicitudes pendientes'} en espera de asignación
+                    </p>
+                  </div>
+
+                {waitingList.map((item: any) => {
+                  const priorityColors: Record<string, string> = {
+                    'Urgente': 'bg-red-100 text-red-800 border-red-200',
+                    'Alta': 'bg-orange-100 text-orange-800 border-orange-200',
+                    'Normal': 'bg-blue-100 text-blue-800 border-blue-200',
+                    'Baja': 'bg-gray-100 text-gray-800 border-gray-200'
+                  };
+
+                  const priorityColor = priorityColors[item.priority_level] || 'bg-gray-100 text-gray-800 border-gray-200';
+
+                  // Calcular tiempo de espera
+                  const calculateWaitTime = (dateString: string) => {
+                    try {
+                      const date = new Date(dateString);
+                      const now = new Date();
+                      const diffMs = now.getTime() - date.getTime();
+                      const diffMins = Math.floor(diffMs / 60000);
+                      const diffHours = Math.floor(diffMins / 60);
+                      const diffDays = Math.floor(diffHours / 24);
+
+                      if (diffDays > 0) return `${diffDays} ${diffDays === 1 ? 'día' : 'días'}`;
+                      if (diffHours > 0) return `${diffHours} ${diffHours === 1 ? 'hora' : 'horas'}`;
+                      return `${diffMins} ${diffMins === 1 ? 'minuto' : 'minutos'}`;
+                    } catch {
+                      return 'N/A';
+                    }
+                  };
+
+                  return (
+                    <div 
+                      key={item.id}
+                      className="group bg-white rounded-2xl border-2 border-yellow-200 shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden"
                     >
-                      <SelectTrigger className="flex-1">
-                        <SelectValue placeholder="Seleccione grupo sanguíneo" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="A+">A+</SelectItem>
-                        <SelectItem value="A-">A-</SelectItem>
-                        <SelectItem value="B+">B+</SelectItem>
-                        <SelectItem value="B-">B-</SelectItem>
-                        <SelectItem value="AB+">AB+</SelectItem>
-                        <SelectItem value="AB-">AB-</SelectItem>
-                        <SelectItem value="O+">O+</SelectItem>
-                        <SelectItem value="O-">O-</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button onClick={() => handleUpdateInfo('blood_group', patient?.blood_group)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
+                      {/* Header */}
+                      <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-b border-yellow-200 px-4 sm:px-6 py-4 sm:py-5">
+                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                          {/* Posición y prioridad */}
+                          <div className="flex items-center gap-3 flex-wrap">
+                            <div className="bg-yellow-500 text-white rounded-full w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center font-bold text-sm sm:text-base">
+                              #{item.queue_position}
+                            </div>
+                            <div>
+                              <p className="text-xs sm:text-sm text-gray-600 font-medium">Posición en lista</p>
+                              <p className="font-semibold text-gray-900">
+                                {item.queue_position === 1 
+                                  ? 'Próximo para asignar' 
+                                  : `${item.queue_position - 1} antes que tú`}
+                              </p>
+                            </div>
+                          </div>
 
-                {/* Teléfono Alternativo */}
-                <div className="space-y-2">
-                  <Label htmlFor="phone_alt">Teléfono Alternativo</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="phone_alt"
-                      type="text"
-                      value={patient?.phone_alt || ''}
-                      onChange={(e) => setPatient({ ...patient, phone_alt: e.target.value })}
-                      placeholder="Número de contacto adicional"
-                    />
-                    <Button onClick={() => handleUpdateInfo('phone_alt', patient?.phone_alt)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
+                          {/* Badges */}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`px-3 py-1.5 rounded-full text-xs sm:text-sm font-bold border-2 ${priorityColor}`}>
+                              {item.priority_level}
+                            </span>
+                            {item.call_type === 'reagendar' && (
+                              <span className="px-3 py-1.5 rounded-full text-xs sm:text-sm font-bold bg-gradient-to-r from-red-500 to-red-600 text-white">
+                                ⚡ Urgente
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
 
-                {/* Notas / Observaciones */}
-                <div className="space-y-2">
-                  <Label htmlFor="notes">Notas u Observaciones</Label>
-                  <div className="flex gap-2 items-start">
-                    <Input
-                      id="notes"
-                      type="text"
-                      value={patient?.notes || ''}
-                      onChange={(e) => setPatient({ ...patient, notes: e.target.value })}
-                      placeholder="Información adicional relevante"
-                      className="flex-1"
-                    />
-                    <Button onClick={() => handleUpdateInfo('notes', patient?.notes)}>
-                      Actualizar
-                    </Button>
-                  </div>
-                </div>
+                      {/* Contenido */}
+                      <div className="px-4 sm:px-6 py-5 sm:py-6 space-y-4">
+                        {/* Grid de información principal */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {/* Especialidad */}
+                          <div className="flex items-start gap-3">
+                            <div className="bg-purple-100 rounded-lg p-2.5 mt-0.5">
+                              <svg className="w-5 h-5 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2V17zm4 0h-2V7h2V17zm4 0h-2v-4h2V17z" />
+                              </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs sm:text-sm text-gray-500 font-medium">Especialidad</p>
+                              <p className="text-sm sm:text-base font-semibold text-gray-900 truncate">
+                                {item.specialty_name || 'No especificada'}
+                              </p>
+                            </div>
+                          </div>
 
-                {/* Información de Seguro (Solo lectura) */}
-                <div className="pt-6 border-t space-y-4">
-                  <h3 className="font-semibold text-lg">Información de Seguro</h3>
-                  <p className="text-sm text-muted-foreground">
-                    Estos datos solo pueden ser modificados por la institución
-                  </p>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div>
-                      <Label className="text-muted-foreground">EPS</Label>
-                      <p className="font-medium">{patient?.eps_name || 'No registrado'}</p>
+                          {/* Tiempo en espera */}
+                          <div className="flex items-start gap-3">
+                            <div className="bg-orange-100 rounded-lg p-2.5 mt-0.5">
+                              <svg className="w-5 h-5 text-orange-600" fill="currentColor" viewBox="0 0 24 24">
+                                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z" />
+                              </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-xs sm:text-sm text-gray-500 font-medium">En espera desde</p>
+                              <p className="text-sm sm:text-base font-semibold text-gray-900">
+                                {calculateWaitTime(item.created_at)}
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Doctor (si aplica) */}
+                          {item.doctor_name && (
+                            <div className="flex items-start gap-3">
+                              <div className="bg-blue-100 rounded-lg p-2.5 mt-0.5">
+                                <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
+                                </svg>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs sm:text-sm text-gray-500 font-medium">Doctor(a)</p>
+                                <p className="text-sm sm:text-base font-semibold text-gray-900 truncate">
+                                  {item.doctor_name}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Sede (si aplica) */}
+                          {item.location_name && (
+                            <div className="flex items-start gap-3">
+                              <div className="bg-green-100 rounded-lg p-2.5 mt-0.5">
+                                <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" />
+                                </svg>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs sm:text-sm text-gray-500 font-medium">Sede</p>
+                                <p className="text-sm sm:text-base font-semibold text-gray-900 truncate">
+                                  {item.location_name}
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Motivo de consulta */}
+                        {item.reason && (
+                          <div className="bg-yellow-50 rounded-xl p-4 border border-yellow-100">
+                            <p className="text-xs sm:text-sm font-bold text-yellow-900 mb-1">Motivo de consulta:</p>
+                            <p className="text-sm text-yellow-800 leading-relaxed">{item.reason}</p>
+                          </div>
+                        )}
+
+                        {/* CUPS (si aplica) */}
+                        {item.cups_code && (
+                          <div className="bg-blue-50 rounded-xl p-4 border border-blue-100">
+                            <p className="text-xs sm:text-sm font-bold text-blue-900 mb-2">Servicio Solicitado:</p>
+                            <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                              <span className="px-3 py-2 rounded-lg text-xs sm:text-sm font-mono font-bold bg-blue-100 text-blue-700 border border-blue-200">
+                                {item.cups_code}
+                              </span>
+                              <span className="text-sm text-blue-900">{item.cups_name}</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Mensaje informativo */}
+                        <div className="bg-gradient-to-r from-yellow-100 to-orange-100 rounded-xl p-4 border-l-4 border-yellow-500">
+                          <div className="flex gap-3">
+                            <svg className="w-5 h-5 text-yellow-700 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                            </svg>
+                            <p className="text-xs sm:text-sm text-yellow-900">
+                              Te notificaremos automáticamente cuando se libere un cupo según tu prioridad y disponibilidad.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* ID de solicitud */}
+                      <div className="bg-gray-50 border-t border-gray-200 px-4 sm:px-6 py-3 text-right">
+                        <p className="text-xs sm:text-sm text-gray-600">Solicitud N° <span className="font-mono font-bold text-gray-900">#{item.id}</span></p>
+                      </div>
                     </div>
-
-                    <div>
-                      <Label className="text-muted-foreground">Tipo de Afiliación</Label>
-                      <p className="font-medium capitalize">{patient?.insurance_affiliation_type || 'No registrado'}</p>
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+                  );
+                })}
+              </div>
+            )}
       </div>
     </div>
   );

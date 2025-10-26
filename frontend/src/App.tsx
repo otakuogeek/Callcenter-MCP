@@ -26,6 +26,7 @@ const Settings = lazy(() => import("./pages/Settings"));
 const AgendaManagement = lazy(() => import("./pages/AgendaManagement"));
 const DistributionDashboard = lazy(() => import("./pages/DistributionDashboard"));
 const DailyQueue = lazy(() => import("./pages/DailyQueue"));
+const MyAppointments = lazy(() => import("./pages/MyAppointments"));
 const UserPortal = lazy(() => import("./pages/UserPortal"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
@@ -47,10 +48,7 @@ const App = () => (
       <BrowserRouter
         future={{
           v7_startTransition: true,
-          v7_relativeSplatPath: true,
-          v7_normalizeFormMethod: true,
-          v7_partialHydration: true,
-          v7_skipActionErrorRevalidation: true
+          v7_relativeSplatPath: true
         }}
       >
         <Suspense fallback={<LoadingScreen className="h-screen" label="Cargando módulo..." />}>
@@ -149,6 +147,11 @@ const App = () => (
             <Route path="/daily-queue" element={
               <ProtectedRoute>
                 <DailyQueue />
+              </ProtectedRoute>
+            } />
+            <Route path="/my-appointments" element={
+              <ProtectedRoute>
+                <MyAppointments />
               </ProtectedRoute>
             } />
             <Route path="/users" element={<UserPortal />} />

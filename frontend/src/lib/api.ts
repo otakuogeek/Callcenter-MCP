@@ -20,7 +20,7 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
-type Method = 'GET' | 'POST' | 'PUT' | 'DELETE';
+type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
  * Verifica si un token JWT está expirado
@@ -353,6 +353,42 @@ export const api = {
   deleteEps: (id: number) => 
     request<void>(`/eps/${id}`, { method: 'DELETE' }),
   
+  // CUPS (Códigos de Procedimientos)
+  getCups: (params?: { page?: number; limit?: number; search?: string; category?: string; status?: string }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.page) searchParams.set('page', String(params.page));
+    if (params?.limit) searchParams.set('limit', String(params.limit));
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.category) searchParams.set('category', params.category);
+    if (params?.status) searchParams.set('status', params.status);
+    const qs = searchParams.toString();
+    return request<{ 
+      success: boolean; 
+      data: { 
+        cups: unknown[]; 
+        pagination: { 
+          current_page: number; 
+          per_page: number; 
+          total: number; 
+          total_pages: number 
+        } 
+      } 
+    }>(`/cups${qs ? `?${qs}` : ''}`);
+  },
+  getCupsCategories: async () => {
+    const response = await request<{ success: boolean; data: string[] }>(`/cups/categories`);
+    return response.data || [];
+  },
+  getCupsById: (id: number) => request<unknown>(`/cups/${id}`),
+  createCups: (data: unknown) => 
+    request<ApiResponse<unknown>>(`/cups`, { method: 'POST', body: data }),
+  updateCups: (id: number, data: unknown) => 
+    request<ApiResponse<unknown>>(`/cups/${id}`, { method: 'PUT', body: data }),
+  deleteCups: (id: number) => 
+    request<void>(`/cups/${id}`, { method: 'DELETE' }),
+  getCupsStats: () => 
+    request<{ total: number; active: number; inactive: number; categories: number }>(`/cups/stats/summary`),
+  
   // Location Types
   getLocationTypes: () => request<unknown[]>(`/location-types`),
   createLocationType: (data: CreateLocationTypeData) => 
@@ -426,6 +462,71 @@ export const api = {
     request<ApiResponse<unknown>>(`/availabilities/${availabilityId}/regenerate-distribution`, { 
       method: 'POST' 
     }),
+  syncAppointmentTimes: (availabilityId: number) => 
+    request<ApiResponse<{
+      updated: number;
+      total: number;
+      updates: Array<{
+        id: number;
+        patient_name: string;
+        old_time: string;
+        new_time: string;
+      }>;
+      availability: {
+        id: number;
+        doctor: string;
+        specialty: string;
+        location: string;
+        date: string;
+        start_time: string;
+        end_time: string;
+        duration_minutes: number;
+        break_between_slots: number;
+      };
+    }>>(`/availabilities/${availabilityId}/sync-appointment-times`, { 
+      method: 'POST' 
+    }),
+  getAvailableForReassignment: (availabilityId: number) => 
+    request<ApiResponse<{
+      original_availability_id: number;
+      specialty_id: number;
+      specialty_name: string;
+      available_agendas: Array<{
+        id: number;
+        location_id: number;
+        specialty_id: number;
+        doctor_id: number;
+        date: string;
+        start_time: string;
+        end_time: string;
+        capacity: number;
+        booked_slots: number;
+        available_slots: number;
+        duration_minutes: number;
+        status: string;
+        location_name: string;
+        specialty_name: string;
+        doctor_name: string;
+      }>;
+    }>>(`/availabilities/${availabilityId}/available-for-reassignment`),
+  reassignAppointment: (appointmentId: number, newAvailabilityId: number) =>
+    request<ApiResponse<{
+      appointment_id: number;
+      patient_name: string;
+      old_availability_id: number;
+      new_availability_id: number;
+      new_doctor: string;
+      new_location: string;
+      new_date: string;
+      new_time: string;
+      new_scheduled_at: string;
+    }>>(`/availabilities/reassign-appointment`, {
+      method: 'POST',
+      body: {
+        appointment_id: appointmentId,
+        new_availability_id: newAvailabilityId
+      }
+    }),
   
   // Citas
   /**
@@ -449,6 +550,46 @@ export const api = {
     request<ApiResponse<unknown>>(`/appointments`, { method: 'POST', body: data }),
   updateAppointment: (id: number, data: unknown) => 
     request<ApiResponse<unknown>>(`/appointments/${id}`, { method: 'PUT', body: data }),
+  cancelAppointment: (id: number, reason?: string) => 
+    request<ApiResponse<unknown>>(`/appointments/${id}`, { 
+      method: 'PUT', 
+      body: { status: 'Cancelada', cancellation_reason: reason || 'Cita duplicada eliminada por el sistema' }
+    }),
+  cancelAndReassign: (appointmentId: number, cancellationReason?: string, autoAssign: boolean = false) =>
+    request<ApiResponse<{
+      cancelled_appointment: {
+        id: number;
+        patient_name: string;
+        specialty_name: string;
+        doctor_name: string;
+      };
+      slot_freed: boolean;
+      next_in_queue: {
+        waiting_list_id: number;
+        patient_id: number;
+        patient_name: string;
+        patient_phone: string;
+        patient_document: string;
+        priority_level: string;
+        reason: string;
+      } | null;
+      reassignment: {
+        assigned: boolean;
+        new_appointment_id: number;
+        patient_assigned: string;
+      } | null;
+    }>>(`/appointments/cancel-and-reassign`, {
+      method: 'POST',
+      body: { 
+        appointment_id: appointmentId, 
+        cancellation_reason: cancellationReason,
+        auto_assign: autoAssign
+      }
+    }),
+  restoreAppointment: (id: number) =>
+    request<ApiResponse<{ success: boolean; message: string; appointmentId: number }>>(`/appointments/${id}/restore`, {
+      method: 'POST'
+    }),
   checkAppointmentConflicts: (params: { 
     doctor_id?: number; 
     patient_id?: number; 
@@ -1006,6 +1147,123 @@ export const api = {
       };
     }>(`/appointments/waiting-list`),
 
+  // Eliminar paciente de la cola de espera
+  deleteWaitingListEntry: (id: number) =>
+    request<{
+      success: boolean;
+      message: string;
+      deleted_id: number;
+    }>(`/appointments/waiting-list/${id}`, { method: 'DELETE' }),
+
+  // Actualizar CUPS de una solicitud en lista de espera
+  updateWaitingListCups: (id: number, cups_id: number | null) =>
+    request<{
+      success: boolean;
+      message: string;
+      data: {
+        id: number;
+        patient_id: number;
+        cups_id: number | null;
+        cups_code: string | null;
+        cups_name: string | null;
+        cups_category: string | null;
+      };
+    }>(`/appointments/waiting-list/${id}/cups`, { method: 'PATCH', body: { cups_id } }),
+
+  // Obtener agendas disponibles con cupos (para asignación desde lista de espera)
+  getAvailableAgendas: (specialtyId?: number) =>
+    request<{
+      id: number;
+      date: string;
+      start_time: string;
+      end_time: string;
+      doctor_id: number;
+      specialty_id: number;
+      location_id: number;
+      capacity: number;
+      booked_slots: number;
+      available_slots: number;
+      duration_minutes: number;
+      status: string;
+      doctor_name: string;
+      specialty_name: string;
+      location_name: string;
+    }[]>(`/availabilities${specialtyId ? `?specialty_id=${specialtyId}` : ''}`),
+
+  // Asignar cita desde lista de espera a una agenda real
+  assignFromWaitingList: (data: {
+    waiting_list_id: number;
+    availability_id: number;
+    patient_id: number;
+    reason?: string;
+    priority_level?: string;
+    cups_id?: number | null;
+  }) =>
+    request<{
+      success: boolean;
+      message: string;
+      data: {
+        appointment_id: number;
+        patient_id: number;
+        patient_name: string;
+        doctor_name: string;
+        location_name: string;
+        specialty_name: string;
+        scheduled_at: string;
+        removed_from_queue: number;
+      };
+    }>('/appointments/waiting-list/assign', { method: 'POST', body: data }),
+
+  // Obtener citas y solicitudes del paciente autenticado (solo lectura)
+  getMyAppointments: () =>
+    request<{
+      success: boolean;
+      data: {
+        patient: {
+          id: number;
+          name: string;
+          document: string;
+          phone: string;
+          email: string;
+        };
+        appointments: Array<{
+          id: number;
+          scheduled_at: string;
+          status: string;
+          appointment_type: string;
+          reason: string;
+          duration_minutes: number;
+          doctor_name: string;
+          specialty_name: string;
+          location_name: string;
+          location_address: string;
+          room_name: string | null;
+          cups_code: string | null;
+          cups_name: string | null;
+          cups_category: string | null;
+        }>;
+        waiting_list: Array<{
+          id: number;
+          created_at: string;
+          priority_level: string;
+          reason: string;
+          status: string;
+          queue_position: number;
+          call_type: string | null;
+          specialty_name: string | null;
+          doctor_name: string | null;
+          location_name: string | null;
+          cups_code: string | null;
+          cups_name: string | null;
+          cups_category: string | null;
+        }>;
+        summary: {
+          total_appointments: number;
+          total_waiting: number;
+        };
+      };
+    }>(`/appointments/my-appointments`),
+
   // Obtener cola diaria (citas del día actual o de una fecha específica)
   async getDailyQueue(date?: string) {
     const queryParams = date ? `?date=${date}` : '';
@@ -1133,6 +1391,40 @@ export const api = {
       data: any;
     }>('/pregnancies/controls', data);
   },
+
+  // 🔄 SINCRONIZACIÓN DE AGENDAS
+  // Sincronizar todas las agendas
+  async syncAllAvailabilities() {
+    return this.post<{
+      success: boolean;
+      message: string;
+      data: {
+        total_agendas: number;
+        activas: number;
+        completas: number;
+        con_cupos_disponibles: number;
+        timestamp: string;
+      };
+    }>('/availabilities/sync-all', {});
+  },
+
+  // Sincronizar una agenda específica
+  async syncAvailabilitySlots(availabilityId: number) {
+    return this.post<{
+      success: boolean;
+      message: string;
+      data: {
+        availability_id: number;
+        previous_booked_slots: number;
+        current_booked_slots: number;
+        capacity: number;
+        available_slots: number;
+        previous_status: string;
+        current_status: string;
+        updated: boolean;
+      };
+    }>(`/availabilities/${availabilityId}/sync-slots`, {});
+  }
 };
 
 export default api;

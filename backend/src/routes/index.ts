@@ -24,7 +24,7 @@ import calls from './calls';
 import analytics from './analytics';
 import queue from './queue';
 import transfers from './transfers';
-import doctorServicePrices from './doctorServicePrices';
+import cups from './cups';
 import appointmentBilling from './appointmentBilling';
 // Rutas mejoradas existentes
 import notifications from './notifications';
@@ -54,6 +54,10 @@ import dailyQueue from './daily-queue';
 import autoAssignment from './auto-assignment';
 import consultations from './consultations';
 import publicRoutes from './public';
+// Sistema de envío de SMS
+import smsRoutes from './sms.routes';
+// ElevenLabs - Sistema de llamadas con IA
+import elevenLabs from './elevenlabs';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -100,10 +104,12 @@ router.use('/locations', locations);
 router.use('/doctors', doctors);
 router.use('/availabilities', availabilities);
 router.use('/appointments', appointments);
+router.use('/cups', cups);
 router.use('/eps', eps);
 router.use('/eps-authorizations', epsAuthorizations);
 router.use('/settings', settings);
 router.use('/uploads', uploads);
+router.use('/sms', smsRoutes); // Servicio de envío de SMS Zadarma
 router.use('/timezones', timezones);
 router.use('/zones', zones);
 router.use('/municipalities', municipalities);
@@ -114,7 +120,6 @@ router.use('/calls', calls);
 router.use('/analytics', analytics);
 router.use('/queue', queue);
 router.use('/transfers', transfers);
-router.use('/doctor-service-prices', doctorServicePrices);
 router.use('/appointment-billing', appointmentBilling);
 // Rutas mejoradas para funcionalidades avanzadas
 router.use('/notifications', notifications);
@@ -187,6 +192,8 @@ router.use('/daily-queue', dailyQueue);
 router.use('/auto-assignment', autoAssignment);
 // Consultas telefónicas (ElevenLabs)
 router.use('/consultations', consultations);
+// Sistema de llamadas con IA - ElevenLabs
+router.use('/elevenlabs', elevenLabs);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)
