@@ -511,6 +511,25 @@ const DoctorManagement = () => {
               </ul>
             </div>
 
+            {/* Opción rápida para resetear a contraseña temporal */}
+            <div className="border-t pt-4">
+              <p className="text-sm text-gray-600 mb-2">
+                <strong>Opción rápida:</strong> Establecer contraseña temporal
+              </p>
+              <Button 
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setNewPassword("temp123");
+                  setConfirmPassword("temp123");
+                }}
+                disabled={settingPassword}
+                className="w-full"
+              >
+                Usar contraseña temporal: <code className="ml-1 bg-gray-200 px-1 rounded">temp123</code>
+              </Button>
+            </div>
+
             <div className="flex gap-2 justify-end">
               <Button 
                 variant="outline" 
