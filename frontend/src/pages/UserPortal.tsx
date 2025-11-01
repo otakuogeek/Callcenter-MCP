@@ -198,6 +198,9 @@ export default function UserPortal() {
   const [waitingListResult, setWaitingListResult] = useState<any>(null);
   const [appointmentResult, setAppointmentResult] = useState<any>(null);
   
+  // Set para rastrear qué especialidades tienen disponibilidad
+  const specialtiesWithAvailability = new Set<number>();
+  
   // Estados para CUPS (Ecografías)
   const [showCupsModal, setShowCupsModal] = useState(false);
   const [cupsCode, setCupsCode] = useState('');
