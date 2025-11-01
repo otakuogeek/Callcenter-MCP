@@ -213,14 +213,19 @@ router.post('/:id/reset-password', requireAuth, async (req: Request, res: Respon
       });
     }
 
-    // Resetear intentos de login y desbloquear
+    // Generar nueva contraseña temporal
+    const tempPassword = 'temp123';
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+
+    // Actualizar contraseña y resetear intentos de login
     await pool.query(
       `UPDATE doctors 
-       SET login_attempts = 0, 
+       SET password_hash = ?,
+           login_attempts = 0, 
            locked_until = NULL,
            updated_at = NOW() 
        WHERE id = ?`,
-      [id]
+      [hashedPassword, id]
     );
 
     // Eliminar todas las sesiones activas del doctor
@@ -231,7 +236,12 @@ router.post('/:id/reset-password', requireAuth, async (req: Request, res: Respon
 
     res.json({
       success: true,
-      message: 'Cuenta desbloqueada y sesiones eliminadas exitosamente'
+      message: 'Contraseña reseteada exitosamente',
+      data: {
+        tempPassword: tempPassword,
+        email: doctors[0].email,
+        name: doctors[0].name
+      }
     });
   } catch (error) {
     console.error('Error al resetear contraseña:', error);
