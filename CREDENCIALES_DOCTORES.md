@@ -17,7 +17,15 @@
 - **Especialidad**: Medicina General
 - **Sede**: Biosanar San Gil
 
-> ⚠️ **IMPORTANTE**: El doctor debe cambiar esta contraseña temporal en el primer inicio de sesión.
+### Dr. Carlos Rafael Almira
+- **Email**: carlos.almira@biosanarcall.site
+- **Contraseña**: `doctor123`
+- **Registro Médico**: mc123456
+- **Teléfono**: 3175245789
+- **Especialidad**: Ginecología
+- **Sede**: Biosanar San Gil
+
+> ⚠️ **IMPORTANTE**: Los doctores deben cambiar estas contraseñas en el primer inicio de sesión.
 
 ---
 
