@@ -5,7 +5,7 @@ import path from 'path';
 const router = Router();
 
 // Base path para la documentación
-const DOCS_BASE_PATH = path.join(__dirname, '../../..');
+const DOCS_BASE_PATH = path.join(__dirname, '../../../..');
 
 // Mapeo de rutas de documentación
 const WIKI_DOCS: Record<string, string> = {
