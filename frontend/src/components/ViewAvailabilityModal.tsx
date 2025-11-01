@@ -130,8 +130,12 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
         console.warn('[ViewAvailability] No se pudo sincronizar:', syncError);
       }
       
-      // Cargar citas de esta agenda específica
-      const rows = await api.getAppointments({ availability_id: availability.id });
+      // Cargar citas de esta agenda específica con include_cancelled='true'
+      // para mostrar tanto confirmadas como canceladas en pestañas separadas
+      const rows = await api.getAppointments({ 
+        availability_id: availability.id,
+        include_cancelled: 'true'
+      });
       setAppointments(rows as AppointmentRow[]);
       
       // Cargar TODAS las citas confirmadas del sistema para detectar duplicados globales

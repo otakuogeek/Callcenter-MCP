@@ -61,6 +61,438 @@ router.get('/public/municipalities', async (req, res) => {
   }
 });
 
+// ===== OBTENER ESPECIALIDADES AUTORIZADAS POR EPS (para portal público) =====
+// GET /api/patients-v2/public/authorized-specialties/:epsId
+// Endpoint para mostrar las especialidades disponibles para agendar citas
+router.get('/public/authorized-specialties/:epsId', async (req, res) => {
+  console.log('✅ Endpoint /public/authorized-specialties ALCANZADO');
+  
+  try {
+    const { epsId } = req.params;
+    
+    if (!epsId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'EPS ID es requerido' 
+      });
+    }
+
+    const [specialties] = await pool.execute(
+      `SELECT 
+        s.id,
+        s.name,
+        s.description,
+        COUNT(DISTINCT a.location_id) as sedes_disponibles,
+        GROUP_CONCAT(DISTINCT l.name ORDER BY l.name SEPARATOR ', ') as sedes,
+        MIN(a.copay_percentage) as copago_minimo,
+        MAX(a.requires_prior_authorization) as requiere_autorizacion
+       FROM eps_specialty_location_authorizations a
+       JOIN specialties s ON a.specialty_id = s.id
+       JOIN locations l ON a.location_id = l.id
+       WHERE a.eps_id = ? 
+         AND a.authorized = 1
+         AND (a.expiration_date IS NULL OR a.expiration_date >= CURDATE())
+       GROUP BY s.id, s.name, s.description
+       ORDER BY s.name ASC`,
+      [epsId]
+    );
+
+    console.log(`✅ Especialidades autorizadas encontradas: ${(specialties as any[]).length}`);
+    
+    res.json({ 
+      success: true, 
+      data: specialties 
+    });
+  } catch (e) {
+    console.error('❌ Error getting authorized specialties:', e);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error al obtener especialidades autorizadas' 
+    });
+  }
+});
+
+// ===== OBTENER AGENDAS DISPONIBLES POR ESPECIALIDAD (para portal público) =====
+// GET /api/patients-v2/public/available-schedules/:specialtyId/:epsId
+// Endpoint para mostrar las agendas disponibles para agendar citas
+router.get('/public/available-schedules/:specialtyId/:epsId', async (req, res) => {
+  console.log('✅ Endpoint /public/available-schedules ALCANZADO');
+  
+  try {
+    const { specialtyId, epsId } = req.params;
+    
+    if (!specialtyId || !epsId) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Specialty ID y EPS ID son requeridos' 
+      });
+    }
+
+    // Buscar agendas disponibles con cupos libres
+    const [schedules] = await pool.execute(
+      `SELECT 
+        a.id as availability_id,
+        a.date as appointment_date,
+        TIME_FORMAT(a.start_time, '%h:%i %p') as start_time,
+        TIME_FORMAT(a.end_time, '%h:%i %p') as end_time,
+        a.capacity as total_slots,
+        (a.capacity - a.booked_slots) as slots_available,
+        d.id as doctor_id,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name,
+        l.address as location_address
+       FROM availabilities a
+       JOIN doctors d ON a.doctor_id = d.id
+       JOIN specialties s ON a.specialty_id = s.id
+       JOIN locations l ON a.location_id = l.id
+       JOIN eps_specialty_location_authorizations auth ON 
+         auth.specialty_id = a.specialty_id AND 
+         auth.location_id = a.location_id AND 
+         auth.eps_id = ?
+       WHERE a.specialty_id = ?
+         AND a.date >= CURDATE()
+         AND a.status = 'Activa'
+         AND (a.capacity - a.booked_slots) > 0
+         AND auth.authorized = 1
+         AND (auth.expiration_date IS NULL OR auth.expiration_date >= CURDATE())
+       ORDER BY a.date ASC, a.start_time ASC
+       LIMIT 20`,
+      [epsId, specialtyId]
+    );
+
+    console.log(`✅ Agendas disponibles encontradas: ${(schedules as any[]).length}`);
+    
+    res.json({ 
+      success: true, 
+      data: schedules,
+      has_availability: (schedules as any[]).length > 0
+    });
+  } catch (e) {
+    console.error('❌ Error getting available schedules:', e);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error al obtener agendas disponibles' 
+    });
+  }
+});
+
+// ===== AGREGAR A LISTA DE ESPERA (SIN AUTENTICACIÓN) =====
+// POST /api/patients-v2/public/add-to-waiting-list
+// Endpoint para agregar automáticamente a lista de espera cuando no hay agenda
+router.post('/public/add-to-waiting-list', async (req, res) => {
+  console.log('✅ Endpoint /public/add-to-waiting-list ALCANZADO');
+  console.log('📝 Datos recibidos:', req.body);
+  
+  try {
+    const { 
+      patient_id,
+      specialty_id,
+      eps_id,
+      reason 
+    } = req.body;
+
+    // Validaciones básicas
+    if (!patient_id || !specialty_id) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Patient ID y Specialty ID son requeridos' 
+      });
+    }
+
+    // Insertar directamente en appointments_waiting_list
+    const [result] = await pool.execute(
+      `INSERT INTO appointments_waiting_list (
+        patient_id,
+        specialty_id,
+        reason,
+        priority_level,
+        status,
+        requested_by,
+        created_at,
+        updated_at
+      ) VALUES (?, ?, ?, 'Normal', 'pending', 'Portal Público', NOW(), NOW())`,
+      [patient_id, specialty_id, reason || 'Consulta general']
+    );
+
+    const waiting_list_id = (result as any).insertId;
+    console.log(`✅ Paciente agregado a lista de espera con ID: ${waiting_list_id}`);
+
+    // Obtener la posición en la cola para esta especialidad
+    const [queuePosition] = await pool.execute(
+      `SELECT COUNT(*) as position
+       FROM appointments_waiting_list
+       WHERE specialty_id = ?
+         AND status = 'pending'
+         AND created_at <= NOW()`,
+      [specialty_id]
+    );
+
+    const position = (queuePosition as any[])[0]?.position || 1;
+
+    res.json({ 
+      success: true, 
+      data: { 
+        waiting_list_id,
+        position,
+        message: 'Agregado a lista de espera exitosamente'
+      } 
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error agregando a lista de espera:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Error al agregar a lista de espera',
+      details: error.message 
+    });
+  }
+});
+
+// ========================================
+// Endpoint: Buscar código CUPS
+// ========================================
+router.get('/public/search-cups/:code', async (req, res) => {
+  try {
+    const { code } = req.params;
+    
+    console.log(`🔍 Buscando código CUPS: ${code}`);
+    
+    const [cups] = await pool.execute(
+      `SELECT id, code, name, category, subcategory, description, price 
+       FROM cups 
+       WHERE code = ? 
+       LIMIT 1`,
+      [code]
+    );
+    
+    if ((cups as any[]).length > 0) {
+      console.log(`✅ Código CUPS encontrado: ${(cups as any[])[0].name}`);
+      res.json({ 
+        success: true, 
+        found: true,
+        data: (cups as any[])[0]
+      });
+    } else {
+      console.log(`⚠️ Código CUPS no encontrado: ${code}`);
+      res.json({ 
+        success: true, 
+        found: false,
+        message: 'Código CUPS no encontrado en la base de datos'
+      });
+    }
+  } catch (error: any) {
+    console.error('❌ Error buscando código CUPS:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Error al buscar código CUPS',
+      details: error.message 
+    });
+  }
+});
+
+// ========================================
+// Endpoint: Actualizado para agregar a lista de espera con CUPS
+// ========================================
+router.post('/public/add-to-waiting-list-with-cups', async (req, res) => {
+  console.log('✅ Endpoint /public/add-to-waiting-list-with-cups ALCANZADO');
+  
+  try {
+    const { patient_id, specialty_id, eps_id, reason, cups_id, cups_name } = req.body;
+    
+    console.log('📥 Datos recibidos:', { patient_id, specialty_id, eps_id, reason, cups_id, cups_name });
+    
+    // Validar datos requeridos
+    if (!patient_id || !specialty_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltan datos requeridos: patient_id y specialty_id son obligatorios'
+      });
+    }
+
+    // Construir reason con información del CUPS si existe
+    let finalReason = reason || 'Consulta general';
+    if (cups_name) {
+      finalReason = `${finalReason} - ${cups_name}`;
+    }
+
+    // Insertar en lista de espera con cups_id si existe
+    const [result] = await pool.execute(
+      `INSERT INTO appointments_waiting_list (
+        patient_id, specialty_id, cups_id, reason, priority_level, 
+        status, requested_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'Normal', 'pending', 'Portal Público', NOW(), NOW())`,
+      [patient_id, specialty_id, cups_id || null, finalReason]
+    );
+    
+    const waiting_list_id = (result as any).insertId;
+    console.log(`✅ Agregado a lista de espera con ID: ${waiting_list_id}`);
+    
+    // Calcular posición en cola
+    const [queuePosition] = await pool.execute(
+      `SELECT COUNT(*) as position
+       FROM appointments_waiting_list
+       WHERE specialty_id = ? AND status = 'pending' AND created_at <= NOW()`,
+      [specialty_id]
+    );
+
+    const position = (queuePosition as any[])[0]?.position || 1;
+
+    res.json({ 
+      success: true, 
+      data: { 
+        waiting_list_id,
+        position,
+        cups_id: cups_id || null,
+        cups_name: cups_name || null,
+        message: 'Agregado a lista de espera exitosamente'
+      } 
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error agregando a lista de espera con CUPS:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Error al agregar a lista de espera',
+      details: error.message 
+    });
+  }
+});
+
+// ===== REGISTRO PÚBLICO DE PACIENTES (SIN AUTENTICACIÓN) =====
+// POST /api/patients-v2/public/register
+// Endpoint para el portal público de pacientes
+router.post('/public/register', async (req, res) => {
+  console.log('✅ Endpoint /public/register ALCANZADO');
+  console.log('📝 Datos recibidos:', req.body);
+  
+  try {
+    const { 
+      document, 
+      name, 
+      birth_date, 
+      gender, 
+      phone, 
+      email, 
+      address, 
+      city,           // Nombre del municipio
+      neighborhood,   // NO se guarda (tabla no tiene este campo)
+      eps,            // Nombre de la EPS
+      zone_id         // String que necesita convertirse a int
+    } = req.body;
+
+    // Validaciones básicas
+    if (!document || !name || !birth_date || !phone) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Campos obligatorios faltantes: document, name, birth_date, phone' 
+      });
+    }
+
+    // Verificar si el paciente ya existe
+    const [existingPatient] = await pool.execute(
+      'SELECT id FROM patients WHERE document = ?',
+      [document]
+    );
+
+    if ((existingPatient as any[]).length > 0) {
+      return res.status(409).json({ 
+        success: false, 
+        error: 'Ya existe un paciente registrado con este número de documento' 
+      });
+    }
+
+    // Buscar municipality_id por nombre (si se proporcionó city)
+    let municipality_id = null;
+    if (city && city.trim() !== '') {
+      const [municipalities] = await pool.execute(
+        'SELECT id FROM municipalities WHERE name = ? LIMIT 1',
+        [city.trim()]
+      );
+      municipality_id = (municipalities as any[])[0]?.id || null;
+      console.log(`🏙️  Municipio "${city}" → ID: ${municipality_id}`);
+    }
+
+    // Buscar insurance_eps_id por nombre (si se proporcionó eps)
+    let insurance_eps_id = null;
+    if (eps && eps.trim() !== '') {
+      const [epsRows] = await pool.execute(
+        'SELECT id FROM eps WHERE name = ? LIMIT 1',
+        [eps.trim()]
+      );
+      insurance_eps_id = (epsRows as any[])[0]?.id || null;
+      console.log(`🏥 EPS "${eps}" → ID: ${insurance_eps_id}`);
+    }
+
+    // Convertir zone_id de string a int
+    const zone_id_int = zone_id && zone_id !== '' ? parseInt(zone_id) : null;
+    console.log(`📍 Zona: ${zone_id} → ${zone_id_int}`);
+
+    // document_type_id por defecto: 1 (Cédula de Ciudadanía)
+    const document_type_id = 1;
+
+    // Insertar paciente
+    const [result] = await pool.execute(
+      `INSERT INTO patients (
+        document, 
+        document_type_id, 
+        name, 
+        birth_date, 
+        gender, 
+        phone, 
+        email, 
+        address, 
+        municipality_id, 
+        insurance_eps_id, 
+        zone_id,
+        status,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Activo', NOW())`,
+      [
+        document,
+        document_type_id,
+        name,
+        birth_date,
+        gender || 'No especificado',
+        phone,
+        email || null,
+        address || null,
+        municipality_id,
+        insurance_eps_id,
+        zone_id_int
+      ]
+    );
+
+    const patient_id = (result as any).insertId;
+    console.log(`✅ Paciente registrado con ID: ${patient_id}`);
+
+    res.json({ 
+      success: true, 
+      data: { 
+        patient_id,
+        message: 'Paciente registrado exitosamente'
+      } 
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error en registro público:', error);
+    
+    // Error de clave duplicada
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ 
+        success: false, 
+        error: 'Ya existe un paciente con este documento' 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false, 
+      error: 'Error al registrar el paciente',
+      details: error.message 
+    });
+  }
+});
+
 // ===== CREAR PACIENTE CON CAMPOS EXTENDIDOS =====
 router.post('/', requireAuth, requireRole(['admin', 'recepcionista']), async (req, res) => {
   try {
@@ -324,7 +756,7 @@ router.get('/:id/appointments', async (req, res) => {
       `SELECT 
         a.id as appointment_id,
         DATE_FORMAT(a.scheduled_at, '%Y-%m-%d') as scheduled_date,
-        TIME_FORMAT(a.scheduled_at, '%H:%i') as scheduled_time,
+        TIME_FORMAT(a.scheduled_at, '%h:%i %p') as scheduled_time,
         DATE_FORMAT(a.scheduled_at, '%Y-%m-%d %H:%i:%s') as scheduled_at,
         a.status,
         a.reason,
@@ -337,8 +769,7 @@ router.get('/:id/appointments', async (req, res) => {
       LEFT JOIN specialties s ON a.specialty_id = s.id
       LEFT JOIN locations l ON a.location_id = l.id
       WHERE a.patient_id = ?
-      ORDER BY a.scheduled_at DESC
-      LIMIT 50`,
+      ORDER BY a.scheduled_at DESC`,
       [patientId]
     );
 
@@ -873,6 +1304,229 @@ router.get('/stats/demographics', requireAuth, requireRole(['admin', 'doctor', '
     res.status(500).json({
       success: false,
       message: 'Error al obtener estadísticas'
+    });
+  }
+});
+
+// ========================================
+// Endpoint: Agendar cita con horario secuencial
+// ========================================
+router.post('/public/schedule-appointment', async (req, res) => {
+  console.log('✅ Endpoint /public/schedule-appointment ALCANZADO');
+  
+  try {
+    const { 
+      patient_id, 
+      specialty_id, 
+      doctor_id, 
+      availability_id,
+      reason, 
+      cups_id, 
+      cups_name
+    } = req.body;
+    
+    console.log('📥 Datos recibidos:', { 
+      patient_id, specialty_id, doctor_id, availability_id, 
+      reason, cups_id, cups_name 
+    });
+    
+    // Validar datos requeridos
+    if (!patient_id || !specialty_id || !doctor_id || !availability_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltan datos requeridos: patient_id, specialty_id, doctor_id y availability_id son obligatorios'
+      });
+    }
+
+    // Validar que el paciente no tenga citas activas (Confirmada o Pendiente)
+    console.log(`🔍 Verificando si el paciente ${patient_id} tiene citas activas...`);
+    const [existingAppointments] = await pool.execute(
+      `SELECT id, scheduled_at, status, reason 
+       FROM appointments 
+       WHERE patient_id = ? 
+         AND status IN ('Confirmada', 'Pendiente') 
+         AND scheduled_at >= NOW()
+       LIMIT 1`,
+      [patient_id]
+    );
+
+    if ((existingAppointments as any[]).length > 0) {
+      const existingAppointment = (existingAppointments as any[])[0];
+      const scheduledDate = new Date(existingAppointment.scheduled_at);
+      
+      console.log(`⚠️ Paciente ${patient_id} ya tiene una cita activa: ID ${existingAppointment.id}`);
+      
+      return res.status(409).json({
+        success: false,
+        error: 'Ya tienes una cita activa programada',
+        details: {
+          existing_appointment_id: existingAppointment.id,
+          scheduled_date: scheduledDate.toLocaleDateString('es-CO'),
+          scheduled_time: scheduledDate.toLocaleTimeString('es-CO', { 
+            hour: '2-digit', 
+            minute: '2-digit' 
+          }),
+          status: existingAppointment.status,
+          reason: existingAppointment.reason
+        },
+        message: `Ya tienes una cita ${existingAppointment.status.toLowerCase()} programada para el ${scheduledDate.toLocaleDateString('es-CO')} a las ${scheduledDate.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}. No puedes agendar otra cita hasta completar o cancelar la anterior.`
+      });
+    }
+
+    console.log(`✅ Paciente ${patient_id} no tiene citas activas, puede agendar nueva cita`);
+
+    // Obtener duración de la especialidad
+    const [specialtyInfo] = await pool.execute(
+      `SELECT default_duration_minutes FROM specialties WHERE id = ?`,
+      [specialty_id]
+    );
+    
+    const duration_minutes = (specialtyInfo as any[])[0]?.default_duration_minutes || 15; // Default 15 minutos
+    console.log(`⏱️ Duración de la especialidad: ${duration_minutes} minutos`);
+
+    // Obtener información de la disponibilidad (availability)
+    const [availabilityData] = await pool.execute(
+      `SELECT 
+        a.location_id,
+        a.date as appointment_date,
+        a.start_time,
+        a.end_time,
+        a.capacity,
+        a.booked_slots,
+        l.name as location_name,
+        d.name as doctor_name
+       FROM availabilities a
+       LEFT JOIN locations l ON a.location_id = l.id
+       LEFT JOIN doctors d ON a.doctor_id = d.id
+       WHERE a.id = ? AND a.doctor_id = ?`,
+      [availability_id, doctor_id]
+    );
+
+    if ((availabilityData as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'No se encontró la disponibilidad especificada'
+      });
+    }
+
+    const availability = (availabilityData as any[])[0];
+    const { location_id, appointment_date, start_time, end_time } = availability;
+
+    // Verificar que haya cupos disponibles
+    if (availability.booked_slots >= availability.capacity) {
+      return res.status(400).json({
+        success: false,
+        error: 'No hay cupos disponibles para esta agenda'
+      });
+    }
+
+    // 1. Buscar la última cita agendada para el mismo doctor y especialidad en la fecha
+    console.log(`🔍 Buscando última cita para doctor ${doctor_id}, especialidad ${specialty_id}, fecha ${appointment_date}`);
+    
+    const [lastAppointments] = await pool.execute(
+      `SELECT scheduled_at, duration_minutes 
+       FROM appointments 
+       WHERE doctor_id = ? 
+         AND specialty_id = ? 
+         AND DATE(scheduled_at) = DATE(?) 
+         AND status IN ('Pendiente', 'Confirmada')
+       ORDER BY scheduled_at DESC 
+       LIMIT 1`,
+      [doctor_id, specialty_id, appointment_date]
+    );
+
+    let newAppointmentTime: Date;
+    const baseDate = new Date(appointment_date);
+    
+    if ((lastAppointments as any[]).length > 0) {
+      // 2. Si hay citas previas, calcular próximo horario disponible
+      const lastAppointment = (lastAppointments as any[])[0];
+      const lastScheduledAt = new Date(lastAppointment.scheduled_at);
+      const lastDuration = lastAppointment.duration_minutes || duration_minutes; // Usar duración de la especialidad
+      
+      // Sumar duración de la última cita para obtener próximo horario
+      newAppointmentTime = new Date(lastScheduledAt);
+      newAppointmentTime.setMinutes(newAppointmentTime.getMinutes() + lastDuration);
+      
+      console.log(`📅 Última cita: ${lastScheduledAt.toLocaleString()}, duración: ${lastDuration} min`);
+      console.log(`⏰ Nueva cita programada para: ${newAppointmentTime.toLocaleString()}`);
+    } else {
+      // 3. Si no hay citas previas, usar horario base (8:00 AM)
+      newAppointmentTime = new Date(baseDate);
+      newAppointmentTime.setHours(8, 0, 0, 0); // 8:00 AM por defecto
+      
+      console.log(`🕐 Primera cita del día programada para: ${newAppointmentTime.toLocaleString()}`);
+    }
+
+    // 4. Obtener información del doctor para la respuesta
+    const [doctorInfo] = await pool.execute(
+      `SELECT name as doctor_name
+       FROM doctors 
+       WHERE id = ?`,
+      [doctor_id]
+    );
+
+    const doctorName = (doctorInfo as any[])[0]?.doctor_name || 'Doctor no encontrado';
+
+    // 5. Construir reason final con información de CUPS si existe
+    let finalReason = reason || 'Consulta general';
+    if (cups_name) {
+      finalReason = `${finalReason} - ${cups_name}`;
+    }
+
+    // 6. Insertar nueva cita en la base de datos
+    const [result] = await pool.execute(
+      `INSERT INTO appointments (
+        patient_id, specialty_id, doctor_id, location_id, availability_id, cups_id,
+        scheduled_at, duration_minutes, appointment_type, status, reason,
+        appointment_source, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Presencial', 'Confirmada', ?, 'Web', NOW())`,
+      [
+        patient_id, specialty_id, doctor_id, location_id, availability_id,
+        cups_id || null, newAppointmentTime, duration_minutes, finalReason
+      ]
+    );
+    
+    const appointment_id = (result as any).insertId;
+    console.log(`✅ Cita creada con ID: ${appointment_id}`);
+
+    // 7. Actualizar slots disponibles en availabilities
+    await pool.execute(
+      `UPDATE availabilities 
+       SET booked_slots = booked_slots + 1 
+       WHERE id = ? AND booked_slots < capacity`,
+      [availability_id]
+    );
+    console.log(`📈 Slot incrementado en availabilities ID: ${availability_id}`);
+
+    // 8. Respuesta exitosa con información completa
+    res.json({ 
+      success: true, 
+      data: { 
+        appointment_id,
+        doctor_name: doctorName,
+        scheduled_time: newAppointmentTime.toLocaleTimeString('es-CO', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        }),
+        scheduled_date: newAppointmentTime.toLocaleDateString('es-CO'),
+        appointment_date: appointment_date,
+        scheduled_datetime: newAppointmentTime.toISOString(),
+        duration_minutes: 15,
+        cups_name: cups_name || null,
+        reason: finalReason,
+        location_name: availability.location_name,
+        message: 'Cita agendada exitosamente'
+      } 
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error agendando cita:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Error al agendar la cita',
+      details: error.message 
     });
   }
 });

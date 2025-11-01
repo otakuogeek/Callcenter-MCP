@@ -1,0 +1,50 @@
+✅ Sistema de Envío de SMS Personalizado - COMPLETADO
+
+📋 Resumen de Implementación:
+
+1. FRONTEND (/frontend/src/pages/SMS.tsx)
+   ✅ Botón 'Enviar Mensaje' agregado
+   ✅ Modal con búsqueda de pacientes
+   ✅ Selección múltiple de destinatarios
+   ✅ Campo de mensaje con contador
+   ✅ Envío paralelo a múltiples pacientes
+   ✅ Actualización automática del historial
+
+2. BACKEND (/backend/src/routes/patients.ts)
+   ✅ Endpoint GET /api/patients/search?q={query}
+   ✅ Búsqueda por nombre y documento
+   ✅ Solo pacientes con teléfono válido
+   ✅ Autenticación requerida
+   ✅ Límite 20 resultados
+
+3. FUNCIONALIDADES
+   ✅ Búsqueda en tiempo real (mínimo 2 caracteres)
+   ✅ No permite pacientes duplicados
+   ✅ Validación de mensaje no vacío
+   ✅ Validación de al menos 1 paciente
+   ✅ Contador de caracteres y partes SMS
+   ✅ Notificaciones de éxito/error
+   ✅ Cierre automático del modal
+
+4. PRUEBAS
+   ✅ Endpoint funciona correctamente
+   ✅ Búsqueda 'dave' retorna 2 pacientes
+   ✅ Frontend compilado sin errores
+   ✅ Backend compilado y reiniciado
+
+🌐 URL: https://biosanarcall.site/sms
+
+📱 Uso:
+   1. Click en 'Enviar Mensaje'
+   2. Buscar pacientes (ej: 'dave', 'maria')
+   3. Seleccionar múltiples destinatarios
+   4. Escribir mensaje personalizado
+   5. Click 'Enviar a X paciente(s)'
+   6. Ver historial actualizado automáticamente
+
+💡 Mejoras implementadas:
+   - Búsqueda inteligente por nombre/documento
+   - Solo pacientes con teléfono válido
+   - Envío paralelo eficiente
+   - Feedback inmediato al usuario
+

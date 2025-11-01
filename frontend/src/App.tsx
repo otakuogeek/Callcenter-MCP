@@ -6,6 +6,7 @@ import LoadingScreen from "@/components/LoadingScreen";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
+import DoctorProtectedRoute from "./components/DoctorProtectedRoute";
 
 const Login = lazy(() => import("./pages/Login"));
 const Index = lazy(() => import("./pages/Index"));
@@ -28,6 +29,10 @@ const DistributionDashboard = lazy(() => import("./pages/DistributionDashboard")
 const DailyQueue = lazy(() => import("./pages/DailyQueue"));
 const MyAppointments = lazy(() => import("./pages/MyAppointments"));
 const UserPortal = lazy(() => import("./pages/UserPortal"));
+const DoctorLogin = lazy(() => import("./pages/DoctorLogin"));
+const DoctorDashboard = lazy(() => import("./pages/DoctorDashboard"));
+const SMS = lazy(() => import("./pages/SMS"));
+const Wiki = lazy(() => import("./pages/Wiki"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 
 const queryClient = new QueryClient({
@@ -54,6 +59,12 @@ const App = () => (
         <Suspense fallback={<LoadingScreen className="h-screen" label="Cargando módulo..." />}>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/doctor-login" element={<DoctorLogin />} />
+            <Route path="/doctor-dashboard" element={
+              <DoctorProtectedRoute>
+                <DoctorDashboard />
+              </DoctorProtectedRoute>
+            } />
             <Route path="/" element={
               <ProtectedRoute>
                 <Index />
@@ -147,6 +158,21 @@ const App = () => (
             <Route path="/daily-queue" element={
               <ProtectedRoute>
                 <DailyQueue />
+              </ProtectedRoute>
+            } />
+            <Route path="/sms" element={
+              <ProtectedRoute>
+                <SMS />
+              </ProtectedRoute>
+            } />
+            <Route path="/wiki" element={
+              <ProtectedRoute>
+                <Wiki />
+              </ProtectedRoute>
+            } />
+            <Route path="/wiki/:slug" element={
+              <ProtectedRoute>
+                <Wiki />
               </ProtectedRoute>
             } />
             <Route path="/my-appointments" element={

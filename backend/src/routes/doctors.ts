@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
+import bcrypt from 'bcrypt';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
 
@@ -285,6 +286,101 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
     return res.status(204).send();
   } catch {
     return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+/**
+ * POST /doctors/:id/set-password
+ * Establece o actualiza la contraseña de un doctor para acceder al panel
+ */
+router.post('/:id/set-password', requireAuth, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: 'Invalid doctor ID' });
+  }
+
+  const schema = z.object({
+    password: z.string().min(6, 'La contraseña debe tener al menos 6 caracteres')
+  });
+
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ 
+      message: 'Datos inválidos', 
+      errors: parsed.error.flatten() 
+    });
+  }
+
+  const { password } = parsed.data;
+
+  try {
+    // Verificar que el doctor existe
+    const [doctors] = await pool.query<any[]>(
+      'SELECT id, name, email FROM doctors WHERE id = ?',
+      [id]
+    );
+
+    if (!Array.isArray(doctors) || doctors.length === 0) {
+      return res.status(404).json({ message: 'Doctor no encontrado' });
+    }
+
+    // Hash de la contraseña
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Actualizar la contraseña del doctor
+    await pool.query(
+      'UPDATE doctors SET password_hash = ?, updated_at = NOW() WHERE id = ?',
+      [passwordHash, id]
+    );
+
+    return res.json({
+      success: true,
+      message: `Contraseña establecida para ${doctors[0].name}`,
+      doctor: {
+        id: doctors[0].id,
+        name: doctors[0].name,
+        email: doctors[0].email,
+        hasPassword: true
+      }
+    });
+  } catch (error: any) {
+    console.error('Error setting doctor password:', error);
+    return res.status(500).json({ 
+      message: 'Error al establecer la contraseña',
+      error: error.message 
+    });
+  }
+});
+
+/**
+ * GET /doctors/:id/has-password
+ * Verifica si un doctor tiene contraseña configurada
+ */
+router.get('/:id/has-password', requireAuth, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) {
+    return res.status(400).json({ message: 'Invalid doctor ID' });
+  }
+
+  try {
+    const [doctors] = await pool.query<any[]>(
+      'SELECT id, password_hash FROM doctors WHERE id = ?',
+      [id]
+    );
+
+    if (!Array.isArray(doctors) || doctors.length === 0) {
+      return res.status(404).json({ message: 'Doctor no encontrado' });
+    }
+
+    return res.json({
+      hasPassword: doctors[0].password_hash !== null && doctors[0].password_hash !== ''
+    });
+  } catch (error: any) {
+    console.error('Error checking doctor password:', error);
+    return res.status(500).json({ 
+      message: 'Error al verificar la contraseña',
+      error: error.message 
+    });
   }
 });
 

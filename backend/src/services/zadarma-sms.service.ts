@@ -36,59 +36,58 @@ const ZADARMA_TEMPLATES = {
 } as const;
 
 class ZadarmaSMSService {
-  private readonly API_KEY = process.env.ZADARMA_SMS_API_KEY || '95bedd9dbcc065b5ef54';
-  private readonly API_SECRET = process.env.ZADARMA_SMS_API_SECRET || '66fc39c8dae8c5ad99f2';
-  private readonly BASE_URL = 'https://api.zadarma.com';
-  private readonly DEFAULT_SENDER = process.env.ZADARMA_SMS_SENDER_ID || 'BiosanaR';
-  private readonly DEFAULT_LANGUAGE = process.env.ZADARMA_SMS_LANGUAGE || 'es';
+  private readonly apiKey: string;
+  private readonly apiSecret: string;
+  private readonly baseUrl = 'https://api.zadarma.com';
+  private readonly defaultSender: string;
+  private readonly defaultLanguage = process.env.ZADARMA_SMS_LANGUAGE || 'es';
+
+  constructor() {
+    // Usar credenciales de Zadarma SMS desde variables de entorno
+    this.apiKey = process.env.ZADARMA_SMS_API_KEY || process.env.ZADARMA_USER_KEY || '';
+    this.apiSecret = process.env.ZADARMA_SMS_API_SECRET || process.env.ZADARMA_SECRET_KEY || '';
+    this.defaultSender = process.env.ZADARMA_SMS_SENDER_ID || 'BiosanaR';
+
+    console.log('🔧 Inicializando Servicio SMS Zadarma...');
+    console.log('📍 API Key:', this.apiKey);
+    console.log('🔐 Secret:', this.apiSecret ? this.apiSecret.substring(0, 8) + '...' : 'NO CONFIGURADO');
+    
+    if (!this.apiKey || !this.apiSecret) {
+      console.error('❌ ADVERTENCIA: Credenciales de Zadarma SMS no configuradas en .env');
+    } else {
+      console.log('✅ Servicio SMS Zadarma inicializado correctamente');
+    }
+  }
 
   /**
-   * Genera la firma SHA1+HMAC requerida por Zadarma API
-   * Algoritmo según documentación oficial:
-   * 1. Ordenar parámetros alfabéticamente
-   * 2. Crear query string
-   * 3. Calcular MD5 del query string
-   * 4. Crear base string: METHOD + PATH + QUERY_STRING + MD5(QUERY_STRING)
-   * 5. Aplicar HMAC-SHA1 con el SECRET
-   * 6. Codificar en Base64
-   * 
-   * @param method Método HTTP (GET, POST, etc.)
-   * @param path Ruta de la API
-   * @param params Parámetros de la petición
+   * Generar firma de autenticación para Zadarma
+   * Método oficial: base64(hmac_sha1(method + params + md5(params), secret))
    */
-  private generateSignature(method: string, path: string, params: Record<string, any> = {}): string {
-    // Paso 1 y 2: Ordenar parámetros y crear query string
-    const sortedKeys = Object.keys(params).sort();
-    const paramsStr = sortedKeys
-      .map(key => `${key}=${params[key]}`)
-      .join('&');
+  private generateSignature(method: string, params: Record<string, any> = {}): string {
+    // Filtrar objetos y ordenar parámetros alfabéticamente
+    const filteredParams = Object.keys(params)
+      .filter(key => typeof params[key] !== 'object')
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = params[key];
+        return acc;
+      }, {} as Record<string, any>);
 
-    // Paso 3: Calcular MD5 del query string
-    const paramsMd5 = paramsStr 
-      ? crypto.createHash('md5').update(paramsStr).digest('hex')
-      : '';
-
-    // Paso 4: Crear base string = METHOD + PATH + PARAMS_STRING + MD5(PARAMS_STRING)
-    const baseString = paramsStr
-      ? `${method}${path}${paramsStr}${paramsMd5}`
-      : `${method}${path}`;
+    // Construir query string (debe quedar igual que PHP: format=json&language=es)
+    const queryString = new URLSearchParams(filteredParams).toString();
     
-    console.log('🔐 Generando firma Zadarma:', {
-      method,
-      path,
-      params,
-      paramsStr,
-      paramsMd5,
-      baseString: baseString.substring(0, 50) + '...',
-    });
+    // Crear MD5 del query string (en hexadecimal)
+    const md5Hash = crypto.createHash('md5').update(queryString).digest('hex');
     
-    // Paso 5 y 6: HMAC-SHA1 + Base64
+    // Crear firma: method + queryString + md5(queryString)
+    const signatureString = method + queryString + md5Hash;
+    
+    // HMAC-SHA1 con base64 (digest en binario, no hex, antes de base64)
     const signature = crypto
-      .createHmac('sha1', this.API_SECRET)
-      .update(baseString)
+      .createHmac('sha1', this.apiSecret)
+      .update(signatureString)
       .digest('base64');
-    console.log('✅ Firma generada:', signature);
-    
+
     return signature;
   }
 
@@ -135,7 +134,7 @@ class ZadarmaSMSService {
       }
 
       // Generar firma
-      const signature = this.generateSignature(method, path, apiParams);
+      const signature = this.generateSignature(path, apiParams);
 
       console.log('📤 Enviando SMS:', {
         number: apiParams.number,
@@ -145,11 +144,11 @@ class ZadarmaSMSService {
 
       // Realizar petición
       const response = await axios.post<ZadarmaSMSResponse>(
-        `${this.BASE_URL}${path}`,
+        `${this.baseUrl}${path}`,
         new URLSearchParams(apiParams),
         {
           headers: {
-            'Authorization': `${this.API_KEY}:${signature}`,
+            'Authorization': `${this.apiKey}:${signature}`,
             'Content-Type': 'application/x-www-form-urlencoded',
           },
         }
@@ -178,20 +177,60 @@ class ZadarmaSMSService {
   }
 
   /**
+   * Obtiene la lista de plantillas SMS disponibles en Zadarma
+   * @returns Lista de plantillas
+   */
+  async getSMSTemplates(language: string = 'es'): Promise<any> {
+    try {
+      const path = '/v1/sms/templates/';
+      
+      const params: Record<string, any> = {
+        language: language,
+        format: 'json'
+      };
+
+      // Generar firma
+      const signature = this.generateSignature(path, params);
+
+      console.log('📋 Consultando plantillas SMS de Zadarma...');
+      console.log('DEBUG - API Key:', this.apiKey);
+      console.log('DEBUG - Signature:', signature);
+      console.log('DEBUG - Params:', params);
+
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        params,
+        headers: {
+          'Authorization': `${this.apiKey}:${signature}`,
+        },
+      });
+
+      console.log('✅ Plantillas obtenidas:', response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error('❌ Error obteniendo plantillas SMS:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Obtiene la lista de sender IDs disponibles
    * @returns Lista de sender IDs
    */
   async getSenderIds(): Promise<any> {
     try {
       const path = '/v1/sms/senderid/';
-      const method = 'GET';
+      
+      const params: Record<string, any> = {
+        format: 'json'
+      };
 
       // Generar firma
-      const signature = this.generateSignature(method, path);
+      const signature = this.generateSignature(path, params);
 
-      const response = await axios.get(`${this.BASE_URL}${path}`, {
+      const response = await axios.get(`${this.baseUrl}${path}`, {
+        params,
         headers: {
-          'Authorization': `${this.API_KEY}:${signature}`,
+          'Authorization': `${this.apiKey}:${signature}`,
         },
       });
 
@@ -228,7 +267,7 @@ class ZadarmaSMSService {
         appointmentTime,
         `Fundación Biosanar IPS - ${location}`,
       ],
-      sender: this.DEFAULT_SENDER,
+      sender: this.defaultSender,
     });
   }
 
@@ -254,7 +293,7 @@ class ZadarmaSMSService {
         appointmentTime,
         'Recordatorio - Fundación Biosanar IPS',
       ],
-      sender: this.DEFAULT_SENDER,
+      sender: this.defaultSender,
     });
   }
 
@@ -277,7 +316,7 @@ class ZadarmaSMSService {
         'Fundación Biosanar IPS',
         `cita del ${appointmentDate}`,
       ],
-      sender: this.DEFAULT_SENDER,
+      sender: this.defaultSender,
     });
   }
 }

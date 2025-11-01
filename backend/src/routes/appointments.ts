@@ -65,12 +65,29 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   const date = String(req.query.date || '');
   const patientId = req.query.patient_id ? Number(req.query.patient_id) : undefined;
   const availabilityId = req.query.availability_id ? Number(req.query.availability_id) : undefined;
-  const filters: string[] = []; const values: any[] = [];
+  const includeCancelled = String(req.query.include_cancelled || 'true'); // Admin ve todo por defecto
+  
+  const filters: string[] = []; 
+  const values: any[] = [];
+  
+  // SIEMPRE filtrar pacientes fantasma (SISTEMA-PAUSA) - igual que doctor-auth
+  filters.push("p.document != ?");
+  values.push('SISTEMA-PAUSA');
+  
+  // Filtro de canceladas - configurable como en doctor-auth
+  if (includeCancelled !== 'true') {
+    filters.push('a.status != ?');
+    values.push('Cancelada');
+  }
+  
+  // Filtros adicionales
   if (status) { filters.push('a.status = ?'); values.push(status); }
   if (date) { filters.push('DATE(a.scheduled_at) = ?'); values.push(date); }
   if (typeof patientId === 'number' && !Number.isNaN(patientId)) { filters.push('a.patient_id = ?'); values.push(patientId); }
   if (typeof availabilityId === 'number' && !Number.isNaN(availabilityId)) { filters.push('a.availability_id = ?'); values.push(availabilityId); }
+  
   const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  
   try {
     const [rows] = await pool.query(
       `SELECT a.*, 
@@ -659,6 +676,7 @@ router.get('/summary', requireAuth, async (req: Request, res: Response) => {
       `SELECT DATE(scheduled_at) AS date, COUNT(*) AS appointments
        FROM appointments
        WHERE DATE(scheduled_at) BETWEEN ? AND ?
+         AND status = 'Confirmada'
        GROUP BY DATE(scheduled_at)
        ORDER BY DATE(scheduled_at)`,
       [start, end]
@@ -667,6 +685,8 @@ router.get('/summary', requireAuth, async (req: Request, res: Response) => {
       `SELECT date, COUNT(*) AS availabilities
        FROM availabilities
        WHERE date BETWEEN ? AND ?
+         AND status IN ('Activa', 'Completa')
+         AND (is_paused = 0 OR is_paused IS NULL)
        GROUP BY date
        ORDER BY date`,
       [start, end]
@@ -818,10 +838,13 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
         wl.reason,
         wl.notes,
         wl.cups_id,
+        wl.requested_by,
+        wl.appointment_type,
         p.name AS patient_name,
         p.phone AS patient_phone,
         p.document AS patient_document,
         p.birth_date AS birth_date,
+        p.gender AS patient_gender,
         p.insurance_eps_id AS eps_id,
         eps.name AS eps_name,
         COALESCE(s_direct.name, s_avail.name) AS specialty_name,
@@ -861,6 +884,35 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
       params.push(statusFilter);
     }
 
+    // Filtro por requested_by (para estadísticas)
+    const requestedBy = req.query.requested_by as string;
+    if (requestedBy) {
+      query += ' AND wl.requested_by = ?';
+      params.push(requestedBy);
+    }
+
+    // Filtro por búsqueda de texto (nombre o documento del paciente)
+    const searchTerm = req.query.search as string;
+    if (searchTerm && searchTerm.trim()) {
+      query += ' AND (p.name LIKE ? OR p.document LIKE ?)';
+      const searchPattern = `%${searchTerm.trim()}%`;
+      params.push(searchPattern, searchPattern);
+    }
+
+    // Filtro por rango de fechas
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+    if (startDate && endDate) {
+      query += ' AND wl.created_at BETWEEN ? AND ?';
+      params.push(startDate + ' 00:00:00', endDate + ' 23:59:59');
+    } else if (startDate) {
+      query += ' AND wl.created_at >= ?';
+      params.push(startDate + ' 00:00:00');
+    } else if (endDate) {
+      query += ' AND wl.created_at <= ?';
+      params.push(endDate + ' 23:59:59');
+    }
+
     // Filtro por specialty_id (prioridad sobre availability_id)
     if (specialtyId) {
       query += ' AND (wl.specialty_id = ? OR a.specialty_id = ?)';
@@ -872,7 +924,48 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
 
     query += ' ORDER BY COALESCE(s_direct.name, s_avail.name), priority_order, wl.created_at';
 
-    const [rows]: any = await pool.query(query, params);
+  const [rows]: any = await pool.query(query, params);
+  const summary = req.query.summary === 'true';
+    
+    // Si se filtra por requested_by, retornar formato plano para estadísticas
+    if (requestedBy) {
+      const plainData = rows.map((row: any, index: number) => ({
+        id: row.id,
+        patient_id: row.patient_id,
+        patient_name: row.patient_name,
+        patient_phone: row.patient_phone,
+        patient_document: row.patient_document,
+        patient_gender: row.patient_gender,
+        birth_date: row.birth_date,
+        eps_id: row.eps_id,
+        eps_name: row.eps_name,
+        specialty_name: row.specialty_name,
+        scheduled_date: row.scheduled_date,
+        priority_level: row.priority_level,
+        call_type: row.call_type,
+        status: row.status,
+        created_at: row.created_at,
+        reason: row.reason,
+        notes: row.notes,
+        requested_by: row.requested_by,
+        appointment_type: row.appointment_type,
+        doctor_name: row.doctor_name || 'Sin asignar',
+        location_name: row.location_name || 'Sin asignar',
+        appointment_date: row.appointment_date,
+        start_time: row.start_time,
+        cups_id: row.cups_id,
+        cups_code: row.cups_code,
+        cups_name: row.cups_name,
+        cups_category: row.cups_category,
+        cups_price: row.cups_price
+      }));
+      
+      return res.json({
+        success: true,
+        data: plainData,
+        total: plainData.length
+      });
+    }
     
     // Agrupar por especialidad
     const groupedBySpecialty: any = {};
@@ -881,47 +974,58 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
       const specialtyKey = row.specialty_name || 'Sin especialidad';
       
       if (!groupedBySpecialty[specialtyKey]) {
-        groupedBySpecialty[specialtyKey] = {
+        const baseData: any = {
           specialty_id: row.specialty_id,
           specialty_name: row.specialty_name,
-          total_waiting: 0,
-          patients: []
+          total_waiting: 0
         };
+        
+        // Solo incluir el array de patients si NO es modo summary
+        if (!summary) {
+          baseData.patients = [];
+        }
+        
+        groupedBySpecialty[specialtyKey] = baseData;
       }
       
+      // Always increment total waiting
       groupedBySpecialty[specialtyKey].total_waiting++;
-      groupedBySpecialty[specialtyKey].patients.push({
-        id: row.id,
-        patient_id: row.patient_id,
-        patient_name: row.patient_name,
-        patient_phone: row.patient_phone,
-        patient_document: row.patient_document,
-        birth_date: row.birth_date,
-        eps_id: row.eps_id,
-        eps_name: row.eps_name,
-        scheduled_date: row.scheduled_date,
-        priority_level: row.priority_level,
-        call_type: row.call_type,
-        status: row.status,
-        created_at: row.created_at,
-        reason: row.reason,
-        notes: row.notes,
-        doctor_name: row.doctor_name || 'Sin asignar',
-        location_name: row.location_name || 'Sin asignar',
-        appointment_date: row.appointment_date,
-        start_time: row.start_time,
-        queue_position: groupedBySpecialty[specialtyKey].total_waiting,
-        // Indicadores de organización
-        organized_by: row.wl_specialty_id ? 'specialty' : 'availability',
-        wl_specialty_id: row.wl_specialty_id,
-        wl_availability_id: row.wl_availability_id,
-        // Información del servicio CUPS
-        cups_id: row.cups_id,
-        cups_code: row.cups_code,
-        cups_name: row.cups_name,
-        cups_category: row.cups_category,
-        cups_price: row.cups_price
-      });
+      if (!summary) {
+        // Only include full patient details when not in summary mode
+        groupedBySpecialty[specialtyKey].patients.push({
+          id: row.id,
+          patient_id: row.patient_id,
+          patient_name: row.patient_name,
+          patient_phone: row.patient_phone,
+          patient_document: row.patient_document,
+          patient_gender: row.patient_gender,
+          birth_date: row.birth_date,
+          eps_id: row.eps_id,
+          eps_name: row.eps_name,
+          scheduled_date: row.scheduled_date,
+          priority_level: row.priority_level,
+          call_type: row.call_type,
+          status: row.status,
+          created_at: row.created_at,
+          reason: row.reason,
+          notes: row.notes,
+          doctor_name: row.doctor_name || 'Sin asignar',
+          location_name: row.location_name || 'Sin asignar',
+          appointment_date: row.appointment_date,
+          start_time: row.start_time,
+          queue_position: groupedBySpecialty[specialtyKey].total_waiting,
+          // Indicadores de organización
+          organized_by: row.wl_specialty_id ? 'specialty' : 'availability',
+          wl_specialty_id: row.wl_specialty_id,
+          wl_availability_id: row.wl_availability_id,
+          // Información del servicio CUPS
+          cups_id: row.cups_id,
+          cups_code: row.cups_code,
+          cups_name: row.cups_name,
+          cups_category: row.cups_category,
+          cups_price: row.cups_price
+        });
+      }
     }
     
     // Convertir objeto a array
@@ -1284,6 +1388,99 @@ router.post('/waiting-list/by-specialty', requireAuth, async (req: Request, res:
   }
 });
 
+// ===== OBTENER PACIENTES POR ESPECIALIDAD (LAZY LOAD) =====
+router.get('/waiting-list/specialty/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const specialtyId = Number(req.params.id);
+    const statusFilter = (req.query.status as string) || 'pending';
+
+    // Build query similar to main handler but filtered by specialty
+    let query = `
+      SELECT 
+        wl.id,
+        wl.patient_id,
+        wl.specialty_id AS wl_specialty_id,
+        wl.availability_id AS wl_availability_id,
+        wl.scheduled_date,
+        wl.priority_level,
+        wl.call_type,
+        wl.created_at,
+        wl.status,
+        wl.reason,
+        wl.notes,
+        wl.cups_id,
+        p.name AS patient_name,
+        p.phone AS patient_phone,
+        p.document AS patient_document,
+        p.birth_date AS birth_date,
+        p.gender AS patient_gender,
+        p.insurance_eps_id AS eps_id,
+        eps.name AS eps_name,
+        COALESCE(s_direct.name, s_avail.name) AS specialty_name,
+        COALESCE(s_direct.id, s_avail.id) AS specialty_id,
+        d.name AS doctor_name,
+        l.name AS location_name,
+        a.date AS appointment_date,
+        a.start_time,
+        c.code AS cups_code,
+        c.name AS cups_name,
+        c.category AS cups_category,
+        c.price AS cups_price
+      FROM appointments_waiting_list wl
+      INNER JOIN patients p ON wl.patient_id = p.id
+      LEFT JOIN eps ON p.insurance_eps_id = eps.id
+      LEFT JOIN specialties s_direct ON wl.specialty_id = s_direct.id
+      LEFT JOIN availabilities a ON wl.availability_id = a.id
+      LEFT JOIN specialties s_avail ON a.specialty_id = s_avail.id
+      LEFT JOIN doctors d ON a.doctor_id = d.id
+      LEFT JOIN locations l ON a.location_id = l.id
+      LEFT JOIN cups c ON wl.cups_id = c.id
+      WHERE (wl.specialty_id = ? OR a.specialty_id = ?) AND wl.status = ?
+      ORDER BY wl.created_at
+    `;
+
+    const params = [specialtyId, specialtyId, statusFilter];
+    const [rows]: any = await pool.query(query, params);
+
+    const patients = rows.map((row: any, index: number) => ({
+      id: row.id,
+      patient_id: row.patient_id,
+      patient_name: row.patient_name,
+      patient_phone: row.patient_phone,
+      patient_document: row.patient_document,
+      patient_gender: row.patient_gender,
+      birth_date: row.birth_date,
+      eps_id: row.eps_id,
+      eps_name: row.eps_name,
+      scheduled_date: row.scheduled_date,
+      priority_level: row.priority_level,
+      call_type: row.call_type,
+      status: row.status,
+      created_at: row.created_at,
+      reason: row.reason,
+      notes: row.notes,
+      doctor_name: row.doctor_name || 'Sin asignar',
+      location_name: row.location_name || 'Sin asignar',
+      appointment_date: row.appointment_date,
+      start_time: row.start_time,
+      queue_position: index + 1,
+      organized_by: row.wl_specialty_id ? 'specialty' : 'availability',
+      wl_specialty_id: row.wl_specialty_id,
+      wl_availability_id: row.wl_availability_id,
+      cups_id: row.cups_id,
+      cups_code: row.cups_code,
+      cups_name: row.cups_name,
+      cups_category: row.cups_category,
+      cups_price: row.cups_price
+    }));
+
+    return res.json({ success: true, data: { specialty_id: specialtyId, patients, total_waiting: patients.length } });
+  } catch (error: any) {
+    console.error('[WAITING-LIST-BY-SPECIALTY] Error:', error);
+    return res.status(500).json({ success: false, message: 'Error obteniendo pacientes por especialidad', error: error.message });
+  }
+});
+
 // DELETE - Eliminar paciente de la lista de espera
 router.delete('/waiting-list/:id', requireAuth, async (req: Request, res: Response) => {
   const waitingListId = Number(req.params.id);
@@ -1418,6 +1615,73 @@ router.patch('/waiting-list/:id/cups', requireAuth, async (req: Request, res: Re
     return res.status(500).json({
       success: false,
       message: 'Error al actualizar CUPS',
+      error: error.message
+    });
+  }
+});
+
+// PATCH - Actualizar prioridad de una solicitud en lista de espera
+router.patch('/waiting-list/:id/priority', requireAuth, async (req: Request, res: Response) => {
+  const waitingListId = Number(req.params.id);
+  const { priority_level } = req.body;
+
+  if (Number.isNaN(waitingListId)) {
+    return res.status(400).json({
+      success: false,
+      message: 'ID de lista de espera inválido'
+    });
+  }
+
+  // Validar priority_level
+  const validPriorities = ['Urgente', 'Alta', 'Normal', 'Baja'];
+  if (!priority_level || !validPriorities.includes(priority_level)) {
+    return res.status(400).json({
+      success: false,
+      message: `priority_level debe ser uno de: ${validPriorities.join(', ')}`
+    });
+  }
+
+  try {
+    // Verificar que el registro existe
+    const [existsCheck]: any = await pool.query(
+      'SELECT id, patient_id, priority_level FROM appointments_waiting_list WHERE id = ?',
+      [waitingListId]
+    );
+
+    if (!existsCheck || existsCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Registro no encontrado en lista de espera'
+      });
+    }
+
+    const oldPriority = existsCheck[0].priority_level;
+
+    // Actualizar priority_level
+    await pool.query(
+      'UPDATE appointments_waiting_list SET priority_level = ?, updated_at = NOW() WHERE id = ?',
+      [priority_level, waitingListId]
+    );
+
+    // Obtener datos actualizados
+    const [updated]: any = await pool.query(
+      'SELECT id, patient_id, priority_level FROM appointments_waiting_list WHERE id = ?',
+      [waitingListId]
+    );
+
+    console.log(`[WAITING-LIST-PRIORITY] Prioridad actualizada para registro ID ${waitingListId}: ${oldPriority} → ${priority_level}`);
+
+    return res.status(200).json({
+      success: true,
+      message: `Prioridad actualizada de ${oldPriority} a ${priority_level}`,
+      data: updated[0]
+    });
+
+  } catch (error: any) {
+    console.error('[WAITING-LIST-PRIORITY] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al actualizar prioridad',
       error: error.message
     });
   }
@@ -1767,7 +2031,7 @@ router.post('/cancel-and-reassign', requireAuth, async (req: Request, res: Respo
     if (appointment.availability_id) {
       await connection.query(
         `UPDATE availabilities 
-         SET booked_slots = GREATEST(0, booked_slots - 1)
+         SET booked_slots = IF(booked_slots > 0, booked_slots - 1, 0)
          WHERE id = ?`,
         [appointment.availability_id]
       );
@@ -1899,6 +2163,167 @@ router.post('/cancel-and-reassign', requireAuth, async (req: Request, res: Respo
     return res.status(500).json({
       success: false,
       message: 'Error al cancelar cita',
+      error: error.message
+    });
+  }
+});
+
+// 📊 Estadísticas de la lista de espera
+router.get('/waiting-list/statistics', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { startDate, endDate } = req.query;
+    
+    // Filtros de fecha
+    let dateFilter = '';
+    const params: any[] = [];
+    
+    if (startDate && endDate) {
+      dateFilter = 'WHERE DATE(awl.created_at) BETWEEN ? AND ?';
+      params.push(startDate, endDate);
+    } else if (startDate) {
+      dateFilter = 'WHERE DATE(awl.created_at) >= ?';
+      params.push(startDate);
+    } else if (endDate) {
+      dateFilter = 'WHERE DATE(awl.created_at) <= ?';
+      params.push(endDate);
+    }
+
+    // 1. Estadísticas por canal (requested_by)
+    const [channelStats] = await pool.query(`
+      SELECT 
+        COALESCE(requested_by, 'Sin especificar') as channel,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      ${dateFilter}
+      GROUP BY requested_by
+      ORDER BY total DESC
+    `, params);
+
+    // 2. Estadísticas por especialidad
+    const [specialtyStats] = await pool.query(`
+      SELECT 
+        s.name as specialty,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      LEFT JOIN specialties s ON awl.specialty_id = s.id
+      ${dateFilter}
+      GROUP BY s.id, s.name
+      ORDER BY total DESC
+    `, params);
+
+    // 3. Estadísticas por género
+    const [genderStats] = await pool.query(`
+      SELECT 
+        p.gender,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      INNER JOIN patients p ON awl.patient_id = p.id
+      ${dateFilter}
+      GROUP BY p.gender
+      ORDER BY total DESC
+    `, params);
+
+    // 4. Estadísticas por prioridad
+    const [priorityStats] = await pool.query(`
+      SELECT 
+        priority_level,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      ${dateFilter}
+      GROUP BY priority_level
+      ORDER BY 
+        CASE priority_level
+          WHEN 'Urgente' THEN 1
+          WHEN 'Alta' THEN 2
+          WHEN 'Normal' THEN 3
+          WHEN 'Baja' THEN 4
+        END
+    `, params);
+
+    // 5. Estadísticas por estado
+    const [statusStats] = await pool.query(`
+      SELECT 
+        status,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      ${dateFilter}
+      GROUP BY status
+      ORDER BY total DESC
+    `, params);
+
+    // 6. Estadísticas diarias (últimos 30 días o rango especificado)
+    const [dailyStats] = await pool.query(`
+      SELECT 
+        DATE(created_at) as date,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      ${dateFilter}
+      GROUP BY DATE(created_at)
+      ORDER BY date DESC
+      LIMIT 30
+    `, params);
+
+    // 7. Estadísticas por tipo de llamada
+    const [callTypeStats] = await pool.query(`
+      SELECT 
+        call_type,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      ${dateFilter}
+      GROUP BY call_type
+      ORDER BY total DESC
+    `, params);
+
+    // 8. Estadísticas por Especialidad y EPS
+    const [specialtyEpsStats] = await pool.query(`
+      SELECT 
+        s.name as specialty,
+        s.id as specialty_id,
+        eps.name as eps_name,
+        eps.id as eps_id,
+        COUNT(*) as total
+      FROM appointments_waiting_list awl
+      INNER JOIN patients p ON awl.patient_id = p.id
+      LEFT JOIN specialties s ON awl.specialty_id = s.id
+      LEFT JOIN eps ON p.insurance_eps_id = eps.id
+      ${dateFilter}
+      ${dateFilter ? 'AND' : 'WHERE'} s.id IS NOT NULL
+      GROUP BY s.id, s.name, eps.id, eps.name
+      ORDER BY s.name, total DESC
+    `, params);
+
+    // 9. Totales generales
+    const [totals] = await pool.query(`
+      SELECT 
+        COUNT(*) as total_requests,
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+        COUNT(CASE WHEN status = 'reassigned' THEN 1 END) as reassigned,
+        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled,
+        COUNT(CASE WHEN status = 'expired' THEN 1 END) as expired
+      FROM appointments_waiting_list awl
+      ${dateFilter}
+    `, params);
+
+    return res.json({
+      success: true,
+      data: {
+        totals: Array.isArray(totals) ? totals[0] : {},
+        byChannel: channelStats,
+        bySpecialty: specialtyStats,
+        byGender: genderStats,
+        byPriority: priorityStats,
+        byStatus: statusStats,
+        byCallType: callTypeStats,
+        bySpecialtyEps: specialtyEpsStats,
+        daily: dailyStats
+      }
+    });
+
+  } catch (error: any) {
+    console.error('[WAITING-LIST-STATS] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al obtener estadísticas',
       error: error.message
     });
   }

@@ -304,6 +304,13 @@ export const api = {
       `/doctors/${doctorId}/locations`, 
       { method: 'PUT', body: { location_ids } }
     ),
+  setDoctorPassword: (doctorId: number, password: string) =>
+    request<{ success: boolean; message: string; doctor: any }>(
+      `/doctors/${doctorId}/set-password`,
+      { method: 'POST', body: { password } }
+    ),
+  checkDoctorHasPassword: (doctorId: number) =>
+    request<{ hasPassword: boolean }>(`/doctors/${doctorId}/has-password`),
   
   // Especialidades
   getSpecialties: () => request<unknown[]>(`/specialties`),
@@ -434,6 +441,13 @@ export const api = {
   deleteAvailability: (id: number) => 
     request<void>(`/availabilities/${id}`, { method: 'DELETE' }),
   
+  /**
+   * Toggle pause/resume availability
+   * Pauses or resumes an availability by blocking/unblocking slots
+   */
+  togglePauseAvailability: (id: number) =>
+    request<ApiResponse<{ action: 'paused' | 'resumed'; slots_blocked?: number; slots_freed?: number }>>(`/availabilities/${id}/toggle-pause`, { method: 'POST' }),
+  
   // Distribución de disponibilidades
   getAvailabilityDistribution: (availabilityId: number) => 
     request<unknown>(`/availabilities/${availabilityId}/distribution`),
@@ -531,16 +545,38 @@ export const api = {
   // Citas
   /**
    * Get appointments with optional filters
+   * Ahora soporta include_cancelled para mostrar/ocultar citas canceladas
    */
-  getAppointments: (params?: { status?: string; date?: string; availability_id?: number; start_date?: string; end_date?: string }) => {
+  getAppointments: (params?: { 
+    status?: string; 
+    date?: string; 
+    availability_id?: number; 
+    start_date?: string; 
+    end_date?: string;
+    include_cancelled?: 'true' | 'false';
+  }) => {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set('status', params.status);
     if (params?.date) searchParams.set('date', params.date);
     if (params?.start_date) searchParams.set('start_date', params.start_date);
     if (params?.end_date) searchParams.set('end_date', params.end_date);
     if (typeof params?.availability_id === 'number') searchParams.set('availability_id', String(params.availability_id));
+    if (params?.include_cancelled) searchParams.set('include_cancelled', params.include_cancelled);
     const qs = searchParams.toString();
     return request<unknown[]>(`/appointments${qs ? `?${qs}` : ''}`);
+  },
+  
+  /**
+   * Get appointments using doctor endpoint (filters cancelled and SISTEMA-PAUSA automatically)
+   * More reliable for availability modals and doctor views
+   */
+  getAppointmentsFiltered: (params?: { date?: string; availability_id?: number; include_cancelled?: 'true' | 'false' }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.date) searchParams.set('date', params.date);
+    if (typeof params?.availability_id === 'number') searchParams.set('availability_id', String(params.availability_id));
+    if (params?.include_cancelled) searchParams.set('include_cancelled', params.include_cancelled);
+    const qs = searchParams.toString();
+    return request<{ success: boolean; data: { appointments: unknown[] } }>(`/doctor-auth/appointments${qs ? `?${qs}` : ''}`).then(res => res.data.appointments);
   },
   getAppointmentsSummary: (start: string, end: string) =>
     request<{ 
@@ -1110,7 +1146,8 @@ export const api = {
   }>(`/availabilities/filters/options`),
 
   // Cola de espera de citas
-  getWaitingList: () => 
+  // summary?: when true returns only specialty summary and counts (no patient details)
+  getWaitingList: (summary?: boolean) => 
     request<{ 
       success: boolean; 
       data: Array<{
@@ -1145,7 +1182,14 @@ export const api = {
           baja: number;
         };
       };
-    }>(`/appointments/waiting-list`),
+    }>(`/appointments/waiting-list${summary ? '?summary=true' : ''}`),
+
+  // Obtener pacientes de una especialidad (lazy load)
+  getWaitingListBySpecialty: (specialty_id: number) =>
+    request<{
+      success: boolean;
+      data: { specialty_id: number; patients: Array<any>; total_waiting: number };
+    }>(`/appointments/waiting-list/specialty/${specialty_id}`),
 
   // Eliminar paciente de la cola de espera
   deleteWaitingListEntry: (id: number) =>
@@ -1169,6 +1213,18 @@ export const api = {
         cups_category: string | null;
       };
     }>(`/appointments/waiting-list/${id}/cups`, { method: 'PATCH', body: { cups_id } }),
+
+  // Actualizar prioridad de una solicitud en lista de espera
+  updateWaitingListPriority: (id: number, priority_level: string) =>
+    request<{
+      success: boolean;
+      message: string;
+      data: {
+        id: number;
+        patient_id: number;
+        priority_level: string;
+      };
+    }>(`/appointments/waiting-list/${id}/priority`, { method: 'PATCH', body: { priority_level } }),
 
   // Obtener agendas disponibles con cupos (para asignación desde lista de espera)
   getAvailableAgendas: (specialtyId?: number) =>
@@ -1298,10 +1354,17 @@ export const api = {
   },
 
   // Obtener consultas telefónicas de ElevenLabs
-  async getElevenLabsConsultations(params?: { page_size?: number; cursor?: string }) {
+  async getElevenLabsConsultations(params?: { 
+    page_size?: number; 
+    cursor?: string;
+    start_date?: string;
+    end_date?: string;
+  }) {
     const queryParams = new URLSearchParams();
     if (params?.page_size) queryParams.append('page_size', params.page_size.toString());
     if (params?.cursor) queryParams.append('cursor', params.cursor);
+    if (params?.start_date) queryParams.append('start_date', params.start_date);
+    if (params?.end_date) queryParams.append('end_date', params.end_date);
     
     return this.get<{
       success: boolean;
@@ -1424,6 +1487,43 @@ export const api = {
         updated: boolean;
       };
     }>(`/availabilities/${availabilityId}/sync-slots`, {});
+  },
+
+  // ===== ELEVENLABS LLAMADAS =====
+  
+  // Iniciar llamada con ElevenLabs
+  async initiateElevenLabsCall(data: {
+    phoneNumber: string;
+    patientId?: number;
+    patientName?: string;
+    appointmentId?: number;
+    agentId?: string;
+    metadata?: Record<string, any>;
+    customVariables?: Record<string, string>;
+  }) {
+    return this.post<{
+      success: boolean;
+      data: {
+        call_id: string;
+        status: string;
+        phone_number: string;
+        patient_id?: number;
+      };
+      message: string;
+    }>('/elevenlabs/call', data);
+  },
+
+  // Obtener agentes de ElevenLabs
+  async getElevenLabsAgents() {
+    return this.get<{
+      success: boolean;
+      data: Array<{
+        agent_id: string;
+        name: string;
+        description?: string;
+      }>;
+      count: number;
+    }>('/elevenlabs/agents');
   }
 };
 

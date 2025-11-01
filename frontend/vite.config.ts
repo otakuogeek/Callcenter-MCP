@@ -20,6 +20,18 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 1000,
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: false,
+        drop_debugger: false,
+      },
+      mangle: {
+        keep_classnames: true,
+        keep_fnames: true,
+      }
+    },
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: (id) => {

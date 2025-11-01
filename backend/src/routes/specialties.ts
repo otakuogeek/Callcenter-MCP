@@ -14,7 +14,7 @@ const schema = z.object({
 
 router.get('/', requireAuth, async (_req: Request, res: Response) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM specialties ORDER BY name ASC');
+    const [rows] = await pool.query('SELECT * FROM specialties WHERE active = 1 ORDER BY name ASC');
     return res.json(rows);
   } catch (e: any) {
     if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {

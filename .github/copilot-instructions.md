@@ -14,6 +14,7 @@ This is a **modular medical management system** with three main components:
 - **React Router 6** with protected routes via `ProtectedRoute` wrapper
 - **TanStack Query** for server state management
 - **React Hook Form + Zod** validation pattern for all forms
+- **React.lazy + Suspense** for code splitting - all pages loaded on demand via `App.tsx`
 - **Modular patient management** system with 6 specialized components (4-6 fields each)
 
 ```tsx
@@ -21,6 +22,10 @@ This is a **modular medical management system** with three main components:
 const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
   resolver: zodResolver(schema)
 });
+
+// Lazy loading pattern (App.tsx)
+const Queue = lazy(() => import("./pages/Queue"));
+<Route path="/queue" element={<Suspense fallback={<LoadingScreen />}><Queue /></Suspense>} />
 ```
 
 ### Backend (`/backend/`)
@@ -29,10 +34,15 @@ const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
 - **JWT authentication** with protected routes middleware pattern
 - **File uploads** handled via multer to `/uploads` directory
 - **PM2 ecosystem** configuration for production deployment
+- **In-memory caching** for analytics endpoints (60s TTL) - see `analytics.ts`
 
 ```typescript
 // Standard API route pattern
 app.use('/api/patients', authenticateToken, patientRoutes);
+
+// Caching pattern for heavy queries
+const ANALYTICS_TTL_MS = 60_000;
+const analyticsCache = new Map<string, { ts: number; data: any }>();
 ```
 
 ### MCP Servers Integration
@@ -45,13 +55,19 @@ app.use('/api/patients', authenticateToken, patientRoutes);
 
 ### Frontend Development
 ```bash
-cd frontend && npm run dev    # Vite dev server on port 5173
-npm run build                 # Production build with type checking
+cd frontend && npm run dev    # Vite dev server on port 8080 (not 5173!)
+npm run build                 # Production build with type checking (~17s)
 ```
+
+**Build Configuration** (`vite.config.ts`):
+- Manual chunks: `vendor`, `pages`, `components`
+- Bundle warning limit: 1000 kB
+- Server/preview ports: 8080
 
 ### Backend Development  
 ```bash
 cd backend && npm run dev     # ts-node-dev with auto-reload
+npm run build                 # TypeScript compilation to dist/
 npm run db:init              # Initialize database with schema
 npm run db:seed              # Create admin user (SEED_ADMIN_* env vars)
 npm run db:check             # Test MySQL connection
@@ -59,17 +75,75 @@ npm run db:check             # Test MySQL connection
 
 ### Critical Environment Variables
 ```env
-# Backend
+# Backend (.env in /backend/)
 DB_HOST=127.0.0.1
 DB_USER=biosanar_user  
 DB_NAME=biosanar
 JWT_SECRET=your_secret
-CORS_ORIGINS=https://biosanarcall.site
+CORS_ORIGINS=https://biosanarcall.site,https://www.biosanarcall.site
+CALL_ARCHIVE_DAYS=30
+ENABLE_FULLTEXT_SEARCH=true
+PATIENT_SEARCH_CACHE_TTL_MS=5000
 
 # MCP Servers
 BACKEND_BASE=http://127.0.0.1:4000/api
 BACKEND_TOKEN=jwt_token_here
 ```
+
+## Performance Optimizations (Critical!)
+
+### Waiting List Queue Performance
+The `/queue` page implements **three-tier optimization** for handling 785+ patients:
+
+1. **Summary Mode** (Initial Load):
+```typescript
+// Backend: GET /api/appointments/waiting-list?summary=true
+// Returns only metadata, no patient arrays (~90% payload reduction)
+const response = await api.getWaitingList(true); // summary=true
+```
+
+2. **Lazy Loading per Specialty**:
+```typescript
+// Backend: GET /api/appointments/waiting-list/specialty/:id
+// Loads patients only when accordion is expanded
+const handleAccordionChange = async (values: string[]) => {
+  const newlyOpened = values.filter(v => !expandedSpecialties.includes(v));
+  for (const val of newlyOpened) {
+    const resp = await api.getWaitingListBySpecialty(specialtyId);
+    // Update state with fetched patients
+  }
+};
+```
+
+3. **Virtualization with react-window**:
+```typescript
+// VirtualizedPatientList.tsx - renders only visible items
+import { List } from 'react-window';
+
+<List
+  rowComponent={Row}
+  rowCount={patients.length}
+  rowHeight={180}
+  rowProps={{ patients, /* all handlers */ }}
+  style={{ height: maxHeight }}
+/>
+```
+
+**Important**: Props MUST be passed via `rowProps` object, not closures:
+```typescript
+// ✅ CORRECT
+const rowProps = { patients, handleChangePriority, handleCallPatient, /* ... */ };
+<List rowProps={rowProps} />
+
+// ❌ WRONG - causes "undefined" errors
+const Row = () => { handleChangePriority(...) }; // closure won't work
+```
+
+### Bundle Size Management
+- Vendor chunk: ~2.36 MB (TanStack Query, React Router, shadcn/ui)
+- Pages chunk: ~233 KB
+- Components chunk: ~625 KB
+- Use dynamic imports for heavy features (PDF export, charts)
 
 ## Component Patterns & Conventions
 
@@ -94,7 +168,7 @@ All pages use consistent layout with sidebar:
 </SidebarProvider>
 ```
 
-### API Client Pattern
+### API Client Pattern (`/frontend/src/lib/api.ts`)
 Use centralized error handling for 401/404 responses:
 ```typescript
 // Handle expired JWT gracefully
@@ -111,8 +185,12 @@ Use centralized error handling for 401/404 responses:
 ### Route Structure
 - `/api/auth/*` - Authentication endpoints
 - `/api/patients/*` - Patient CRUD operations
-- `/api/appointments/*` - Scheduling system
+- `/api/appointments/*` - Scheduling system + waiting list
+  - `/api/appointments/waiting-list` - Summary mode support
+  - `/api/appointments/waiting-list/specialty/:id` - Lazy load endpoint
 - `/api/lookups/*` - Reference data (municipalities, EPS, etc.)
+- `/api/daily-queue` - Daily queue management with specialty filter
+- `/api/analytics/*` - Analytics with in-memory cache (60s TTL)
 
 ### Standard Response Format
 ```typescript
@@ -123,20 +201,17 @@ Use centralized error handling for 401/404 responses:
 { success: false, error: string, details?: any }
 ```
 
-## MCP Integration Points
+### Waiting List Data Structure
+The `appointments_waiting_list` table supports **two organization modes**:
 
-### Tool Categories (24 total)
-- **Patient Management**: Search, create, update patients
-- **Appointment System**: Schedule, modify, cancel appointments  
-- **Analytics**: Daily summaries, statistics, reports
-- **Notifications**: Send confirmations, reminders
-- **File Operations**: Upload documents, export data
+```sql
+-- Mode 1: By Specialty (flexible, any doctor/location)
+specialty_id: NOT NULL, availability_id: NULL
 
-### MCP Client Configuration
-```yaml
-# For ElevenLabs or other AI agents
-server_url: "https://biosanarcall.site/mcp-py-simple"
-description: "Medical management with voice optimization (9 core tools)"
+-- Mode 2: By Specific Availability (tied to doctor/location)
+availability_id: NOT NULL, specialty_id: NULL (or matches availability)
+
+-- Queue position calculated by specialty_id + priority + FIFO
 ```
 
 ## Deployment & Production
@@ -144,20 +219,37 @@ description: "Medical management with voice optimization (9 core tools)"
 ### PM2 Configuration
 Both backend and MCP servers use PM2 with ecosystem files:
 ```javascript
-// Standard PM2 app config
+// backend/ecosystem.config.js
 {
-  name: 'app-name',
-  script: 'dist/server.js',
+  name: 'cita-central-backend',
+  script: 'dist/src/server.js',
   env: { NODE_ENV: 'production', PORT: 4000 },
-  max_memory_restart: '300M'
+  max_memory_restart: '300M',
+  out_file: 'logs/out.log',
+  error_file: 'logs/error.log'
 }
+
+// Commands
+pm2 start ecosystem.config.js
+pm2 restart cita-central-backend  # After npm run build
+pm2 logs cita-central-backend     # View logs
 ```
 
 ### Nginx Integration
-- Frontend served as static files
+- Frontend served as static files from `frontend/dist/`
 - Backend proxied to port 4000
 - MCP servers on separate endpoints
 - SSL/HTTPS required for production
+
+### Build & Deploy Workflow
+```bash
+# Backend
+cd backend && npm run build && pm2 restart cita-central-backend
+
+# Frontend
+cd frontend && npm run build
+# Files output to dist/ → sync to Nginx root
+```
 
 ## Common Troubleshooting
 
@@ -165,20 +257,36 @@ Both backend and MCP servers use PM2 with ecosystem files:
 - **404 API Endpoints**: Some statistics endpoints may not be implemented - use graceful fallbacks
 - **CORS Issues**: Verify `CORS_ORIGINS` environment variable includes your domain
 - **Database Connection**: Use `npm run db:check` to verify MySQL connectivity
+- **"handleChangePriority is not defined"**: Ensure props passed via `rowProps` in react-window List
+- **Slow queue loading**: Check if summary mode is enabled (`?summary=true`)
+- **Bundle warnings**: Expected for vendor chunk >1MB, not critical
 
 ## Testing Patterns
 
 ```bash
 # Backend feature testing
-npm run test:features
+cd backend && npm run test:features
 
 # MCP server testing  
 curl -X POST https://biosanarcall.site/mcp-py-simple \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
+
+# Frontend build test
+cd frontend && npm run build # Should complete in ~17s
 ```
 
-Remember: This system prioritizes **modular architecture**, **security-first design**, and **AI agent integration** through MCP protocol.
+## Key Files Reference
+
+- **Frontend Entry**: `/frontend/src/App.tsx` - All lazy-loaded routes
+- **API Client**: `/frontend/src/lib/api.ts` - Centralized API calls
+- **Virtualized List**: `/frontend/src/components/VirtualizedPatientList.tsx` - react-window implementation
+- **Queue Page**: `/frontend/src/pages/Queue.tsx` - Summary mode + lazy load logic
+- **Backend Routes**: `/backend/src/routes/appointments.ts` - Waiting list endpoints (lines 811-1400)
+- **Vite Config**: `/frontend/vite.config.ts` - Build optimization settings
+- **PM2 Config**: `/backend/ecosystem.config.js` - Production deployment
+
+Remember: This system prioritizes **modular architecture**, **security-first design**, **performance optimization**, and **AI agent integration** through MCP protocol.
 
 Flujo de Trabajo Detallado
 PASO 1: Saludo e Inicio Inmediato del Agendamiento

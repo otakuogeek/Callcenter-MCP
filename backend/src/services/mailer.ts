@@ -18,15 +18,30 @@ function getTransporter(): any {
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
   const secure = String(process.env.SMTP_SECURE || '').toLowerCase() === 'true';
-  if (!host || !user || !pass) {
-    throw new Error('SMTP not configured');
+  
+  if (!host || !user) {
+    throw new Error('SMTP not configured: SMTP_HOST and SMTP_USER are required');
   }
-  transporter = nodemailer.createTransport({
+  
+  // Configuración del transporter
+  const config: any = {
     host,
     port,
     secure,
-    auth: { user, pass },
-  });
+  };
+  
+  // Solo agregar autenticación si hay contraseña configurada
+  if (pass) {
+    config.auth = { user, pass };
+  } else {
+    // Para servidores locales sin autenticación (como Postfix local)
+    config.ignoreTLS = true;
+    config.tls = {
+      rejectUnauthorized: false
+    };
+  }
+  
+  transporter = nodemailer.createTransport(config);
   return transporter;
 }
 

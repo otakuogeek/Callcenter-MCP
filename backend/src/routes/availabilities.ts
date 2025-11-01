@@ -22,6 +22,7 @@ const schema = z.object({
   specialty_id: z.number().int(),
   doctor_id: z.number().int(),
   date: z.string(),
+  dates: z.array(z.string()).optional(), // 🔥 NUEVO: Array de fechas para creación múltiple
   start_time: z.string(),
   end_time: z.string(),
   capacity: z.number().int().min(1).default(1),
@@ -59,9 +60,8 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       params.push(specialtyId);
     }
     
-    // Mostrar agendas activas y completas (para visualizar las asignaciones)
-    // Excluir solo las canceladas
-    whereClause += ' AND a.status IN ("Activa", "Completa")';
+    // Mostrar solo agendas activas (no canceladas, no pausadas)
+    whereClause += ' AND a.status IN ("Activa", "Completa") AND (a.is_paused = 0 OR a.is_paused IS NULL)';
     
     console.log('[AVAILABILITIES] Query params:', { date, specialtyId, whereClause, params });
     
@@ -78,6 +78,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
               GREATEST(0, CAST(a.capacity AS SIGNED) - CAST(a.booked_slots AS SIGNED)) AS available_slots,
               a.duration_minutes,
               a.status,
+              a.is_paused,
               a.created_at,
               d.name AS doctor_name, 
               s.name AS specialty_name, 
@@ -118,94 +119,131 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   };
   const dbStatus = statusMap[d.status] || 'Activa';
   
-  // Validar que no sea sábado ni domingo
-  // Usar formato ISO local para evitar problemas de zona horaria
-  const appointmentDate = new Date(d.date + 'T12:00:00');
-  const dayOfWeek = appointmentDate.getDay(); // 0 = Domingo, 6 = Sábado
+  // 🔥 NUEVO: Determinar las fechas a procesar
+  const datesToProcess = d.dates && d.dates.length > 0 ? d.dates : [d.date];
   
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    return res.status(400).json({ 
-      message: 'No se pueden crear disponibilidades en fines de semana (sábados y domingos)',
-      error: 'weekend_not_allowed'
-    });
+  // 🔥 COMENTADO: Permitir agendas en fines de semana
+  /*
+  // Validar que no sean sábados ni domingos
+  const weekendDates: string[] = [];
+  for (const dateStr of datesToProcess) {
+    const appointmentDate = new Date(dateStr + 'T12:00:00');
+    const dayOfWeek = appointmentDate.getDay(); // 0 = Domingo, 6 = Sábado
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      weekendDates.push(dateStr);
+    }
   }
   
+  if (weekendDates.length > 0) {
+    return res.status(400).json({ 
+      message: `Las siguientes fechas son fines de semana y no se pueden usar: ${weekendDates.join(', ')}`,
+      error: 'weekend_not_allowed',
+      invalidDates: weekendDates
+    });
+  }
+  */
+  
   try {
-    const [result] = await pool.query(
-      `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, duration_minutes, booked_slots, status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-      [d.location_id, d.specialty_id, d.doctor_id, d.date, d.start_time, d.end_time, d.capacity, d.duration_minutes ?? 30, dbStatus, d.notes ?? null]
-    );
-    // @ts-ignore
-    const availabilityId = result.insertId as number;
-
-    let preallocation: any = null;
-    if (d.auto_preallocate) {
+    const createdAvailabilities: any[] = [];
+    const errors: any[] = [];
+    
+    // 🔥 NUEVO: Crear una agenda por cada fecha
+    for (const dateStr of datesToProcess) {
       try {
-        const { generateRandomPreallocation } = await import('../utils/randomPreallocation');
-        preallocation = await generateRandomPreallocation({
-          target_date: d.date,
-          total_slots: d.capacity,
-          publish_date: d.preallocation_publish_date,
-          doctor_id: d.doctor_id,
-          location_id: d.location_id,
-          specialty_id: d.specialty_id,
-          availability_id: availabilityId,
-          apply: true
+        const [result] = await pool.query(
+          `INSERT INTO availabilities (location_id, specialty_id, doctor_id, date, start_time, end_time, capacity, duration_minutes, booked_slots, status, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+          [d.location_id, d.specialty_id, d.doctor_id, dateStr, d.start_time, d.end_time, d.capacity, d.duration_minutes ?? 30, dbStatus, d.notes ?? null]
+        );
+        // @ts-ignore
+        const availabilityId = result.insertId as number;
+
+        let preallocation: any = null;
+        if (d.auto_preallocate) {
+          try {
+            const { generateRandomPreallocation } = await import('../utils/randomPreallocation');
+            preallocation = await generateRandomPreallocation({
+              target_date: dateStr,
+              total_slots: d.capacity,
+              publish_date: d.preallocation_publish_date,
+              doctor_id: d.doctor_id,
+              location_id: d.location_id,
+              specialty_id: d.specialty_id,
+              availability_id: availabilityId,
+              apply: true
+            });
+          } catch (e) {
+            console.warn(`Fallo preallocation automática para ${dateStr}:`, e);
+          }
+        }
+
+        // Distribución automática de cupos
+        let distribution: any = null;
+        if (d.auto_distribute && d.distribution_start_date && d.distribution_end_date) {
+          try {
+            const { generateAvailabilityDistribution } = await import('../utils/availabilityDistribution');
+            distribution = await generateAvailabilityDistribution({
+              availability_id: availabilityId,
+              start_date: d.distribution_start_date,
+              end_date: d.distribution_end_date,
+              total_quota: d.capacity,
+              exclude_weekends: d.exclude_weekends ?? true
+            });
+          } catch (e) {
+            console.warn(`Fallo distribución automática para ${dateStr}:`, e);
+          }
+        } else {
+          // Si NO se activa la distribución automática, asignar toda la capacidad al día de la cita
+          try {
+            const { generateAvailabilityDistribution } = await import('../utils/availabilityDistribution');
+            distribution = await generateAvailabilityDistribution({
+              availability_id: availabilityId,
+              start_date: dateStr, // Mismo día de la cita
+              end_date: dateStr,   // Mismo día de la cita
+              total_quota: d.capacity,
+              exclude_weekends: true
+            });
+          } catch (e) {
+            console.warn(`Fallo distribución automática del día de la cita para ${dateStr}:`, e);
+          }
+        }
+
+        createdAvailabilities.push({
+          id: availabilityId,
+          date: dateStr,
+          preallocation,
+          distribution
         });
-      } catch (e) {
-        console.warn('Fallo preallocation automática:', e);
+      } catch (e: any) {
+        console.error(`[CREATE-AVAILABILITY] Error creando agenda para ${dateStr}:`, e);
+        errors.push({
+          date: dateStr,
+          error: e?.message || 'Error desconocido',
+          details: e?.sqlMessage || e?.toString()
+        });
       }
     }
 
-    // Nueva funcionalidad: Distribución automática de cupos
-    let distribution: any = null;
-    if (d.auto_distribute && d.distribution_start_date && d.distribution_end_date) {
-      try {
-        const { generateAvailabilityDistribution } = await import('../utils/availabilityDistribution');
-        distribution = await generateAvailabilityDistribution({
-          availability_id: availabilityId,
-          start_date: d.distribution_start_date,
-          end_date: d.distribution_end_date,
-          total_quota: d.capacity,
-          exclude_weekends: d.exclude_weekends ?? true
-        });
-      } catch (e) {
-        console.warn('Fallo distribución automática:', e);
-        return res.status(400).json({ 
-          message: 'Error en distribución automática', 
-          error: e instanceof Error ? e.message : 'Error desconocido' 
-        });
-      }
-    } else {
-      // Si NO se activa la distribución automática, asignar toda la capacidad al día de la cita
-      try {
-        const { generateAvailabilityDistribution } = await import('../utils/availabilityDistribution');
-        distribution = await generateAvailabilityDistribution({
-          availability_id: availabilityId,
-          start_date: d.date, // Mismo día de la cita
-          end_date: d.date,   // Mismo día de la cita
-          total_quota: d.capacity,
-          exclude_weekends: true // Siempre excluir fines de semana según reglas de negocio
-        });
-      } catch (e) {
-        console.warn('Fallo distribución automática del día de la cita:', e);
-        return res.status(400).json({ 
-          message: 'Error al asignar cupos al día de la cita', 
-          error: e instanceof Error ? e.message : 'Error desconocido' 
-        });
-      }
+    // Verificar si todas fallaron
+    if (createdAvailabilities.length === 0 && errors.length > 0) {
+      return res.status(500).json({ 
+        success: false,
+        message: 'No se pudo crear ninguna agenda', 
+        errors
+      });
     }
 
-  return res.status(201).json({ 
-    success: true, 
-    id: availabilityId, 
-    ...d, 
-    preallocation,
-    distribution 
-  });
+    // Respuesta exitosa con resumen
+    return res.status(201).json({ 
+      success: true,
+      message: `Se crearon ${createdAvailabilities.length} agenda(s) exitosamente`,
+      created: createdAvailabilities.length,
+      failed: errors.length,
+      availabilities: createdAvailabilities,
+      errors: errors.length > 0 ? errors : undefined
+    });
   } catch (e: any) {
-    console.error('[CREATE-AVAILABILITY] Error:', e);
+    console.error('[CREATE-AVAILABILITY] Error general:', e);
     return res.status(500).json({ 
       message: 'Server error', 
       error: e?.message || 'Unknown error',
@@ -326,23 +364,28 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   }
   
   try {
-    // 🔥 SI SE ESTÁ CANCELANDO LA AGENDA, MOVER CITAS A LISTA DE ESPERA
+    // 🔥 SI SE ESTÁ CANCELANDO LA AGENDA, PROCESAR CITAS ASOCIADAS
     if (d.status === 'cancelled') {
-      // Obtener todas las citas de esta agenda que NO están canceladas
-      const [appointments] = await pool.query(`
+      console.log(`🔄 Cancelando agenda ${id} - Procesando citas asociadas...`);
+      
+      // 1. Obtener citas Confirmadas/Pendientes (se moverán a lista de espera)
+      const [activeCitas] = await pool.query(`
         SELECT 
           a.id,
           a.patient_id,
           a.scheduled_at,
-          a.reason
+          a.reason,
+          a.status
         FROM appointments a
         WHERE a.availability_id = ? 
-          AND a.status NOT IN ('Cancelada', 'Completada')
+          AND a.status IN ('Confirmada', 'Pendiente')
       `, [id]) as any;
 
-      // Mover cada cita a la lista de espera con call_type='reagendar' y prioridad 'Alta'
-      if (Array.isArray(appointments) && appointments.length > 0) {
-        for (const apt of appointments) {
+      // 2. Mover citas activas a la lista de espera con call_type='reagendar'
+      if (Array.isArray(activeCitas) && activeCitas.length > 0) {
+        console.log(`📋 Moviendo ${activeCitas.length} citas activas a lista de espera...`);
+        
+        for (const apt of activeCitas) {
           await pool.query(`
             INSERT INTO appointments_waiting_list 
             (patient_id, availability_id, scheduled_date, reason, priority_level, call_type, status)
@@ -355,26 +398,62 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
           ]);
         }
 
-        // Eliminar las citas de la tabla appointments (DELETE no dispara el trigger de cancelación)
+        // Eliminar las citas activas de appointments
         await pool.query(`
           DELETE FROM appointments 
-          WHERE availability_id = ? AND status NOT IN ('Cancelada', 'Completada')
+          WHERE availability_id = ? AND status IN ('Confirmada', 'Pendiente')
         `, [id]);
 
-        console.log(`✅ ${appointments.length} citas movidas a lista de espera con tipo 'reagendar' y eliminadas de appointments`);
+        console.log(`✅ ${activeCitas.length} citas activas movidas a lista de espera y eliminadas de appointments`);
+      } else {
+        console.log(`ℹ️ No hay citas activas para mover a lista de espera`);
+      }
+
+      // 3. Eliminar citas canceladas directamente (sin mover a cola)
+      const [cancelledResult] = await pool.query(`
+        DELETE FROM appointments 
+        WHERE availability_id = ? AND status = 'Cancelada'
+      `, [id]) as any;
+
+      const cancelledCount = cancelledResult?.affectedRows || 0;
+      if (cancelledCount > 0) {
+        console.log(`🗑️ ${cancelledCount} citas canceladas eliminadas directamente`);
       }
     }
 
+    // Mapear estados del inglés (frontend/schema) al español (base de datos)
+    const statusMap: Record<string, string> = {
+      'active': 'Activa',
+      'cancelled': 'Cancelada',
+      'completed': 'Completa'
+    };
+
     const fields: string[] = []; const values: any[] = [];
-    for (const k of Object.keys(d) as (keyof typeof d)[]) { fields.push(`${k} = ?`); // @ts-ignore
-      values.push(d[k] ?? null); }
+    for (const k of Object.keys(d) as (keyof typeof d)[]) { 
+      fields.push(`${k} = ?`); 
+      // @ts-ignore - Mapear status si es necesario
+      const value = k === 'status' && typeof d[k] === 'string' 
+        ? (statusMap[d[k] as string] || d[k])
+        : d[k];
+      values.push(value ?? null);
+    }
     if (!fields.length) return res.status(400).json({ message: 'No changes' });
     values.push(id);
+    
+    console.log(`📝 Actualizando availability ${id} con valores:`, values);
     await pool.query(`UPDATE availabilities SET ${fields.join(', ')} WHERE id = ?`, values);
     return res.json({ id, ...d });
-  } catch (error) {
-    console.error('Error updating availability:', error);
-    return res.status(500).json({ message: 'Server error' });
+  } catch (error: any) {
+    console.error('❌ Error updating availability:', error);
+    console.error('❌ Error stack:', error.stack);
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Availability ID:', id);
+    console.error('❌ Data received:', JSON.stringify(d, null, 2));
+    return res.status(500).json({ 
+      message: 'Server error', 
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -1809,12 +1888,19 @@ router.get('/:id/available-for-reassignment', requireAuth, async (req: Request, 
 
 // Reasignar una cita a otra agenda
 router.post('/reassign-appointment', requireAuth, async (req: Request, res: Response) => {
+  console.log('[REASSIGN] ===== ENDPOINT LLAMADO =====');
+  console.log('[REASSIGN] Body completo:', JSON.stringify(req.body, null, 2));
+  console.log('[REASSIGN] Headers:', req.headers['content-type']);
+  
   const connection = await pool.getConnection();
   
   try {
     const { appointment_id, new_availability_id } = req.body;
 
+    console.log('[REASSIGN] Inicio de reasignación:', { appointment_id, new_availability_id });
+
     if (!appointment_id || !new_availability_id) {
+      console.log('[REASSIGN] Error: Faltan parámetros requeridos');
       return res.status(400).json({
         success: false,
         message: 'appointment_id y new_availability_id son requeridos'
@@ -1841,6 +1927,7 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
 
     if (!Array.isArray(appointmentRows) || appointmentRows.length === 0) {
       await connection.rollback();
+      console.log('[REASSIGN] Error: Cita no encontrada', appointment_id);
       return res.status(404).json({
         success: false,
         message: 'Cita no encontrada'
@@ -1848,10 +1935,17 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
     }
 
     const appointment = appointmentRows[0] as any;
+    console.log('[REASSIGN] Cita encontrada:', {
+      id: appointment.id,
+      patient: appointment.patient_name,
+      status: appointment.status,
+      old_availability_id: appointment.old_availability_id
+    });
 
     // Verificar que la cita esté confirmada o pendiente
     if (appointment.status === 'Cancelada' || appointment.status === 'Completada') {
       await connection.rollback();
+      console.log('[REASSIGN] Error: Cita no se puede reasignar, status:', appointment.status);
       return res.status(400).json({
         success: false,
         message: 'No se puede reasignar una cita cancelada o completada'
@@ -1967,7 +2061,7 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
     // Actualizar cupos de la agenda antigua (decrementar)
     await connection.execute(
       `UPDATE availabilities 
-       SET booked_slots = GREATEST(0, booked_slots - 1)
+       SET booked_slots = IF(booked_slots > 0, booked_slots - 1, 0)
        WHERE id = ?`,
       [appointment.old_availability_id]
     );
@@ -1975,7 +2069,7 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
     // Actualizar cupos de la nueva agenda (incrementar)
     await connection.execute(
       `UPDATE availabilities 
-       SET booked_slots = LEAST(capacity, booked_slots + 1)
+       SET booked_slots = IF(booked_slots < capacity, booked_slots + 1, capacity)
        WHERE id = ?`,
       [new_availability_id]
     );
@@ -2000,7 +2094,12 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
 
   } catch (error: any) {
     await connection.rollback();
-    console.error('Error reasignando cita:', error);
+    console.error('[REASSIGN] Error crítico reasignando cita:', {
+      error: error.message,
+      stack: error.stack,
+      appointment_id: req.body.appointment_id,
+      new_availability_id: req.body.new_availability_id
+    });
     return res.status(500).json({
       success: false,
       message: 'Error al reasignar la cita',
@@ -2168,18 +2267,9 @@ router.post('/:id/sync-slots', requireAuth, async (req: Request, res: Response) 
     
     console.log(`[SYNC] Sincronizando availability ${availabilityId}`);
     
-    // Contar citas confirmadas reales
-    const [countResult] = await connection.query(`
-      SELECT COUNT(*) as confirmed_count
-      FROM appointments
-      WHERE availability_id = ? AND status = 'Confirmada'
-    `, [availabilityId]);
-    
-    const realBookedSlots = (countResult as any[])[0].confirmed_count;
-    
-    // Obtener capacidad actual
+    // Obtener estado de la availability
     const [avResult] = await connection.query(`
-      SELECT capacity, booked_slots, status
+      SELECT capacity, booked_slots, status, is_paused
       FROM availabilities
       WHERE id = ?
     `, [availabilityId]);
@@ -2192,6 +2282,33 @@ router.post('/:id/sync-slots', requireAuth, async (req: Request, res: Response) 
     }
     
     const availability = avResult[0] as any;
+    
+    // Si la agenda está pausada, omitir la sincronización
+    if (availability.is_paused) {
+      console.log(`[SYNC] Availability ${availabilityId} está pausada - sincronización omitida`);
+      return res.json({
+        success: true,
+        message: 'Agenda pausada - sincronización omitida',
+        skipped: true,
+        data: {
+          availability_id: availabilityId,
+          is_paused: true,
+          booked_slots: availability.booked_slots,
+          capacity: availability.capacity,
+          status: availability.status
+        }
+      });
+    }
+    
+    // Contar citas confirmadas reales (excluyendo las pausadas)
+    const [countResult] = await connection.query(`
+      SELECT COUNT(*) as confirmed_count
+      FROM appointments
+      WHERE availability_id = ? AND status = 'Confirmada'
+    `, [availabilityId]);
+    
+    const realBookedSlots = (countResult as any[])[0].confirmed_count;
+    
     const newStatus = realBookedSlots >= availability.capacity ? 'Completa' : 'Activa';
     
     // Actualizar booked_slots y status
@@ -2224,6 +2341,270 @@ router.post('/:id/sync-slots', requireAuth, async (req: Request, res: Response) 
     return res.status(500).json({
       success: false,
       message: 'Error al sincronizar availability',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+/**
+ * POST /availabilities/:id/toggle-pause
+ * Pausar o reanudar una agenda
+ * - Pausar: Crea citas "fantasma" con estado "Pausada" para ocupar los cupos disponibles
+ * - Reanudar: Elimina las citas fantasma y libera los cupos
+ */
+router.post('/:id/toggle-pause', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const availabilityId = parseInt(req.params.id);
+    
+    if (!availabilityId || isNaN(availabilityId)) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'ID de agenda inválido'
+      });
+    }
+    
+    // Obtener información de la agenda
+    const [availabilityRows] = await connection.query(`
+      SELECT 
+        a.id,
+        a.date,
+        a.start_time,
+        a.end_time,
+        a.capacity,
+        a.booked_slots,
+        a.is_paused,
+        a.status,
+        a.doctor_id,
+        a.specialty_id,
+        a.location_id,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name
+      FROM availabilities a
+      LEFT JOIN doctors d ON a.doctor_id = d.id
+      LEFT JOIN specialties s ON a.specialty_id = s.id
+      LEFT JOIN locations l ON a.location_id = l.id
+      WHERE a.id = ?
+    `, [availabilityId]);
+    
+    if (!Array.isArray(availabilityRows) || availabilityRows.length === 0) {
+      await connection.rollback();
+      return res.status(404).json({
+        success: false,
+        message: 'Agenda no encontrada'
+      });
+    }
+    
+    const availability = availabilityRows[0] as any;
+    const isPaused = Boolean(availability.is_paused);
+    
+    if (isPaused) {
+      // =================== REANUDAR AGENDA ===================
+      
+      // Contar cuántas citas reales (NO pausadas) existen
+      const [realAppointmentsRows] = await connection.query(`
+        SELECT COUNT(*) as count 
+        FROM appointments 
+        WHERE availability_id = ? AND status != 'Pausada'
+      `, [availabilityId]) as any;
+      
+      const realAppointmentsCount = realAppointmentsRows[0]?.count || 0;
+      
+      // Eliminar todas las citas con estado "Pausada"
+      const [deleteResult] = await connection.query(`
+        DELETE FROM appointments 
+        WHERE availability_id = ? AND status = 'Pausada'
+      `, [availabilityId]) as any;
+      
+      const deletedCount = deleteResult.affectedRows || 0;
+      
+      // Actualizar booked_slots con el conteo REAL de citas (sin las pausadas)
+      await connection.query(`
+        UPDATE availabilities 
+        SET booked_slots = ?,
+            is_paused = FALSE
+        WHERE id = ?
+      `, [realAppointmentsCount, availabilityId]);
+      
+      // Recalcular el estado de la agenda
+      const newBookedSlots = realAppointmentsCount;
+      const newStatus = newBookedSlots >= availability.capacity ? 'Completa' : 'Activa';
+      
+      await connection.query(`
+        UPDATE availabilities 
+        SET status = ?
+        WHERE id = ?
+      `, [newStatus, availabilityId]);
+      
+      await connection.commit();
+      
+      // Registrar en log de auditoría
+      await connection.query(`
+        INSERT INTO availability_pause_log 
+        (availability_id, action, slots_affected, phantom_appointments_created, 
+         phantom_appointments_deleted, previous_booked_slots, new_booked_slots, 
+         user_id, notes)
+        VALUES (?, 'resumed', ?, 0, ?, ?, ?, ?, ?)
+      `, [
+        availabilityId,
+        deletedCount,
+        deletedCount,
+        availability.booked_slots,
+        newBookedSlots,
+        (req as any).user?.id || null,
+        `Agenda reanudada. Doctor: ${availability.doctor_name}, Especialidad: ${availability.specialty_name}`
+      ]);
+      
+      return res.json({
+        success: true,
+        action: 'resumed',
+        message: `Agenda reanudada. Se liberaron ${deletedCount} cupos.`,
+        data: {
+          availability_id: availabilityId,
+          doctor_name: availability.doctor_name,
+          specialty_name: availability.specialty_name,
+          location_name: availability.location_name,
+          date: availability.date,
+          time_range: `${availability.start_time} - ${availability.end_time}`,
+          previous_booked_slots: availability.booked_slots,
+          current_booked_slots: newBookedSlots,
+          available_slots: availability.capacity - newBookedSlots,
+          capacity: availability.capacity,
+          status: newStatus,
+          is_paused: false,
+          slots_freed: deletedCount
+        }
+      });
+      
+    } else {
+      // =================== PAUSAR AGENDA ===================
+      
+      // Calcular cupos disponibles
+      const availableSlots = availability.capacity - availability.booked_slots;
+      
+      if (availableSlots <= 0) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: 'No hay cupos disponibles para pausar. La agenda ya está completa.'
+        });
+      }
+      
+      // Buscar o crear paciente "Fundación Biosanar IPS" para citas pausadas
+      const [systemPatientRows] = await connection.query(`
+        SELECT id FROM patients WHERE document = 'SISTEMA-PAUSA' LIMIT 1
+      `) as any;
+      
+      let systemPatientId: number;
+      
+      if (systemPatientRows.length === 0) {
+        // Crear paciente sistema si no existe
+        const [insertResult] = await connection.query(`
+          INSERT INTO patients (document, name, birth_date, gender, phone, email)
+          VALUES ('SISTEMA-PAUSA', 'Fundación Biosanar IPS', '1900-01-01', 'Otro', '0000000000', 'sistema@biosanarcall.site')
+        `) as any;
+        systemPatientId = insertResult.insertId;
+      } else {
+        systemPatientId = systemPatientRows[0].id;
+      }
+      
+      // Crear citas "fantasma" para ocupar los cupos disponibles
+      const pausedAppointments = [];
+      const scheduledDateTime = `${availability.date.toISOString().split('T')[0]} ${availability.start_time}`;
+      
+      for (let i = 0; i < availableSlots; i++) {
+        pausedAppointments.push([
+          systemPatientId, // patient_id del sistema
+          availabilityId, // availability_id
+          availability.location_id,
+          availability.specialty_id,
+          availability.doctor_id,
+          scheduledDateTime, // scheduled_at
+          30, // duration_minutes
+          'Presencial',
+          'Pausada', // status
+          'AGENDA PAUSADA - Cupo bloqueado temporalmente',
+          null, // insurance_type
+          'Cita fantasma creada por pausa de agenda',
+          null, // cancellation_reason
+          (req as any).user?.id || null // created_by_user_id
+        ]);
+      }
+      
+      // Insertar todas las citas de pausa
+      if (pausedAppointments.length > 0) {
+        await connection.query(`
+          INSERT INTO appointments 
+          (patient_id, availability_id, location_id, specialty_id, doctor_id, 
+           scheduled_at, duration_minutes, appointment_type, status, reason, 
+           insurance_type, notes, cancellation_reason, created_by_user_id)
+          VALUES ?
+        `, [pausedAppointments]);
+      }
+      
+      // Actualizar booked_slots y marcar como pausada
+      await connection.query(`
+        UPDATE availabilities 
+        SET booked_slots = booked_slots + ?,
+            is_paused = TRUE,
+            status = 'Completa'
+        WHERE id = ?
+      `, [availableSlots, availabilityId]);
+      
+      await connection.commit();
+      
+      // Registrar en log de auditoría
+      await connection.query(`
+        INSERT INTO availability_pause_log 
+        (availability_id, action, slots_affected, phantom_appointments_created, 
+         phantom_appointments_deleted, previous_booked_slots, new_booked_slots, 
+         user_id, notes)
+        VALUES (?, 'paused', ?, ?, 0, ?, ?, ?, ?)
+      `, [
+        availabilityId,
+        availableSlots,
+        availableSlots,
+        availability.booked_slots,
+        availability.capacity,
+        (req as any).user?.id || null,
+        `Agenda pausada. Doctor: ${availability.doctor_name}, Especialidad: ${availability.specialty_name}`
+      ]);
+      
+      return res.json({
+        success: true,
+        action: 'paused',
+        message: `Agenda pausada. Se bloquearon ${availableSlots} cupos.`,
+        data: {
+          availability_id: availabilityId,
+          doctor_name: availability.doctor_name,
+          specialty_name: availability.specialty_name,
+          location_name: availability.location_name,
+          date: availability.date,
+          time_range: `${availability.start_time} - ${availability.end_time}`,
+          previous_booked_slots: availability.booked_slots,
+          current_booked_slots: availability.capacity,
+          available_slots: 0,
+          capacity: availability.capacity,
+          status: 'Completa',
+          is_paused: true,
+          slots_blocked: availableSlots
+        }
+      });
+    }
+    
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error en toggle-pause:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al pausar/reanudar agenda',
       error: error.message
     });
   } finally {

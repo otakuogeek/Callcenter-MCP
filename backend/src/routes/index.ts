@@ -58,6 +58,15 @@ import publicRoutes from './public';
 import smsRoutes from './sms.routes';
 // ElevenLabs - Sistema de llamadas con IA
 import elevenLabs from './elevenlabs';
+// Sistema de autenticación y gestión de doctores
+import doctorAuth from './doctor-auth';
+import doctorManagement from './doctor-management';
+// Sistema de historias clínicas
+import medicalRecords from './medical-records';
+// Sistema de transcripción por voz
+import transcription from './transcription';
+// Sistema de documentación Wiki
+import wiki from './wiki';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -194,6 +203,16 @@ router.use('/auto-assignment', autoAssignment);
 router.use('/consultations', consultations);
 // Sistema de llamadas con IA - ElevenLabs
 router.use('/elevenlabs', elevenLabs);
+// Sistema de autenticación de doctores (sin requireAuth - maneja su propia autenticación)
+router.use('/doctor-auth', doctorAuth);
+// Sistema de gestión de doctores (requiere autenticación de admin)
+router.use('/doctor-management', doctorManagement);
+// Sistema de historias clínicas (maneja su propia autenticación de doctor)
+router.use('/medical-records', medicalRecords);
+// Sistema de transcripción por voz (requiere autenticación)
+router.use('/transcription', transcription);
+// Sistema de documentación Wiki (requiere autenticación)
+router.use('/wiki', requireAuth, wiki);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)

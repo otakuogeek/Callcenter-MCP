@@ -1,9 +1,10 @@
-// Cache buster: Updated 2025-10-16 - CUPS management added
+// Cache buster: Updated 2025-10-16 - CUPS management + Statistics added
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { VirtualizedPatientList } from "@/components/VirtualizedPatientList";
 import {
   Dialog,
   DialogContent,
@@ -13,25 +14,41 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Clock, User, Phone, AlertCircle, CalendarPlus, Trash2, FileText, X, Search, Download, CheckCircle } from "lucide-react";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/components/ui/accordion";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Clock, User, Phone, AlertCircle, CalendarPlus, Trash2, FileText, X, Search, Download, CheckCircle, PhoneCall, ChevronDown, BarChart3, MessageSquare } from "lucide-react";
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import AISchedulingModal from "@/components/AISchedulingModal";
 import AssignFromQueueModal from "@/components/AssignFromQueueModal";
+import BulkSMSModal from "@/components/BulkSMSModal";
 import { Input } from "@/components/ui/input";
 import { generateWaitingListPDF } from "@/utils/pdfGenerators";
 import { useToast } from "@/hooks/use-toast";
+import { QueueStatistics } from "@/components/QueueStatistics";
 
 const Queue = () => {
   const { toast } = useToast();
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [isBulkSMSModalOpen, setIsBulkSMSModalOpen] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<any | null>(null);
   const [selectedSpecialty, setSelectedSpecialty] = useState<string | null>(null);
   const [selectedQueueEntryId, setSelectedQueueEntryId] = useState<number | null>(null);
@@ -57,6 +74,87 @@ const Queue = () => {
   // Estados para búsqueda en tiempo real
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [filteredData, setFilteredData] = useState<any>(null);
+
+  // Estado para llamadas de ElevenLabs
+  const [callingPatientId, setCallingPatientId] = useState<number | null>(null);
+  
+  // Estado para cambiar prioridad
+  const [changingPriorityId, setChangingPriorityId] = useState<number | null>(null);
+
+  // Estado para acordeones - expandir todas las especialidades con resultados de búsqueda
+  const [expandedSpecialties, setExpandedSpecialties] = useState<string[]>([]);
+
+  // Maneja la apertura de acordeones y carga perezosa de pacientes por especialidad
+  const handleAccordionChange = async (values: string[] | string) => {
+    // shadcn/ui Accordion can return string or string[] depending on props
+    const newValues = Array.isArray(values) ? values : values ? [values] : [];
+    // Detectar especialidades que se abrieron ahora
+    const newlyOpened = newValues.filter(v => !expandedSpecialties.includes(v));
+    setExpandedSpecialties(newValues);
+
+    if (!newlyOpened.length) return;
+
+    // Para cada nueva especialidad abierta, cargar pacientes si es necesario
+    for (const val of newlyOpened) {
+      const match = val.match(/specialty-(\d+)/);
+      if (!match) continue;
+      const specialtyId = Number(match[1]);
+
+      const existingSection = waitingListData?.data?.find((s: any) => s.specialty_id === specialtyId);
+      if (!existingSection) continue;
+
+      // Si ya tiene pacientes cargados (array con elementos), no hacemos nada
+      // Solo cargar si: 1) patients es undefined, o 2) es un array vacío pero total_waiting > 0
+      const hasLoadedPatients = existingSection.patients && Array.isArray(existingSection.patients) && existingSection.patients.length > 0;
+      const shouldLoad = !hasLoadedPatients && existingSection.total_waiting > 0;
+      
+      if (!shouldLoad) continue;
+
+      try {
+        // Llamada lazy al backend
+        const resp = await api.getWaitingListBySpecialty(specialtyId);
+        if (resp && resp.success) {
+          const patientsData = resp.data.patients || resp.data || [];
+          const totalCount = resp.data.total_waiting || patientsData.length;
+          
+          // Actualizar waitingListData y filteredData con los pacientes recibidos
+          setWaitingListData((prev: any) => {
+            if (!prev) return prev;
+            const updated = { ...prev };
+            updated.data = updated.data.map((s: any) => {
+              if (s.specialty_id === specialtyId) {
+                return { 
+                  ...s, 
+                  patients: patientsData, 
+                  total_waiting: totalCount 
+                };
+              }
+              return s;
+            });
+            return updated;
+          });
+
+          setFilteredData((prev: any) => {
+            if (!prev) return prev;
+            const updated = { ...prev };
+            updated.data = updated.data.map((s: any) => {
+              if (s.specialty_id === specialtyId) {
+                return { 
+                  ...s, 
+                  patients: patientsData, 
+                  total_waiting: totalCount 
+                };
+              }
+              return s;
+            });
+            return updated;
+          });
+        }
+      } catch (err) {
+        console.error('Error cargando pacientes por especialidad:', err);
+      }
+    }
+  };
 
   // Función para generar PDF de una especialidad
   const handleGeneratePDF = (section: any) => {
@@ -109,10 +207,11 @@ const Queue = () => {
     }
   };
 
-  const refresh = async () => {
+  // refresh: if full=true fetch full data (patients included), otherwise fetch summary (counts only)
+  const refresh = async (full: boolean = false) => {
     try {
       setError(null);
-      const response = await api.getWaitingList();
+      const response = await api.getWaitingList(full ? false : true);
       setWaitingListData(response);
     } catch (e: any) {
       setError(e?.message || 'Error cargando cola de espera');
@@ -257,6 +356,81 @@ const Queue = () => {
     }
   };
 
+  // Función para llamar al paciente con ElevenLabs
+  const handleCallPatient = async (item: any, section: any) => {
+    setCallingPatientId(item.id);
+    try {
+      const response = await api.initiateElevenLabsCall({
+        phoneNumber: item.patient_phone,
+        patientId: item.patient_id,
+        patientName: item.patient_name,
+        metadata: {
+          specialty: section.specialty_name,
+          specialty_id: section.specialty_id,
+          priority: item.priority_level,
+          waiting_list_id: item.id,
+          call_type: item.call_type || 'agendar',
+          reason: item.reason,
+          doctor_name: item.doctor_name,
+          queue_position: item.queue_position
+        }
+      });
+
+      if (response.success) {
+        toast({
+          title: "✅ Llamada iniciada",
+          description: `Llamando a ${item.patient_name} al ${item.patient_phone}`,
+        });
+      } else {
+        toast({
+          title: "❌ Error al llamar",
+          description: response.message || "No se pudo iniciar la llamada",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Error al iniciar llamada:', error);
+      toast({
+        title: "❌ Error",
+        description: error.message || "Error al conectar con el sistema de llamadas",
+        variant: "destructive",
+      });
+    } finally {
+      setCallingPatientId(null);
+    }
+  };
+
+  // Función para cambiar la prioridad
+  const handleChangePriority = async (itemId: number, newPriority: string) => {
+    setChangingPriorityId(itemId);
+    try {
+      const response = await api.updateWaitingListPriority(itemId, newPriority);
+      
+      if (response.success) {
+        toast({
+          title: "✅ Prioridad actualizada",
+          description: response.message,
+        });
+        await refresh(); // Recargar la cola
+      } else {
+        toast({
+          title: "❌ Error",
+          description: "No se pudo actualizar la prioridad",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Error al cambiar prioridad:', error);
+      toast({
+        title: "❌ Error",
+        description: error.message || "Error al actualizar la prioridad",
+        variant: "destructive",
+      });
+    } finally {
+      setChangingPriorityId(null);
+    }
+  };
+
   const formatWaitTime = (createdAt: string) => {
     const created = new Date(createdAt);
     const now = new Date();
@@ -309,33 +483,48 @@ const Queue = () => {
   const handleSearch = (searchValue: string) => {
     setSearchTerm(searchValue);
     
-    if (!searchValue.trim() || !waitingListData?.data) {
+    if (!searchValue.trim()) {
+      // Si se limpia la búsqueda, recargar solo el resumen y colapsar
       setFilteredData(waitingListData);
+      setExpandedSpecialties([]);
       return;
     }
 
-    const searchLower = searchValue.toLowerCase().trim();
-    
-    // Filtrar cada especialidad
-    const filtered = {
-      ...waitingListData,
-      data: waitingListData.data.map((specialty: any) => {
-        // Filtrar pacientes dentro de cada especialidad
-        const filteredPatients = specialty.patients.filter((patient: any) => {
-          const nameMatch = patient.patient_name?.toLowerCase().includes(searchLower);
-          const documentMatch = patient.patient_document?.toLowerCase().includes(searchLower);
-          return nameMatch || documentMatch;
-        });
-
-        return {
-          ...specialty,
-          patients: filteredPatients,
-          total_waiting: filteredPatients.length
+    // Para búsquedas, pedir el listado completo al backend (con pacientes)
+    (async () => {
+      try {
+        setLoading(true);
+        const fullResp = await api.getWaitingList(false);
+        // Filtrar localmente usando la respuesta completa
+        const searchLower = searchValue.toLowerCase().trim();
+        const filtered = {
+          ...fullResp,
+          data: fullResp.data
+            .map((specialty: any) => {
+              const filteredPatients = (specialty.patients || []).filter((patient: any) => {
+                const nameMatch = patient.patient_name?.toLowerCase().includes(searchLower);
+                const documentMatch = patient.patient_document?.toLowerCase().includes(searchLower);
+                return nameMatch || documentMatch;
+              });
+              return {
+                ...specialty,
+                patients: filteredPatients,
+                total_waiting: filteredPatients.length
+              };
+            })
+            .filter((specialty: any) => (specialty.patients || []).length > 0)
         };
-      }).filter((specialty: any) => specialty.patients.length > 0) // Solo especialidades con resultados
-    };
 
-    setFilteredData(filtered);
+        setFilteredData(filtered);
+        const specialtiesWithResults = filtered.data.map((s: any) => `specialty-${s.specialty_id}`);
+        setExpandedSpecialties(specialtiesWithResults);
+      } catch (err) {
+        console.error('Error buscando:', err);
+        setError('Error buscando pacientes');
+      } finally {
+        setLoading(false);
+      }
+    })();
   };
 
   // Actualizar filteredData cuando cambie waitingListData
@@ -390,50 +579,103 @@ const Queue = () => {
             <div className="flex items-center justify-between">
               <div>
                 <h1 className="text-3xl font-bold text-medical-800 mb-2">Cola de Espera</h1>
-                <p className="text-medical-600">Gestión de llamadas en espera organizadas por especialidad</p>
+                <p className="text-medical-600">Gestión de llamadas y estadísticas de la lista de espera</p>
                 {error && <p className="text-red-600 text-sm mt-2">{error}</p>}
                 {message && <p className="text-green-700 text-sm mt-2">{message}</p>}
               </div>
-              {waitingListData?.data && waitingListData.data.length > 0 && (
-                <Button
-                  onClick={handleGenerateAllPDF}
-                  variant="outline"
-                  className="gap-2 bg-gradient-to-r from-blue-50 to-purple-50 border-blue-200 hover:from-blue-100 hover:to-purple-100"
-                >
-                  <FileText className="w-4 h-4" />
-                  Exportar Todo (PDF)
-                </Button>
-              )}
             </div>
 
-            {/* Buscador en tiempo real */}
-            <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-200">
-              <CardContent className="p-4">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                  <Input
-                    type="text"
-                    placeholder="Buscar por nombre o documento de identidad..."
-                    value={searchTerm}
-                    onChange={(e) => handleSearch(e.target.value)}
-                    className="pl-10 pr-10 bg-white border-blue-300 focus:border-blue-500 focus:ring-blue-500"
-                  />
-                  {searchTerm && (
-                    <button
-                      onClick={() => handleSearch('')}
-                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                    >
-                      <X className="w-5 h-5" />
-                    </button>
+            {/* Tabs for Queue Management and Statistics */}
+            <Tabs defaultValue="queue" className="w-full">
+              <TabsList className="grid w-full max-w-md grid-cols-2">
+                <TabsTrigger value="queue" className="gap-2">
+                  <Clock className="w-4 h-4" />
+                  Cola de Espera
+                </TabsTrigger>
+                <TabsTrigger value="statistics" className="gap-2">
+                  <BarChart3 className="w-4 h-4" />
+                  Estadísticas
+                </TabsTrigger>
+              </TabsList>
+
+              {/* Queue Tab Content */}
+              <TabsContent value="queue" className="space-y-6 mt-6">
+                <div className="flex justify-end gap-2">
+                  {waitingListData?.data && waitingListData.data.length > 0 && (
+                    <>
+                      <Button
+                        onClick={() => setIsBulkSMSModalOpen(true)}
+                        variant="default"
+                        className="gap-2 bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white"
+                      >
+                        <MessageSquare className="w-4 h-4" />
+                        Enviar SMS Masivo
+                      </Button>
+                      <Button
+                        onClick={handleGenerateAllPDF}
+                        variant="outline"
+                        className="gap-2 bg-gradient-to-r from-blue-50 to-purple-50 border-blue-200 hover:from-blue-100 hover:to-purple-100"
+                      >
+                        <FileText className="w-4 h-4" />
+                        Exportar Todo (PDF)
+                      </Button>
+                    </>
                   )}
                 </div>
-                {searchTerm && (
-                  <p className="text-sm text-blue-700 mt-2">
-                    {filteredData?.data?.reduce((acc: number, s: any) => acc + s.patients.length, 0) ?? 0} resultado(s) encontrado(s)
-                  </p>
-                )}
-              </CardContent>
-            </Card>
+
+            {/* Buscador en tiempo real - STICKY */}
+            <div className="sticky top-0 z-10 bg-gradient-to-br from-medical-50 to-white pb-4">
+              <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-200 shadow-lg">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                      <Input
+                        type="text"
+                        placeholder="Buscar por nombre o documento de identidad..."
+                        value={searchTerm}
+                        onChange={(e) => handleSearch(e.target.value)}
+                        className="pl-10 pr-10 bg-white border-blue-300 focus:border-blue-500 focus:ring-blue-500"
+                      />
+                      {searchTerm && (
+                        <button
+                          onClick={() => handleSearch('')}
+                          className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const allSpecialties = waitingListData?.data?.map((s: any) => `specialty-${s.specialty_id}`) || [];
+                          setExpandedSpecialties(allSpecialties);
+                        }}
+                        className="whitespace-nowrap"
+                      >
+                        Expandir Todas
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setExpandedSpecialties([])}
+                        className="whitespace-nowrap"
+                      >
+                        Colapsar Todas
+                      </Button>
+                    </div>
+                  </div>
+                  {searchTerm && (
+                    <p className="text-sm text-blue-700 mt-2">
+                      {filteredData?.data?.reduce((acc: number, s: any) => acc + (s.patients?.length || 0), 0) ?? 0} resultado(s) encontrado(s)
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
 
             {/* Estadísticas */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -486,167 +728,75 @@ const Queue = () => {
               </Card>
             </div>
 
-            {/* Especialidades */}
-            <div className="space-y-6">
+            {/* Especialidades con Accordion */}
+            <Accordion 
+              type="multiple" 
+              value={expandedSpecialties}
+              onValueChange={handleAccordionChange}
+              className="space-y-4"
+            >
               {filteredData?.data?.map((section: any) => (
-                <Card key={section.specialty_id} className="border-medical-200">
-                  <CardHeader className="bg-gradient-to-r from-medical-50 to-white">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
+                <AccordionItem 
+                  key={section.specialty_id} 
+                  value={`specialty-${section.specialty_id}`}
+                  className="border-medical-200 bg-white rounded-lg shadow-sm overflow-hidden"
+                >
+                  <AccordionTrigger className="hover:no-underline px-6 py-4 bg-gradient-to-r from-medical-50 to-white hover:from-medical-100 hover:to-medical-50">
+                    <div className="flex items-center justify-between w-full pr-4">
+                      <div className="flex items-center gap-3">
                         <span className="text-2xl">{getSpecialtyIcon(section.specialty_name)}</span>
-                        <div>
-                          <CardTitle className="text-xl text-medical-800">{section.specialty_name}</CardTitle>
-                          <CardDescription>
-                            {section.total_waiting} pacientes en espera
-                          </CardDescription>
+                        <div className="text-left">
+                          <div className="text-lg font-semibold text-medical-800">{section.specialty_name}</div>
+                          <div className="text-sm text-medical-600 font-normal">
+                            {section.total_waiting} paciente{section.total_waiting !== 1 ? 's' : ''} en espera
+                          </div>
                         </div>
                       </div>
-                      <Button
-                        onClick={() => handleGeneratePDF(section)}
-                        variant="outline"
-                        size="sm"
-                        className="gap-2"
-                      >
-                        <FileText className="w-4 h-4" />
-                        Exportar PDF
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleGeneratePDF(section);
+                          }}
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                        >
+                          <FileText className="w-4 h-4" />
+                          PDF
+                        </Button>
+                      </div>
                     </div>
-                  </CardHeader>
-                  <CardContent className="p-6">
-                    <div className="space-y-3">
-                      {section.patients?.map((item: any) => {
-                        const isMultipleRequests = hasMultipleRequests(item.patient_document);
-                        const requestCount = getDuplicateRequestsCount(item.patient_document);
-                        
-                        return (
-                          <div 
-                            key={item.id} 
-                            className={`flex items-center justify-between p-4 border rounded-lg hover:shadow-md transition-all ${
-                              isMultipleRequests 
-                                ? 'bg-yellow-50 border-yellow-300 hover:bg-yellow-100' 
-                                : 'hover:bg-medical-50'
-                            }`}
-                          >
-                          <div className="flex items-center gap-4">
-                            <div className="w-8 h-8 bg-medical-100 rounded-full flex items-center justify-center text-medical-700 font-semibold">
-                              {item.queue_position}
-                            </div>
-                            <div>
-                              <div className="flex items-center gap-2 mb-1">
-                                <span className="font-semibold">{item.patient_name}</span>
-                                <Badge 
-                                  variant={item.priority_level === "Urgente" || item.priority_level === "Alta" ? "destructive" : item.priority_level === "Normal" ? "default" : "secondary"}
-                                  className="text-xs"
-                                >
-                                  {item.priority_level}
-                                </Badge>
-                                {/* 🔥 NUEVO: Badge especial para reagendamientos */}
-                                {item.call_type === 'reagendar' && (
-                                  <Badge 
-                                    className="text-xs bg-black text-yellow-400 hover:bg-black/90 font-bold"
-                                  >
-                                    ⚡ Reagendar
-                                  </Badge>
-                                )}
-                                {/* 🔥 Badge para pacientes con múltiples solicitudes */}
-                                {isMultipleRequests && (
-                                  <Badge 
-                                    className="text-xs bg-yellow-500 text-black hover:bg-yellow-600 font-bold"
-                                  >
-                                    📋 {requestCount} solicitudes
-                                  </Badge>
-                                )}
-                              </div>
-                              <div className="text-sm text-gray-600 flex items-center gap-2">
-                                <Phone className="w-3 h-3" />
-                                {item.patient_phone} • Doc: {item.patient_document}
-                                {item.birth_date && (
-                                  <span className="ml-2 text-medical-600 font-medium">
-                                    • {calculateAge(item.birth_date)}
-                                  </span>
-                                )}
-                              </div>
-                              {/* EPS del paciente */}
-                              {item.eps_name && (
-                                <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
-                                  <span className="font-semibold">EPS:</span> {item.eps_name}
-                                </div>
-                              )}
-                              {/* Motivo de la consulta */}
-                              <div className="text-xs text-gray-500 mt-1">
-                                {item.reason ? item.reason : 'Sin motivo especificado'}
-                              </div>
-                              {/* 🔥 NUEVO: Información del servicio CUPS */}
-                              {item.cups_code && (
-                                <div className="flex items-center gap-2 mt-2">
-                                  <Badge variant="outline" className="text-xs font-mono">
-                                    {item.cups_code}
-                                  </Badge>
-                                  <span className="text-xs text-medical-700 font-medium">
-                                    {item.cups_name}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-4">
-                            <div className="text-right">
-                              <div className="font-mono text-warning-600 font-semibold">
-                                {formatWaitTime(item.created_at)}
-                              </div>
-                              <div className="text-xs text-gray-500">
-                                Esperando
-                              </div>
-                              <div className="text-xs text-gray-400 mt-1">
-                                Fecha {formatRequestDateTime(item.created_at)}
-                              </div>
-                              <div className="text-xs text-gray-400 mt-1">
-                                Dr. {item.doctor_name}
-                              </div>
-                            </div>
-                            <div className="flex gap-2">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleOpenCupsDialog(item)}
-                                disabled={loading || loadingItemId === item.id || deletingItemId === item.id}
-                                title={item.cups_code ? "Cambiar CUPS" : "Asignar CUPS"}
-                              >
-                                <FileText className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleAssignFromQueue({ ...item, specialty_name: section.specialty_name, specialty_id: section.specialty_id })}
-                                disabled={loading || loadingItemId === item.id || deletingItemId === item.id}
-                                className="bg-green-50 hover:bg-green-100 border-green-300 text-green-700"
-                              >
-                                <CheckCircle className="w-4 h-4 mr-1" />
-                                {loadingItemId === item.id ? 'Asignando...' : 'Asignar'}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => handleDeleteFromQueue({ ...item, specialty_name: section.specialty_name, specialty_id: section.specialty_id })}
-                                disabled={loading || loadingItemId === item.id || deletingItemId === item.id}
-                                title="Eliminar de la cola"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </div>
-                        </div>
-                        );
-                      })}
-                      {section.patients?.length === 0 && (
-                        <div className="text-sm text-gray-500 italic">No hay pacientes en espera</div>
-                      )}
+                  </AccordionTrigger>
+                  <AccordionContent className="px-6 pb-4">
+                    <div className="pt-2">
+                      <VirtualizedPatientList
+                        patients={section.patients || []}
+                        sectionSpecialtyName={section.specialty_name}
+                        sectionSpecialtyId={section.specialty_id}
+                        hasMultipleRequests={hasMultipleRequests}
+                        getDuplicateRequestsCount={getDuplicateRequestsCount}
+                        changingPriorityId={changingPriorityId}
+                        callingPatientId={callingPatientId}
+                        loadingItemId={loadingItemId}
+                        deletingItemId={deletingItemId}
+                        loading={loading}
+                        handleChangePriority={handleChangePriority}
+                        handleCallPatient={handleCallPatient}
+                        handleOpenCupsDialog={handleOpenCupsDialog}
+                        handleAssignFromQueue={handleAssignFromQueue}
+                        handleDeleteFromQueue={handleDeleteFromQueue}
+                        formatWaitTime={formatWaitTime}
+                        formatRequestDateTime={formatRequestDateTime}
+                        calculateAge={calculateAge}
+                      />
                     </div>
-                  </CardContent>
-                </Card>
+                  </AccordionContent>
+                </AccordionItem>
               ))}
+            </Accordion>
               
-              {!loading && searchTerm && (!filteredData?.data || filteredData.data.length === 0) && (
+            {!loading && searchTerm && (!filteredData?.data || filteredData.data.length === 0) && (
                 <Card>
                   <CardContent className="p-12 text-center">
                     <Search className="w-12 h-12 mx-auto mb-4 text-gray-400" />
@@ -670,7 +820,13 @@ const Queue = () => {
                   </CardContent>
                 </Card>
               )}
-            </div>
+              </TabsContent>
+
+              {/* Statistics Tab Content */}
+              <TabsContent value="statistics" className="mt-6">
+                <QueueStatistics searchTerm={searchTerm} />
+              </TabsContent>
+            </Tabs>
           </div>
 
           {/* Modal de agendamiento con IA */}
@@ -834,6 +990,18 @@ const Queue = () => {
               }}
             />
           )}
+
+          {/* Modal de Envío Masivo de SMS */}
+          <BulkSMSModal
+            isOpen={isBulkSMSModalOpen}
+            onClose={() => setIsBulkSMSModalOpen(false)}
+            onSuccess={async () => {
+              toast({
+                title: "✅ SMS Enviados",
+                description: "Los mensajes han sido enviados exitosamente",
+              });
+            }}
+          />
         </main>
       </div>
     </SidebarProvider>

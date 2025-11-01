@@ -4,7 +4,7 @@ import { AppSidebar } from "@/components/AppSidebar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Clock, User, Phone, RefreshCw, Calendar, AlertCircle, ArrowRight, RotateCcw } from "lucide-react";
+import { Clock, User, Phone, RefreshCw, Calendar, AlertCircle, ArrowRight, RotateCcw, PhoneCall } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CalendarIcon } from "lucide-react";
 import { format } from "date-fns";
@@ -49,6 +49,9 @@ export default function DailyQueue() {
   const [cancellationReason, setCancellationReason] = useState("");
   const [autoAssign, setAutoAssign] = useState(false);
   const [returningToQueue, setReturningToQueue] = useState(false);
+
+  // Estados para las llamadas de ElevenLabs
+  const [callingPatient, setCallingPatient] = useState<number | null>(null);
 
   const refresh = async (date?: Date) => {
     setLoading(true);
@@ -194,6 +197,47 @@ export default function DailyQueue() {
       });
     } finally {
       setReturningToQueue(false);
+    }
+  };
+
+  // Función para iniciar llamada con ElevenLabs
+  const handleCallPatient = async (item: any) => {
+    setCallingPatient(item.id);
+    try {
+      const response = await api.initiateElevenLabsCall({
+        phoneNumber: item.patient_phone,
+        patientId: item.patient_id,
+        patientName: item.patient_name,
+        appointmentId: item.type === 'scheduled' ? item.id : item.appointment_id,
+        metadata: {
+          specialty: item.specialty_name,
+          priority: item.priority_level,
+          type: item.type,
+          call_type: item.call_type || 'agendar'
+        }
+      });
+
+      if (response.success) {
+        toast({
+          title: "✅ Llamada iniciada",
+          description: `Llamando a ${item.patient_name} (${item.patient_phone})`,
+        });
+      } else {
+        toast({
+          title: "Error al llamar",
+          description: response.message || "No se pudo iniciar la llamada",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Error al iniciar llamada:', error);
+      toast({
+        title: "Error",
+        description: error.message || "Error al conectar con el sistema de llamadas",
+        variant: "destructive",
+      });
+    } finally {
+      setCallingPatient(null);
     }
   };
 
@@ -394,6 +438,21 @@ export default function DailyQueue() {
                                     {item.status}
                                   </Badge>
                                 )}
+                                {/* Botón Llamar - disponible para todos */}
+                                <Button
+                                  size="sm"
+                                  variant="default"
+                                  className="bg-green-600 hover:bg-green-700 text-white"
+                                  onClick={() => handleCallPatient(item)}
+                                  disabled={callingPatient === item.id}
+                                >
+                                  {callingPatient === item.id ? (
+                                    <RefreshCw className="w-4 h-4 mr-1 animate-spin" />
+                                  ) : (
+                                    <PhoneCall className="w-4 h-4 mr-1" />
+                                  )}
+                                  {callingPatient === item.id ? 'Llamando...' : 'Llamar'}
+                                </Button>
                                 {/* Botones solo para citas agendadas */}
                                 {item.type === 'scheduled' && item.availability_id && (
                                   <>

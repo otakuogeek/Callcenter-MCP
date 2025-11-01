@@ -86,6 +86,46 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+// Endpoint de búsqueda simple para SMS (DEBE IR ANTES DE /:id)
+router.get('/search', requireAuth, async (req: Request, res: Response) => {
+  const q = String(req.query.q || '').trim();
+  
+  if (!q || q.length < 2) {
+    return res.json({ success: true, data: [] });
+  }
+  
+  try {
+    const like = `%${q}%`;
+    const [rows] = await pool.query(`
+      SELECT 
+        p.id,
+        p.document as document_number,
+        p.name as full_name,
+        p.phone,
+        p.email
+      FROM patients p
+      WHERE p.status = 'Activo' 
+        AND p.phone IS NOT NULL
+        AND p.phone != ''
+        AND (p.name LIKE ? OR p.document LIKE ?)
+      ORDER BY p.name ASC
+      LIMIT 20
+    `, [like, like]);
+    
+    return res.json({ 
+      success: true, 
+      data: rows,
+      total: Array.isArray(rows) ? rows.length : 0
+    });
+  } catch (error) {
+    console.error('Error en búsqueda de pacientes:', error);
+    return res.status(500).json({ 
+      success: false, 
+      message: 'Error en búsqueda de pacientes' 
+    });
+  }
+});
+
 // Obtener detalle por ID
 router.get('/:id', requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -564,8 +604,8 @@ router.get('/search/quicksearch', requireAuth, async (req: Request, res: Respons
     const [rows] = await pool.query(`
       SELECT 
         p.id,
-        p.document,
-        p.name,
+        p.document as document_number,
+        p.name as full_name,
         p.phone,
         p.email,
         p.birth_date,

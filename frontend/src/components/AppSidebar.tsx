@@ -1,4 +1,4 @@
-import { Calendar, Users, BarChart3, Clock, HeadphonesIcon, MapPin, FileText, Settings } from "lucide-react";
+import { Calendar, Users, BarChart3, Clock, HeadphonesIcon, MapPin, FileText, Settings, MessageSquare, BookOpen } from "lucide-react";
 import { Link, useLocation } from "react-router-dom";
 import { useEffect, useState } from "react";
 
@@ -70,7 +70,7 @@ const managementItems = [
   //   icon: HeadphonesIcon,
   // },
   {
-    title: "Consultas",
+    title: "Llamadas",
     url: "/consultations",
     icon: FileText,
   },
@@ -78,6 +78,16 @@ const managementItems = [
     title: "Ubicaciones",
     url: "/locations",
     icon: MapPin,
+  },
+  {
+    title: "SMS",
+    url: "/sms",
+    icon: MessageSquare,
+  },
+  {
+    title: "Wiki",
+    url: "/wiki",
+    icon: BookOpen,
   },
 ];
 

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import pool from '../db/pool';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
+import { ElevenLabsSync } from '../services/elevenLabsSync';
 
 const router = Router();
 
@@ -375,6 +376,17 @@ router.post('/elevenlabs', async (req: Request, res: Response) => {
     if (payload.type === 'post_call_transcription') {
       console.log('📝 Processing transcription webhook...');
       await processTranscriptionWebhook(payload);
+      
+      // Sincronizar en la base de datos de llamadas
+      console.log('💾 Syncing call to database...');
+      try {
+        await ElevenLabsSync.syncFromWebhook(payload.data);
+        console.log('✅ Call synced to database successfully');
+      } catch (syncError) {
+        console.error('❌ Error syncing to database:', syncError);
+        // No fallar el webhook si la sincronización falla
+      }
+      
     } else if (payload.type === 'post_call_audio') {
       console.log('🎵 Processing audio webhook...');
       await processAudioWebhook(payload);

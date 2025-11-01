@@ -32,6 +32,50 @@ router.get('/test', async (req, res) => {
   }
 });
 
+// ===== EPS PÚBLICO (SIN AUTENTICACIÓN) - Para portal de pacientes =====
+// Nota: Muestra TODAS las EPS sin filtrar por status, ya que el status es relevante
+// para servicios prestados, no para el registro de pacientes
+router.get('/public/eps', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT id, code, name, affiliation_type, status
+       FROM eps 
+       ORDER BY name`
+    );
+
+    res.json({
+      success: true,
+      data: rows
+    });
+  } catch (error) {
+    console.error('Error getting public EPS:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener EPS'
+    });
+  }
+});
+
+// ===== ZONAS PÚBLICO (SIN AUTENTICACIÓN) - Para portal de pacientes =====
+router.get('/public/zones', async (req, res) => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT id, name, description FROM zones ORDER BY name'
+    );
+
+    res.json({
+      success: true,
+      data: rows
+    });
+  } catch (error) {
+    console.error('Error getting public zones:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener zonas'
+    });
+  }
+});
+
 // ===== TIPOS DE DOCUMENTO =====
 router.get('/document-types', requireAuth, async (req, res) => {
   try {

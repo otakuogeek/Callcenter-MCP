@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -55,19 +55,63 @@ const DateNavigationCards = ({
 
   // Navegar a la semana anterior
   const goToPreviousWeek = () => {
-    setCurrentWeekStart(prev => addDays(prev, -7));
+    const newWeekStart = addDays(currentWeekStart, -7);
+    setCurrentWeekStart(newWeekStart);
+    // Notificar cambio de mes si es necesario
+    if (onMonthChange) {
+      onMonthChange(newWeekStart.getMonth(), newWeekStart.getFullYear());
+    }
   };
 
   // Navegar a la semana siguiente
   const goToNextWeek = () => {
-    setCurrentWeekStart(prev => addDays(prev, 7));
+    const newWeekStart = addDays(currentWeekStart, 7);
+    setCurrentWeekStart(newWeekStart);
+    // Notificar cambio de mes si es necesario
+    if (onMonthChange) {
+      onMonthChange(newWeekStart.getMonth(), newWeekStart.getFullYear());
+    }
   };
 
   // Volver a la semana actual
   const goToCurrentWeek = () => {
     const today = new Date();
-    setCurrentWeekStart(startOfWeek(today, { weekStartsOn: 1 }));
+    const newWeekStart = startOfWeek(today, { weekStartsOn: 1 });
+    setCurrentWeekStart(newWeekStart);
+    // Notificar cambio de mes
+    if (onMonthChange) {
+      onMonthChange(newWeekStart.getMonth(), newWeekStart.getFullYear());
+    }
   };
+
+  // 🔥 NUEVO: Cargar datos cuando cambia la semana
+  // Usar useRef para evitar bucle infinito con onMonthChange
+  const onMonthChangeRef = useRef(onMonthChange);
+  
+  useEffect(() => {
+    onMonthChangeRef.current = onMonthChange;
+  }, [onMonthChange]);
+  
+  useEffect(() => {
+    if (onMonthChangeRef.current) {
+      // Cargar el mes de inicio de la semana
+      const startMonth = currentWeekStart.getMonth();
+      const startYear = currentWeekStart.getFullYear();
+      onMonthChangeRef.current(startMonth, startYear);
+      
+      // Si la semana cruza dos meses, cargar también el mes siguiente
+      const weekEnd = addDays(currentWeekStart, 6);
+      const endMonth = weekEnd.getMonth();
+      const endYear = weekEnd.getFullYear();
+      
+      if (startMonth !== endMonth || startYear !== endYear) {
+        // Esperar un poco para evitar llamadas simultáneas
+        setTimeout(() => {
+          onMonthChangeRef.current?.(endMonth, endYear);
+        }, 100);
+      }
+    }
+  }, [currentWeekStart]); // ✅ Solo depende de currentWeekStart
 
   // Seleccionar un día
   const selectDay = (selectedDate: Date) => {

@@ -98,7 +98,7 @@ router.get('/:id/specialties', requireAuth, async (req: Request, res: Response) 
       `SELECT s.id, s.name, s.active
        FROM location_specialties ls
        JOIN specialties s ON s.id = ls.specialty_id
-       WHERE ls.location_id = ?
+       WHERE ls.location_id = ? AND s.active = 1
        ORDER BY s.name ASC`,
       [id]
     );

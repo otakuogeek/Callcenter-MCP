@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus, Printer, FileSpreadsheet } from "lucide-react";
+import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus, Printer, FileSpreadsheet, Pause, Play, PauseCircle, PlayCircle } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { safeFormatDate } from "@/utils/dateHelpers";
@@ -148,6 +148,41 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
     // Aquí se actualizaría la lista de disponibilidades
     setIsTransferModalOpen(false);
     setSelectedAvailability(null);
+  };
+
+  /**
+   * Pausa o reanuda una agenda
+   */
+  const handleTogglePause = async (availability: Availability, e: React.MouseEvent) => {
+    e.stopPropagation();
+    
+    try {
+      const response = await api.togglePauseAvailability(availability.id);
+      
+      if (response.success) {
+        const action = response.data?.action;
+        const message = action === 'paused' 
+          ? `Agenda pausada. Se bloquearon ${response.data?.slots_blocked} cupos.`
+          : `Agenda reanudada. Se liberaron ${response.data?.slots_freed} cupos.`;
+        
+        toast({
+          title: action === 'paused' ? "Agenda Pausada" : "Agenda Reanudada",
+          description: message,
+          variant: "default"
+        });
+        
+        // Recargar datos
+        if (typeof window !== 'undefined') {
+          window.location.reload();
+        }
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message || "No se pudo pausar/reanudar la agenda",
+        variant: "destructive"
+      });
+    }
   };
 
   const handlePrintSingleAgenda = async (availability: Availability) => {
@@ -505,17 +540,54 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                   </p>
                                 </div>
                               </div>
-                              <Button
-                                size="lg"
-                                className="bg-white text-green-600 hover:bg-green-50 font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleQuickAppointment(availability);
-                                }}
-                              >
-                                <UserPlus className="w-5 h-5 mr-2" />
-                                Registrar Cita
-                              </Button>
+                              <div className="flex items-center gap-3">
+                                <Button
+                                  size="lg"
+                                  disabled={availability.isPaused}
+                                  className={availability.isPaused 
+                                    ? "bg-gray-200 text-gray-400 cursor-not-allowed font-bold py-3 px-6 rounded-full shadow-lg opacity-50"
+                                    : "bg-white text-green-600 hover:bg-green-50 font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                  }
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!availability.isPaused) {
+                                      handleQuickAppointment(availability);
+                                    }
+                                  }}
+                                  title={availability.isPaused ? "⚠️ Agenda pausada - No se pueden registrar citas" : "Registrar nueva cita"}
+                                >
+                                  <UserPlus className="w-5 h-5 mr-2" />
+                                  Registrar Cita
+                                </Button>
+                                
+                                {/* Botón Pausar - Solo visible cuando NO está pausada */}
+                                {!availability.isPaused && (
+                                  <Button
+                                    size="lg"
+                                    variant="secondary"
+                                    className="bg-white text-yellow-600 hover:bg-yellow-50 font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                    onClick={(e) => handleTogglePause(availability, e)}
+                                    title="Pausar agenda y bloquear cupos"
+                                  >
+                                    <Pause className="w-5 h-5 mr-2" />
+                                    Pausar
+                                  </Button>
+                                )}
+                                
+                                {/* Botón Reanudar - Solo visible cuando SÍ está pausada */}
+                                {availability.isPaused && (
+                                  <Button
+                                    size="lg"
+                                    variant="default"
+                                    className="bg-white text-blue-600 hover:bg-blue-50 font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                    onClick={(e) => handleTogglePause(availability, e)}
+                                    title="Reanudar agenda y liberar cupos"
+                                  >
+                                    <Play className="w-5 h-5 mr-2" />
+                                    Reanudar
+                                  </Button>
+                                )}
+                              </div>
                             </div>
                           </div>
                         )}
@@ -550,11 +622,18 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                               {availability.status === 'active' && availability.bookedSlots < availability.capacity && (
                                 <Button
                                   size="sm"
-                                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold shadow-lg hover:shadow-xl transition-all duration-200"
+                                  disabled={availability.isPaused}
+                                  className={availability.isPaused
+                                    ? "flex items-center gap-2 bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
+                                    : "flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-semibold shadow-lg hover:shadow-xl transition-all duration-200"
+                                  }
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleQuickAppointment(availability);
+                                    if (!availability.isPaused) {
+                                      handleQuickAppointment(availability);
+                                    }
                                   }}
+                                  title={availability.isPaused ? "⚠️ Agenda pausada" : "Registrar cita"}
                                 >
                                   <UserPlus className="w-4 h-4" />
                                   Registrar Cita
@@ -625,11 +704,18 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                             <div className="flex items-center justify-center pt-4">
                               <Button
                                 size="lg"
-                                className="flex items-center gap-3 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                disabled={availability.isPaused}
+                                className={availability.isPaused
+                                  ? "flex items-center gap-3 bg-gray-300 text-gray-500 cursor-not-allowed font-bold py-3 px-6 rounded-full opacity-50"
+                                  : "flex items-center gap-3 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white font-bold py-3 px-6 rounded-full shadow-lg hover:shadow-xl transform hover:scale-105 transition-all duration-200"
+                                }
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleQuickAppointment(availability);
+                                  if (!availability.isPaused) {
+                                    handleQuickAppointment(availability);
+                                  }
                                 }}
+                                title={availability.isPaused ? "⚠️ Agenda pausada - No se pueden registrar citas" : "Registrar cita ahora"}
                               >
                                 <UserPlus className="w-5 h-5" />
                                 Registrar Cita Ahora
@@ -724,14 +810,51 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                     Transferir a otra fecha
                                   </Button>
 
+                                  {/* Botones Pausar/Reanudar */}
+                                  {!availability.isPaused && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="flex items-center gap-2 bg-yellow-50 border-yellow-300 text-yellow-700 hover:bg-yellow-100"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleTogglePause(availability.id);
+                                      }}
+                                    >
+                                      <PauseCircle className="w-4 h-4" />
+                                      Pausar
+                                    </Button>
+                                  )}
+                                  {availability.isPaused && (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="flex items-center gap-2 bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleTogglePause(availability.id);
+                                      }}
+                                    >
+                                      <PlayCircle className="w-4 h-4" />
+                                      Reanudar
+                                    </Button>
+                                  )}
+
                                   {availability.status === "Activa" && availability.bookedSlots < availability.capacity && (
                                     <Button
                                       size="sm"
-                                      className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+                                      disabled={availability.isPaused}
+                                      className={availability.isPaused
+                                        ? "flex items-center gap-2 bg-gray-300 text-gray-500 cursor-not-allowed opacity-50"
+                                        : "flex items-center gap-2 bg-green-600 hover:bg-green-700"
+                                      }
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        handleQuickAppointment(availability);
+                                        if (!availability.isPaused) {
+                                          handleQuickAppointment(availability);
+                                        }
                                       }}
+                                      title={availability.isPaused ? "⚠️ Agenda pausada" : "Registrar cita"}
                                     >
                                       <UserPlus className="w-4 h-4" />
                                       Registrar Cita

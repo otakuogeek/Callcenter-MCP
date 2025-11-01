@@ -29,6 +29,7 @@ export interface Availability {
   capacity: number;
   bookedSlots: number;
   status: 'active' | 'cancelled' | 'completed';
+  isPaused?: boolean; // 🔥 NUEVO: Indica si la agenda está pausada
   notes?: string;
   createdAt: string;
 }
@@ -37,7 +38,8 @@ export interface AvailabilityForm {
   locationId: string;
   specialty: string;
   doctor: string;
-  date: string;
+  date: string; // Fecha principal (para compatibilidad)
+  dates?: string[]; // 🔥 NUEVO: Array de fechas para creación múltiple
   startTime: string;
   endTime: string;
   capacity: number;
@@ -123,6 +125,7 @@ export const useAppointmentData = () => {
       capacity: r.capacity,
       bookedSlots: r.booked_slots ?? 0,
       status: r.status as any, // El backend ya devuelve: "Activa", "Cancelada", "Completa"
+      isPaused: Boolean(r.is_paused), // 🔥 NUEVO: Mapear campo is_paused
       notes: r.notes || '',
       createdAt: r.created_at,
     }));
@@ -209,8 +212,15 @@ export const useAppointmentData = () => {
       console.error('[addAvailability] availabilityData undefined');
       throw new Error('Formulario de disponibilidad no inicializado');
     }
+    
+    // 🔥 NUEVO: Validar que haya fechas (array o campo date)
+    const hasDates = (availabilityData.dates && availabilityData.dates.length > 0) || availabilityData.date;
+    if (!hasDates) {
+      throw new Error('Debe seleccionar al menos una fecha');
+    }
+    
     // Validación básica defensiva para evitar TypeError silencioso
-    const required: Array<keyof AvailabilityForm> = ['locationId','specialty','doctor','date','startTime','endTime'];
+    const required: Array<keyof AvailabilityForm> = ['locationId','specialty','doctor','startTime','endTime'];
     const missing = required.filter(k => !availabilityData[k] || (typeof availabilityData[k] === 'string' && (availabilityData[k] as any).trim() === ''));
     if (missing.length) {
       console.warn('[addAvailability] Campos faltantes:', missing);
@@ -220,42 +230,67 @@ export const useAppointmentData = () => {
       console.error('[addAvailability] locationId inválido:', availabilityData.locationId);
       throw new Error('Ubicación inválida');
     }
+    
     return handleApiCall(
       async () => {
-        await api.createAvailability({
+        const response = await api.createAvailability({
           location_id: Number(availabilityData.locationId),
           specialty_id: Number(availabilityData.specialty),
           doctor_id: Number(availabilityData.doctor),
-          date: availabilityData.date,
+          date: availabilityData.date, // Mantener por compatibilidad
+          dates: availabilityData.dates, // 🔥 NUEVO: Enviar array de fechas
           start_time: availabilityData.startTime,
           end_time: availabilityData.endTime,
           capacity: availabilityData.capacity,
-          duration_minutes: availabilityData.durationMinutes, // 🔥 Duración específica de la agenda
+          duration_minutes: availabilityData.durationMinutes,
           notes: availabilityData.notes,
           auto_preallocate: availabilityData.autoPreallocate || false,
           preallocation_publish_date: availabilityData.preallocationPublishDate || undefined,
-          // Campos de distribución automática
           auto_distribute: availabilityData.autoDistribute || false,
           distribution_start_date: availabilityData.distributionStartDate || undefined,
           distribution_end_date: availabilityData.distributionEndDate || undefined,
           exclude_weekends: availabilityData.excludeWeekends ?? true,
         });
-        // Recargar las disponibilidades para la fecha especificada
-        await loadAvailabilities(availabilityData.date);
+        
+        // 🔥 NUEVO: Recargar todas las fechas afectadas
+        const datesToReload = availabilityData.dates && availabilityData.dates.length > 0 
+          ? availabilityData.dates 
+          : [availabilityData.date];
+        
+        for (const dateStr of datesToReload) {
+          await loadAvailabilities(dateStr);
+        }
+        
+        return response;
       },
-      "Agenda creada exitosamente",
-      "No se pudo crear la agenda"
+      "Agenda(s) creada(s) exitosamente", // 🔥 Mensaje plural
+      "No se pudo crear la(s) agenda(s)"
     );
   };
 
   const updateAvailabilityStatus = async (id: number, status: 'Activa' | 'Cancelada' | 'Completa') => {
-    await api.updateAvailability(id, { status });
+    // Mapear estado del español al inglés para el backend
+    const statusMap = {
+      'Activa': 'active',
+      'Cancelada': 'cancelled',
+      'Completa': 'completed'
+    } as const;
+    
+    const backendStatus = statusMap[status];
+    await api.updateAvailability(id, { status: backendStatus });
     setAvailabilities(prev => prev.map(a => a.id === id ? { ...a, status } : a));
   };
 
   const updateAvailability = async (id: number, updates: Partial<Availability>) => {
     return handleApiCall(
       async () => {
+        // Mapear estado del español al inglés si es necesario
+        const statusMap: Record<string, string> = {
+          'Activa': 'active',
+          'Cancelada': 'cancelled',
+          'Completa': 'completed'
+        };
+        
         // Convertir el objeto de updates al formato que espera la API
         const apiUpdates: any = {};
         if (updates.date) apiUpdates.date = updates.date;
@@ -263,7 +298,10 @@ export const useAppointmentData = () => {
         if (updates.endTime) apiUpdates.end_time = updates.endTime;
         if (updates.capacity) apiUpdates.capacity = updates.capacity;
         if (updates.notes !== undefined) apiUpdates.notes = updates.notes;
-        if (updates.status) apiUpdates.status = updates.status;
+        if (updates.status) {
+          // Mapear el estado al formato inglés del backend
+          apiUpdates.status = statusMap[updates.status] || updates.status.toLowerCase();
+        }
 
         await api.updateAvailability(id, apiUpdates);
         

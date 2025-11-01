@@ -87,7 +87,7 @@ const Login = () => {
       // Animación de éxito antes de navegar
       setTimeout(() => {
         toast({ title: "Inicio de sesión exitoso", description: "Bienvenido al sistema Valeria" });
-  navigate("/appointments");
+        navigate("/queue");
       }, 1500);
       
     } catch (error) {

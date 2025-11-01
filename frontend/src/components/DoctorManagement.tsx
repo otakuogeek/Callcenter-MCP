@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { User, Plus, Edit, Trash2, Phone, Mail, Loader2 } from "lucide-react";
+import { User, Plus, Edit, Trash2, Phone, Mail, Loader2, Key } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -28,6 +28,13 @@ const DoctorManagement = () => {
   const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
   const [formData, setFormData] = useState({ name: "", email: "", phone: "", license_number: "" });
   const { toast } = useToast();
+
+  // Estado para el modal de contraseña
+  const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
+  const [passwordDoctor, setPasswordDoctor] = useState<Doctor | null>(null);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [settingPassword, setSettingPassword] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -138,6 +145,61 @@ const DoctorManagement = () => {
         variant: "destructive" 
       });
     }
+  };
+
+  const handleSetPassword = async () => {
+    if (!passwordDoctor) return;
+    
+    // Validaciones
+    if (!newPassword || newPassword.length < 6) {
+      toast({
+        title: "Contraseña inválida",
+        description: "La contraseña debe tener al menos 6 caracteres",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      toast({
+        title: "Las contraseñas no coinciden",
+        description: "Por favor verifica que ambas contraseñas sean iguales",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setSettingPassword(true);
+
+    try {
+      const result = await api.setDoctorPassword(passwordDoctor.id, newPassword);
+      
+      toast({
+        title: "Contraseña establecida",
+        description: `${passwordDoctor.name} ahora puede acceder al panel de doctores`,
+      });
+
+      // Limpiar y cerrar el modal
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordDoctor(null);
+      setIsPasswordDialogOpen(false);
+    } catch (e: any) {
+      toast({
+        title: "Error al establecer contraseña",
+        description: e?.message || "No se pudo establecer la contraseña",
+        variant: "destructive"
+      });
+    } finally {
+      setSettingPassword(false);
+    }
+  };
+
+  const openPasswordDialog = (doctor: Doctor) => {
+    setPasswordDoctor(doctor);
+    setNewPassword("");
+    setConfirmPassword("");
+    setIsPasswordDialogOpen(true);
   };
 
   // Activación/inactivación podría manejarse desde API en una mejora futura.
@@ -363,13 +425,23 @@ const DoctorManagement = () => {
                     variant="outline" 
                     size="sm"
                     onClick={() => handleEdit(doctor)}
+                    title="Editar doctor"
                   >
                     <Edit className="w-4 h-4" />
                   </Button>
                   <Button 
                     variant="outline" 
                     size="sm"
+                    onClick={() => openPasswordDialog(doctor)}
+                    title="Gestionar contraseña para acceso al panel"
+                  >
+                    <Key className="w-4 h-4" />
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
                     onClick={() => handleDelete(doctor.id)}
+                    title="Eliminar doctor"
                   >
                     <Trash2 className="w-4 h-4" />
                   </Button>
@@ -379,6 +451,99 @@ const DoctorManagement = () => {
           ))}
         </div>
       </CardContent>
+
+      {/* Modal para establecer/cambiar contraseña */}
+      <Dialog open={isPasswordDialogOpen} onOpenChange={setIsPasswordDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Key className="w-5 h-5" />
+              Gestionar Contraseña de Acceso
+            </DialogTitle>
+            <DialogDescription>
+              {passwordDoctor && (
+                <>
+                  Establece la contraseña para <strong>{passwordDoctor.name}</strong> para acceder al panel de doctores en{" "}
+                  <a 
+                    href="https://biosanarcall.site/doctor-login" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline"
+                  >
+                    biosanarcall.site/doctor-login
+                  </a>
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="newPassword">Nueva Contraseña</Label>
+              <Input
+                id="newPassword"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Mínimo 6 caracteres"
+                disabled={settingPassword}
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="confirmPassword">Confirmar Contraseña</Label>
+              <Input
+                id="confirmPassword"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Repite la contraseña"
+                disabled={settingPassword}
+              />
+            </div>
+
+            <div className="bg-blue-50 border border-blue-200 rounded-md p-3 text-sm text-blue-800">
+              <p className="font-medium mb-1">ℹ️ Información importante:</p>
+              <ul className="list-disc list-inside space-y-1 text-xs">
+                <li>La contraseña debe tener al menos 6 caracteres</li>
+                <li>El doctor usará su email ({passwordDoctor?.email || 'configurar email'}) para iniciar sesión</li>
+                <li>Puede cambiar la contraseña en cualquier momento</li>
+              </ul>
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  setIsPasswordDialogOpen(false);
+                  setNewPassword("");
+                  setConfirmPassword("");
+                  setPasswordDoctor(null);
+                }}
+                disabled={settingPassword}
+              >
+                Cancelar
+              </Button>
+              <Button 
+                onClick={handleSetPassword}
+                disabled={settingPassword || !newPassword || !confirmPassword}
+              >
+                {settingPassword ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Guardando...
+                  </>
+                ) : (
+                  <>
+                    <Key className="w-4 h-4 mr-2" />
+                    Establecer Contraseña
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 };
