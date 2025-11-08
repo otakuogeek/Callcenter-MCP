@@ -367,22 +367,32 @@ export default function DailyQueue() {
               <p className="text-sm text-gray-600">Pacientes con citas programadas para la fecha seleccionada</p>
 
               {dailyData?.data && dailyData.data.length > 0 ? (
-                dailyData.data.map((specialty: any) => (
-                  <Card key={specialty.specialty_id} className="border-medical-200">
-                    <CardHeader className="bg-gradient-to-r from-medical-50 to-white">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle className="text-xl text-medical-800">{specialty.specialty_name}</CardTitle>
-                          <CardDescription>
-                            {specialty.waiting_count} en espera • {specialty.scheduled_count} agendadas
-                          </CardDescription>
+                dailyData.data.map((specialty: any) => {
+                  // Filtrar citas fantasma de "Fundación Biosanar IPS"
+                  const filteredItems = specialty.items?.filter((item: any) => 
+                    item.patient_name !== "Fundación Biosanar IPS"
+                  ) || [];
+
+                  // Recalcular contadores sin las citas fantasma
+                  const filteredWaitingCount = filteredItems.filter((item: any) => item.type === 'waiting').length;
+                  const filteredScheduledCount = filteredItems.filter((item: any) => item.type === 'scheduled').length;
+
+                  return (
+                    <Card key={specialty.specialty_id} className="border-medical-200">
+                      <CardHeader className="bg-gradient-to-r from-medical-50 to-white">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <CardTitle className="text-xl text-medical-800">{specialty.specialty_name}</CardTitle>
+                            <CardDescription>
+                              {filteredWaitingCount} en espera • {filteredScheduledCount} agendadas
+                            </CardDescription>
+                          </div>
                         </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="p-6">
-                      <div className="space-y-3">
-                        {specialty.items && specialty.items.length > 0 ? (
-                          specialty.items.map((item: any, index: number) => (
+                      </CardHeader>
+                      <CardContent className="p-6">
+                        <div className="space-y-3">
+                          {filteredItems.length > 0 ? (
+                            filteredItems.map((item: any, index: number) => (
                             <div 
                               key={`${item.type}-${item.id}`} 
                               className="flex items-center justify-between p-4 border rounded-lg hover:bg-medical-50 transition-colors"
@@ -487,7 +497,8 @@ export default function DailyQueue() {
                       </div>
                     </CardContent>
                   </Card>
-                ))
+                  );
+                })
               ) : (
                 <Card>
                   <CardContent className="p-12 text-center">

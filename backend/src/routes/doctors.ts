@@ -280,12 +280,73 @@ router.get('/by-specialty/:specialtyId', requireAuth, async (req: Request, res: 
 });
 
 router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
-  const id = Number(req.params.id); if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
+  const id = Number(req.params.id); 
+  if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
+  
+  const conn = await pool.getConnection();
   try {
-    await pool.query('DELETE FROM doctors WHERE id = ?', [id]);
+    await conn.beginTransaction();
+    
+    // Verificar si el doctor tiene citas asociadas
+    const [appointments] = await conn.query<any[]>(
+      'SELECT COUNT(*) as count FROM appointments WHERE doctor_id = ?',
+      [id]
+    );
+    
+    if (Array.isArray(appointments) && appointments[0]?.count > 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ 
+        message: 'No se puede eliminar el doctor porque tiene citas asociadas',
+        details: `El doctor tiene ${appointments[0].count} cita(s) asociada(s). Considere desactivarlo en lugar de eliminarlo.`
+      });
+    }
+    
+    // Verificar si tiene disponibilidades asociadas
+    const [availabilities] = await conn.query<any[]>(
+      'SELECT COUNT(*) as count FROM availabilities WHERE doctor_id = ?',
+      [id]
+    );
+    
+    if (Array.isArray(availabilities) && availabilities[0]?.count > 0) {
+      await conn.rollback();
+      conn.release();
+      return res.status(400).json({ 
+        message: 'No se puede eliminar el doctor porque tiene disponibilidades asociadas',
+        details: `El doctor tiene ${availabilities[0].count} disponibilidad(es) asociada(s). Considere desactivarlo en lugar de eliminarlo.`
+      });
+    }
+    
+    // Eliminar relaciones con especialidades y ubicaciones
+    await conn.query('DELETE FROM doctor_specialties WHERE doctor_id = ?', [id]);
+    await conn.query('DELETE FROM doctor_locations WHERE doctor_id = ?', [id]);
+    
+    // Eliminar el doctor
+    const [result] = await conn.query<any>('DELETE FROM doctors WHERE id = ?', [id]);
+    
+    await conn.commit();
+    conn.release();
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'Doctor no encontrado' });
+    }
+    
     return res.status(204).send();
-  } catch {
-    return res.status(500).json({ message: 'Server error' });
+  } catch (error: any) {
+    await conn.rollback();
+    conn.release();
+    
+    console.error('Error deleting doctor:', error);
+    
+    // Manejar errores específicos de foreign key
+    if (error.code === 'ER_ROW_IS_REFERENCED_2' || error.code === 'ER_ROW_IS_REFERENCED') {
+      return res.status(400).json({ 
+        message: 'No se puede eliminar el doctor porque tiene registros asociados',
+        details: 'El doctor está vinculado a citas, disponibilidades u otros registros. Considere desactivarlo en lugar de eliminarlo.'
+      });
+    }
+    
+    return res.status(500).json({ message: 'Error al eliminar el doctor' });
   }
 });
 

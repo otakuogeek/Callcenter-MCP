@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button";
 import { safeFormatDate } from "@/utils/dateHelpers";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Calendar, Clock, User, MapPin, CheckCircle, AlertCircle, XCircle, Trash2, ArrowRight, RotateCcw } from "lucide-react";
+import { Calendar, Clock, User, MapPin, CheckCircle, AlertCircle, XCircle, Trash2, ArrowRight, RotateCcw, MessageCircle } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import type { Availability } from "@/hooks/useAppointmentData";
@@ -71,6 +71,8 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
   const [selectedAppointmentForReassign, setSelectedAppointmentForReassign] = useState<{
     id: number;
     patientName: string;
+    patientPhone?: string | null;
+    scheduledAt?: string;
   } | null>(null);
   
   // Estados para devolver a espera
@@ -79,6 +81,15 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
   const [cancellationReason, setCancellationReason] = useState("");
   const [autoAssign, setAutoAssign] = useState(false);
   const [returningToQueue, setReturningToQueue] = useState(false);
+  
+  // Estados para cancelación con SMS
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
+  const [appointmentToCancel, setAppointmentToCancel] = useState<AppointmentRow | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelling, setCancelling] = useState(false);
+  
+  // Estado para enviar SMS masivos
+  const [sendingSMS, setSendingSMS] = useState(false);
   
   const { toast } = useToast();
 
@@ -155,24 +166,88 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
     loadAppointments();
   }, [isOpen, availability?.id]);
 
-  const handleCancelAppointment = async (appointmentId: number, patientName: string) => {
-    if (!confirm(`¿Está seguro de que desea cancelar la cita de ${patientName}?`)) {
+  const handleCancelAppointment = async (appointmentId: number, _patientName: string) => {
+    // Buscar la cita completa en la lista
+    const appointment = appointments.find(ap => ap.id === appointmentId);
+    if (!appointment) return;
+    
+    // Abrir modal de cancelación
+    setAppointmentToCancel(appointment);
+    setCancelReason("");
+    setCancelModalOpen(true);
+  };
+  
+  // Función que ejecuta la cancelación con SMS
+  const executeCancellation = async () => {
+    if (!appointmentToCancel || !cancelReason.trim()) {
+      toast({
+        title: "Motivo requerido",
+        description: "Debe especificar el motivo de la cancelación",
+        variant: "destructive",
+      });
       return;
     }
 
-    setDeletingIds(prev => new Set(prev).add(appointmentId));
+    setCancelling(true);
     
     try {
-      await api.cancelAppointment(appointmentId, 'Cita cancelada por el administrativo');
+      // 1. Cancelar la cita
+      await api.cancelAppointment(appointmentToCancel.id, cancelReason);
+      
+      // 2. Enviar SMS de notificación al paciente (si tiene teléfono)
+      if (appointmentToCancel.patient_phone && availability) {
+        try {
+          const appointmentDate = new Date(availability.date);
+          const formattedDate = appointmentDate.toLocaleDateString('es-CO', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+          
+          const message = `Hola ${appointmentToCancel.patient_name}. Lamentamos informarle que su cita ha sido CANCELADA.\n\n` +
+            `📅 Cita cancelada:\n` +
+            `👨‍⚕️ Doctor: ${availability.doctor}\n` +
+            `🏥 Especialidad: ${availability.specialty}\n` +
+            `📍 Sede: ${availability.locationName}\n` +
+            `📆 Fecha: ${formattedDate}\n` +
+            `🕐 Hora: ${appointmentToCancel.scheduled_at?.substring(11, 16) || 'N/A'}\n\n` +
+            `Motivo: ${cancelReason}\n\n` +
+            `Para reagendar, comuníquese con nosotros.\n` +
+            `- Fundación Biosanar IPS`;
+
+          await fetch(`${import.meta.env.VITE_API_URL}/sms/send`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({
+              number: appointmentToCancel.patient_phone,
+              message,
+              recipient_name: appointmentToCancel.patient_name,
+              patient_id: appointmentToCancel.id,
+              template_id: 'appointment_cancellation'
+            })
+          });
+        } catch (smsError) {
+          console.error('Error enviando SMS de cancelación:', smsError);
+          // No detener el flujo si falla el SMS
+        }
+      }
       
       toast({
         title: "Cita cancelada",
-        description: `La cita de ${patientName} ha sido cancelada exitosamente.`,
+        description: `La cita de ${appointmentToCancel.patient_name} ha sido cancelada y se envió notificación por SMS.`,
         variant: "default",
       });
       
-      // Recargar las citas
+      // Cerrar modal y recargar
+      setCancelModalOpen(false);
+      setAppointmentToCancel(null);
+      setCancelReason("");
       await loadAppointments();
+      
     } catch (e: any) {
       toast({
         title: "Error al cancelar",
@@ -180,11 +255,7 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
         variant: "destructive",
       });
     } finally {
-      setDeletingIds(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(appointmentId);
-        return newSet;
-      });
+      setCancelling(false);
     }
   };
 
@@ -207,13 +278,56 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
       );
 
       if (response.success) {
+        // Enviar SMS al paciente informando que pasó a lista de espera
+        if (appointmentToReturn.patient_phone && availability) {
+          try {
+            const appointmentDate = new Date(availability.date);
+            const formattedDate = appointmentDate.toLocaleDateString('es-CO', { 
+              weekday: 'long', 
+              year: 'numeric', 
+              month: 'long', 
+              day: 'numeric' 
+            });
+            
+            const message = `Hola ${appointmentToReturn.patient_name}. Su cita ha sido MOVIDA A LISTA DE ESPERA.\n\n` +
+              `📋 Información de la cita:\n` +
+              `👨‍⚕️ Doctor: ${availability.doctor}\n` +
+              `🏥 Especialidad: ${availability.specialty}\n` +
+              `📍 Sede: ${availability.locationName}\n` +
+              `📆 Fecha original: ${formattedDate}\n\n` +
+              `✅ Le notificaremos por SMS cuando se le asigne una nueva cita.\n\n` +
+              `Puede verificar el estado y reagendar desde:\n` +
+              `🌐 https://biosanarcall.site/users\n\n` +
+              `Disculpe las molestias.\n` +
+              `- Fundación Biosanar IPS`;
+
+            await fetch(`${import.meta.env.VITE_API_URL}/sms/send`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+              },
+              body: JSON.stringify({
+                number: appointmentToReturn.patient_phone,
+                message,
+                recipient_name: appointmentToReturn.patient_name,
+                patient_id: appointmentToReturn.id,
+                template_id: 'appointment_to_waiting_list'
+              })
+            });
+          } catch (smsError) {
+            console.error('Error enviando SMS de lista de espera:', smsError);
+            // No detener el flujo si falla el SMS
+          }
+        }
+
         toast({
           title: "Cita devuelta a cola",
-          description: autoAssign && response.data.reassignment?.assigned
+          description: autoAssign && response.data?.reassignment?.assigned
             ? `Cupo reasignado a: ${response.data.reassignment.patient_assigned}`
-            : response.data.next_in_queue
-            ? `Siguiente en cola: ${response.data.next_in_queue.patient_name}`
-            : "Cupo liberado exitosamente",
+            : response.data?.next_in_queue
+            ? `Siguiente en cola: ${response.data.next_in_queue.patient_name}. SMS enviado al paciente.`
+            : "Cupo liberado exitosamente. SMS enviado al paciente.",
         });
 
         // Recargar las citas
@@ -338,6 +452,70 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
         description: e?.message || "No se pudo sincronizar las horas",
         variant: "destructive",
       });
+    }
+  };
+
+  const handleNotifySMS = async () => {
+    if (!availability) return;
+
+    const confirmedCount = appointments.filter(ap => ap.status === 'Confirmada').length;
+    
+    if (confirmedCount === 0) {
+      toast({
+        title: "Sin pacientes",
+        description: "No hay pacientes confirmados para notificar",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!confirm(`¿Está seguro de enviar SMS de recordatorio a ${confirmedCount} paciente(s) confirmado(s)?\n\nSe enviará información sobre:\n- Especialidad: ${availability.specialty}\n- Doctor: ${availability.doctor}\n- Fecha y hora de la cita\n- Sede: ${availability.locationName}`)) {
+      return;
+    }
+
+    setSendingSMS(true);
+
+    try {
+      toast({
+        title: "Enviando SMS...",
+        description: `Notificando a ${confirmedCount} paciente(s)`,
+      });
+
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/sms/notify-availability-patients`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          availability_id: availability.id
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast({
+          title: "SMS enviados exitosamente",
+          description: `${result.data.sms_enviados} SMS enviados, ${result.data.sms_fallidos} fallidos`,
+          variant: result.data.sms_fallidos > 0 ? "default" : "default",
+        });
+      } else {
+        toast({
+          title: "Error al enviar SMS",
+          description: result.error || "No se pudieron enviar los SMS",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Error enviando SMS:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo conectar con el servicio de SMS",
+        variant: "destructive",
+      });
+    } finally {
+      setSendingSMS(false);
     }
   };
 
@@ -653,7 +831,9 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                               onClick={() => {
                                 setSelectedAppointmentForReassign({
                                   id: ap.id,
-                                  patientName: ap.patient_name
+                                  patientName: ap.patient_name,
+                                  patientPhone: ap.patient_phone,
+                                  scheduledAt: ap.scheduled_at
                                 });
                                 setReassignModalOpen(true);
                               }}
@@ -846,22 +1026,32 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
 
         {/* Botones de acción - FUERA del scroll, siempre visibles */}
         <div className="flex justify-between items-center gap-3 pt-4 border-t mt-4 bg-white">
-          {/* Botón Sincronizar Horas */}
-          {!loading && !error && appointments.filter(ap => ap.status === 'Confirmada' || ap.status === 'Pendiente').length > 0 && (
-            <Button 
-              variant="default" 
-              onClick={handleSyncAppointmentTimes}
-              className="bg-blue-600 hover:bg-blue-700 text-white"
-            >
-              <Clock className="w-4 h-4 mr-2" />
-              Sincronizar Horas
-            </Button>
-          )}
-          
-          {/* Espaciador si no hay botón de sincronizar */}
-          {(loading || error || appointments.filter(ap => ap.status === 'Confirmada' || ap.status === 'Pendiente').length === 0) && (
-            <div></div>
-          )}
+          <div className="flex gap-2">
+            {/* Botón Sincronizar Horas */}
+            {!loading && !error && appointments.filter(ap => ap.status === 'Confirmada' || ap.status === 'Pendiente').length > 0 && (
+              <Button 
+                variant="default" 
+                onClick={handleSyncAppointmentTimes}
+                className="bg-blue-600 hover:bg-blue-700 text-white"
+              >
+                <Clock className="w-4 h-4 mr-2" />
+                Sincronizar Horas
+              </Button>
+            )}
+            
+            {/* Botón Notificar SMS */}
+            {!loading && !error && appointments.filter(ap => ap.status === 'Confirmada').length > 0 && (
+              <Button 
+                variant="default" 
+                onClick={handleNotifySMS}
+                disabled={sendingSMS}
+                className="bg-green-600 hover:bg-green-700 text-white disabled:bg-gray-400"
+              >
+                <MessageCircle className="w-4 h-4 mr-2" />
+                {sendingSMS ? 'Enviando...' : 'Notificar SMS'}
+              </Button>
+            )}
+          </div>
           
           {/* Botón Cerrar */}
           <Button variant="outline" onClick={onClose}>
@@ -881,6 +1071,11 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
           appointmentId={selectedAppointmentForReassign.id}
           patientName={selectedAppointmentForReassign.patientName}
           currentAvailabilityId={availability.id}
+          patientPhone={selectedAppointmentForReassign.patientPhone}
+          currentDoctor={availability.doctor}
+          currentDate={availability.date}
+          currentTime={selectedAppointmentForReassign.scheduledAt?.substring(11, 16)}
+          currentLocation={availability.locationName}
           onReassignSuccess={() => {
             // Recargar las citas después de reasignar
             loadAppointments();
@@ -927,8 +1122,8 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
               <div className="bg-gray-50 p-3 rounded-md text-sm space-y-1">
                 <p><strong>Paciente:</strong> {appointmentToReturn.patient_name}</p>
                 {appointmentToReturn.patient_document && <p><strong>Documento:</strong> {appointmentToReturn.patient_document}</p>}
-                <p><strong>Doctor:</strong> {availability.doctorName}</p>
-                <p><strong>Especialidad:</strong> {availability.specialtyName}</p>
+                <p><strong>Doctor:</strong> {availability.doctor}</p>
+                <p><strong>Especialidad:</strong> {availability.specialty}</p>
                 <p><strong>Sede:</strong> {availability.locationName}</p>
                 <p><strong>Fecha:</strong> {format(new Date(availability.date + 'T12:00:00'), "d 'de' MMMM 'de' yyyy", { locale: es })}</p>
               </div>
@@ -951,6 +1146,143 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                 <>
                   <RotateCcw className="w-4 h-4 mr-2" />
                   Devolver a Espera
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Modal de Cancelación con SMS */}
+      <AlertDialog open={cancelModalOpen} onOpenChange={setCancelModalOpen}>
+        <AlertDialogContent className="max-w-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-red-600">Cancelar Cita y Notificar al Paciente</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se cancelará la cita y se enviará un SMS automático al paciente informándole de la cancelación.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          {appointmentToCancel && availability && (
+            <div className="space-y-4 py-4">
+              {/* Información de la cita */}
+              <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded-md space-y-2">
+                <h4 className="font-semibold text-blue-900 mb-3">Información de la Cita a Cancelar</h4>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                  <div>
+                    <p className="text-gray-600">Paciente:</p>
+                    <p className="font-semibold text-gray-900">{appointmentToCancel.patient_name}</p>
+                  </div>
+                  
+                  {appointmentToCancel.patient_document && (
+                    <div>
+                      <p className="text-gray-600">Documento:</p>
+                      <p className="font-semibold text-gray-900">{appointmentToCancel.patient_document}</p>
+                    </div>
+                  )}
+                  
+                  <div>
+                    <p className="text-gray-600">Teléfono:</p>
+                    <p className="font-semibold text-gray-900">{appointmentToCancel.patient_phone || 'No registrado'}</p>
+                  </div>
+                  
+                  <div>
+                    <p className="text-gray-600">Doctor:</p>
+                    <p className="font-semibold text-gray-900">{availability.doctor}</p>
+                  </div>
+                  
+                  <div>
+                    <p className="text-gray-600">Especialidad:</p>
+                    <p className="font-semibold text-gray-900">{availability.specialty}</p>
+                  </div>
+                  
+                  <div>
+                    <p className="text-gray-600">Sede:</p>
+                    <p className="font-semibold text-gray-900">{availability.locationName}</p>
+                  </div>
+                  
+                  <div>
+                    <p className="text-gray-600">Fecha:</p>
+                    <p className="font-semibold text-gray-900">
+                      {format(new Date(availability.date + 'T12:00:00'), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <p className="text-gray-600">Hora:</p>
+                    <p className="font-semibold text-gray-900">
+                      {appointmentToCancel.scheduled_at?.substring(11, 16) || availability.startTime}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Campo de motivo */}
+              <div className="space-y-2">
+                <Label htmlFor="cancel-reason" className="text-base font-semibold text-red-600">
+                  Motivo de cancelación <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="cancel-reason"
+                  placeholder="Ej: Agenda reprogramada, Doctor no disponible, Solicitud del paciente..."
+                  value={cancelReason}
+                  onChange={(e) => setCancelReason(e.target.value)}
+                  className="border-2"
+                  autoFocus
+                />
+                <p className="text-xs text-gray-500">
+                  Este motivo se incluirá en el SMS que se enviará al paciente.
+                </p>
+              </div>
+
+              {/* Advertencia de SMS */}
+              {appointmentToCancel.patient_phone ? (
+                <div className="bg-green-50 border-l-4 border-green-500 p-3 rounded-md">
+                  <div className="flex items-start gap-2">
+                    <MessageCircle className="w-5 h-5 text-green-600 mt-0.5" />
+                    <div className="text-sm">
+                      <p className="font-semibold text-green-900">SMS de notificación</p>
+                      <p className="text-green-700">
+                        Se enviará un SMS automático al <strong>{appointmentToCancel.patient_phone}</strong> informando de la cancelación.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-yellow-50 border-l-4 border-yellow-500 p-3 rounded-md">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
+                    <div className="text-sm">
+                      <p className="font-semibold text-yellow-900">Sin teléfono registrado</p>
+                      <p className="text-yellow-700">
+                        Este paciente no tiene teléfono registrado. No se enviará SMS de notificación.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={cancelling}>
+              Volver
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={executeCancellation}
+              disabled={cancelling || !cancelReason.trim()}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {cancelling ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Cancelando...
+                </>
+              ) : (
+                <>
+                  <XCircle className="w-4 h-4 mr-2" />
+                  Cancelar Cita y Enviar SMS
                 </>
               )}
             </AlertDialogAction>

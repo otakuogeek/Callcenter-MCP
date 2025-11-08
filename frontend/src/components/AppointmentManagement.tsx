@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from "@/components/ui/button";
-import { Plus, Calendar, Filter, Search, X, Zap, Printer } from "lucide-react";
+import { Plus, Calendar, Filter, Search, X, Zap, Printer, BarChart3 } from "lucide-react";
 import { useAppointmentData, type AvailabilityForm } from "@/hooks/useAppointmentData";
 import AppointmentFilters from "./AppointmentFilters";
 import DateNavigationCards from "./DateNavigationCards";
@@ -9,6 +9,7 @@ import CreateAvailabilityModal from "./CreateAvailabilityModal";
 import ViewAppointmentsModal from "./ViewAppointmentsModal";
 import DistributionCalendar from "./DistributionCalendar";
 import SmartAppointmentModal from "./SmartAppointmentModal";
+import AppointmentAnalytics from "./AppointmentAnalytics";
 import { useToast } from "@/hooks/use-toast";
 import api from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +34,7 @@ const AppointmentManagement = () => {
   const [selectedLocation, setSelectedLocation] = useState("all");
   const [selectedSpecialty, setSelectedSpecialty] = useState("all");
   const [selectedStatus, setSelectedStatus] = useState("all");
-  const [viewMode, setViewMode] = useState<"calendar" | "distribution">("calendar");
+  const [viewMode, setViewMode] = useState<"calendar" | "distribution" | "analytics">("calendar");
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [enhancedFilters, setEnhancedFilters] = useState({
     doctors: [] as number[],
@@ -521,8 +522,8 @@ const AppointmentManagement = () => {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "calendar" | "distribution")} className="bg-white/80 backdrop-blur-sm rounded-xl p-1 shadow-lg border border-white/20">
-              <TabsList className="grid w-full grid-cols-2 gap-1">
+            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "calendar" | "distribution" | "analytics")} className="bg-white/80 backdrop-blur-sm rounded-xl p-1 shadow-lg border border-white/20">
+              <TabsList className="grid w-full grid-cols-3 gap-1">
                 <TabsTrigger value="calendar" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
                   <Calendar className="w-4 h-4" />
                   <span className="hidden sm:inline">Calendario</span>
@@ -530,6 +531,10 @@ const AppointmentManagement = () => {
                 <TabsTrigger value="distribution" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
                   <Calendar className="w-4 h-4" />
                   <span className="hidden sm:inline">Distribución</span>
+                </TabsTrigger>
+                <TabsTrigger value="analytics" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
+                  <BarChart3 className="w-4 h-4" />
+                  <span className="hidden sm:inline">Analytics</span>
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -707,6 +712,15 @@ const AppointmentManagement = () => {
               </CardHeader>
               <CardContent>
                 <DistributionCalendar />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="analytics" className="space-y-6">
+            {/* Vista de analytics de citas */}
+            <Card className="border-0 shadow-xl bg-white/95 backdrop-blur-sm">
+              <CardContent className="p-6">
+                <AppointmentAnalytics />
               </CardContent>
             </Card>
           </TabsContent>

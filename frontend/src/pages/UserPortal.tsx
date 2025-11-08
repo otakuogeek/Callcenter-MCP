@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Calendar, LogOut, QrCode, Download, User, Phone, Mail, MapPin, Home } from "lucide-react";
+import { Calendar, LogOut, QrCode, Download, User, Phone, Mail, MapPin, Home, X, AlertTriangle, CalendarDays, Clock } from "lucide-react";
 import { api } from "@/lib/api";
 import QRCode from 'qrcode';
 import { useToast } from "@/hooks/use-toast";
@@ -193,6 +193,8 @@ export default function UserPortal() {
   const [authorizedSpecialties, setAuthorizedSpecialties] = useState<any[]>([]);
   const [loadingSpecialties, setLoadingSpecialties] = useState(false);
   const [selectedSpecialty, setSelectedSpecialty] = useState<any>(null);
+  const [availableLocations, setAvailableLocations] = useState<any[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState<any>(null);
   const [availableSchedules, setAvailableSchedules] = useState<any[]>([]);
   const [loadingSchedules, setLoadingSchedules] = useState(false);
   const [waitingListResult, setWaitingListResult] = useState<any>(null);
@@ -208,6 +210,34 @@ export default function UserPortal() {
   const [cupsManualName, setCupsManualName] = useState('');
   const [searchingCups, setSearchingCups] = useState(false);
   const [cupsNotFound, setCupsNotFound] = useState(false);
+  
+  // Estados para cancelación de citas
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
+  const [appointmentToCancel, setAppointmentToCancel] = useState<any>(null);
+  const [cancellationReason, setCancellationReason] = useState('');
+  const [cancellingAppointment, setCancellingAppointment] = useState(false);
+  
+  // Estados para reasignación de citas
+  const [showRescheduleDialog, setShowRescheduleDialog] = useState(false);
+  const [appointmentToReschedule, setAppointmentToReschedule] = useState<any>(null);
+  const [selectedNewSchedule, setSelectedNewSchedule] = useState<any>(null);
+  const [rescheduleReason, setRescheduleReason] = useState('');
+  const [reschedulingAppointment, setReschedulingAppointment] = useState(false);
+  
+  // Estados para filtro de sede en reasignación
+  const [selectedLocationForReschedule, setSelectedLocationForReschedule] = useState<string>('');
+  const [showLocationSelector, setShowLocationSelector] = useState(false);
+  const [filteredSchedules, setFilteredSchedules] = useState<any[]>([]);
+  
+  // Estados para selección de hora específica
+  const [selectedScheduleForTime, setSelectedScheduleForTime] = useState<any>(null);
+  const [showTimeSelector, setShowTimeSelector] = useState(false);
+  const [selectedTime, setSelectedTime] = useState<string>('');
+  
+  // Estados para selección de hora en reasignación
+  const [selectedScheduleForRescheduleTime, setSelectedScheduleForRescheduleTime] = useState<any>(null);
+  const [showRescheduleTimeSelector, setShowRescheduleTimeSelector] = useState(false);
+  const [selectedRescheduleTime, setSelectedRescheduleTime] = useState<string>('');
   
   const { toast } = useToast();
 
@@ -397,6 +427,30 @@ export default function UserPortal() {
       return;
     }
 
+    // Verificar que el EPS tenga acceso a al menos una ubicación
+    try {
+      const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+      const epsLocationsUrl = baseUrl.endsWith('/api') 
+        ? `${baseUrl}/locations/eps/${patient.insurance_eps_id}`
+        : `${baseUrl}/api/locations/eps/${patient.insurance_eps_id}`;
+      
+      const locationsResponse = await fetch(epsLocationsUrl);
+      if (locationsResponse.ok) {
+        const locationData = await locationsResponse.json();
+        if (!Array.isArray(locationData) || locationData.length === 0) {
+          toast({
+            title: "Sin acceso autorizado",
+            description: "Tu EPS no tiene autorización para agendar citas en ninguna de nuestras sedes. Por favor, contacta a tu EPS para verificar la cobertura en Fundación Biosanar IPS.",
+            variant: "destructive",
+          });
+          return;
+        }
+        console.log(`✅ EPS tiene acceso a ${locationData.length} ubicación(es): ${locationData.map(l => l.zone_name).join(', ')}`);
+      }
+    } catch (error) {
+      console.warn('⚠️ No se pudo verificar acceso por zonas, continuando...', error);
+    }
+
     setShowScheduleModal(true);
     setLoadingSpecialties(true);
 
@@ -431,9 +485,11 @@ export default function UserPortal() {
     }
   };
 
-  // Seleccionar especialidad y cargar agendas disponibles
+  // Seleccionar especialidad y cargar sedes disponibles
   const handleSelectSpecialty = async (specialty: any) => {
     setSelectedSpecialty(specialty);
+    setSelectedLocation(null); // Reset location selection
+    setAvailableSchedules([]); // Reset schedules
     
     // Si es Ecografía, primero solicitar código CUPS
     if (specialty.name && specialty.name.toLowerCase().includes('ecograf')) {
@@ -442,50 +498,159 @@ export default function UserPortal() {
       return; // Detener aquí, continuará después de ingresar CUPS
     }
     
-    // Para otras especialidades, continuar con el flujo normal
-    await loadAvailableSchedules(specialty);
+    // Para otras especialidades, cargar sedes disponibles
+    await loadAvailableLocations(specialty);
   };
 
-  // Función separada para cargar agendas disponibles
-  const loadAvailableSchedules = async (specialty: any) => {
+  // Función para cargar sedes disponibles para la especialidad
+  const loadAvailableLocations = async (specialty: any) => {
     setLoadingSchedules(true);
 
     try {
       const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+      
+      // Primero, verificar qué ubicaciones están autorizadas para este EPS
+      const authorizedLocationsUrl = baseUrl.endsWith('/api') 
+        ? `${baseUrl}/locations/public/eps/${patient.insurance_eps_id}`
+        : `${baseUrl}/api/locations/public/eps/${patient.insurance_eps_id}`;
+        
+      console.log(`🔍 Consultando ubicaciones autorizadas para EPS ${patient.insurance_eps_id}: ${authorizedLocationsUrl}`);
+      
+      const locationsResponse = await fetch(authorizedLocationsUrl);
+      if (!locationsResponse.ok) {
+        throw new Error(`Error al cargar ubicaciones autorizadas: ${locationsResponse.status}`);
+      }
+      
+      const authorizedLocationsData = await locationsResponse.json();
+      console.log(`✅ Ubicaciones autorizadas:`, authorizedLocationsData);
+      
+      if (!Array.isArray(authorizedLocationsData) || authorizedLocationsData.length === 0) {
+        console.log(`❌ No hay ubicaciones autorizadas para este EPS`);
+        setAvailableLocations([]);
+        setAvailableSchedules([]);
+        setLoadingSchedules(false);
+        toast({
+          title: "Sin acceso",
+          description: `Tu EPS no tiene autorización para agendar citas en ninguna sede. Contacta a tu EPS para más información.`,
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      // Extraer los IDs de las ubicaciones autorizadas
+      const authorizedLocationIds = authorizedLocationsData.map(loc => loc.id);
+      console.log(`🏥 IDs de ubicaciones autorizadas: [${authorizedLocationIds.join(', ')}]`);
+      
+      // Ahora cargar las agendas disponibles para la especialidad
       const url = baseUrl.endsWith('/api') 
-        ? `${baseUrl}/patients-v2/public/available-schedules/${specialty.id}/${patient.insurance_eps_id}`
-        : `${baseUrl}/api/patients-v2/public/available-schedules/${specialty.id}/${patient.insurance_eps_id}`;
+        ? `${baseUrl}/availabilities/public?specialty_id=${specialty.id}`
+        : `${baseUrl}/api/availabilities/public?specialty_id=${specialty.id}`;
+      
+      console.log(`🔍 Consultando agendas disponibles: ${url}`);
       
       const response = await fetch(url);
+      
+      if (!response.ok) {
+        console.error(`❌ Error HTTP ${response.status}: ${response.statusText}`);
+        throw new Error(`Error HTTP ${response.status}`);
+      }
+      
       const data = await response.json();
       
-      if (data.success) {
-        if (data.has_availability && data.data.length > 0) {
-          // Hay agendas disponibles, mostrarlas
-          setAvailableSchedules(data.data);
-          console.log(`✅ Agendas disponibles: ${data.data.length}`);
+      // El nuevo endpoint devuelve directamente un array de agendas con cupos
+      if (Array.isArray(data) && data.length > 0) {
+        // Obtener la fecha actual en Colombia (UTC-5)
+        const now = new Date();
+        const todayInColombia = new Date(now.getTime() - (5 * 60 * 60 * 1000)); // Ajustar a UTC-5
+        const todayStr = todayInColombia.toISOString().split('T')[0]; // YYYY-MM-DD
+        
+        console.log(`📅 Hoy en Colombia: ${todayStr}`);
+        
+        // Filtrar agendas: solo las que NO sean del día actual Y que estén en ubicaciones autorizadas
+        const schedulesWithSlots = data.filter((schedule: any) => {
+          // Excluir SOLO el día actual, permitir desde mañana en adelante
+          const isNotToday = schedule.date > todayStr;
+          
+          // Verificar si la ubicación está autorizada para este EPS
+          const isLocationAuthorized = authorizedLocationIds.includes(schedule.location_id);
+          
+          if (!isNotToday) {
+            console.log(`❌ Excluyendo agenda del ${schedule.date} (es hoy o pasado)`);
+          }
+          
+          if (!isLocationAuthorized) {
+            console.log(`❌ Excluyendo agenda en ${schedule.location_name} (ubicación no autorizada para este EPS)`);
+          }
+          
+          return isNotToday && isLocationAuthorized;
+        });
+        
+        if (schedulesWithSlots.length > 0) {
+          // Extraer sedes únicas solo de las agendas con cupos disponibles Y autorizadas
+          const locationsMap = new Map();
+          schedulesWithSlots.forEach((schedule: any) => {
+            if (!locationsMap.has(schedule.location_name)) {
+              // Buscar la información completa de la ubicación autorizada
+              const authorizedLocation = authorizedLocationsData.find(loc => loc.id === schedule.location_id);
+              locationsMap.set(schedule.location_name, {
+                name: schedule.location_name,
+                address: schedule.location_address || authorizedLocation?.address || 'Dirección no disponible',
+                zone_name: authorizedLocation?.zone_name || 'Zona no especificada',
+                eps_name: authorizedLocation?.eps_name || 'EPS no especificada',
+                schedules_count: 0
+              });
+            }
+            const loc = locationsMap.get(schedule.location_name);
+            loc.schedules_count++;
+          });
+          
+          const locations = Array.from(locationsMap.values());
+          setAvailableLocations(locations);
+          
+          console.log(`🏥 Ubicaciones disponibles filtradas por EPS: `, locations);
+          
+          // Adaptar el formato para que sea compatible con el resto del código
+          const adaptedSchedules = schedulesWithSlots.map((schedule: any) => ({
+            ...schedule,
+            // Normalizar campos: algunas APIs devuelven `id`, otras `availability_id`
+            availability_id: schedule.availability_id || schedule.id,
+            appointment_date: schedule.date,
+            slots_available: schedule.available_slots,
+            // available_time se usa en la vista de reasignación; usar start_time como fallback
+            available_time: schedule.available_time || schedule.start_time || schedule.start_time_formatted
+          }));
+          
+          setAvailableSchedules(adaptedSchedules);
+          
+          console.log(`✅ Sedes con cupos disponibles (sin agendas de hoy): ${locations.length}`, locations);
         } else {
-          // NO hay agendas, agregar automáticamente a lista de espera
-          console.log('⚠️ No hay agendas disponibles, agregando a lista de espera...');
+          // NO hay cupos disponibles en ninguna agenda futura, ir directo a lista de espera
+          console.log('⚠️ No hay cupos disponibles en fechas futuras, agregando a lista de espera...');
           await addToWaitingListAuto(specialty);
         }
       } else {
-        toast({
-          title: "Error",
-          description: "No se pudieron cargar las agendas disponibles",
-          variant: "destructive",
-        });
+        // NO hay agendas, agregar automáticamente a lista de espera
+        console.log('⚠️ No hay agendas disponibles, agregando a lista de espera...');
+        await addToWaitingListAuto(specialty);
       }
-    } catch (error) {
-      console.error('Error cargando agendas:', error);
+    } catch (error: any) {
+      console.error('❌ Error cargando sedes:', error);
       toast({
         title: "Error",
         description: "No se pudo conectar con el servidor",
         variant: "destructive",
       });
+      // En caso de error, también agregar a lista de espera
+      await addToWaitingListAuto(specialty);
     } finally {
       setLoadingSchedules(false);
     }
+  };
+
+  // Función para seleccionar una sede y mostrar sus agendas
+  const handleSelectLocation = (location: any) => {
+    setSelectedLocation(location);
+    console.log(`📍 Sede seleccionada: ${location.name}`);
   };
 
   // Agregar automáticamente a lista de espera cuando no hay agenda
@@ -677,6 +842,36 @@ export default function UserPortal() {
 
   // Agendar cita con hora secuencial
   const handleScheduleAppointment = async (schedule: any) => {
+    // Si no hay horarios específicos disponibles o solo hay uno, agendar directamente
+    if (!schedule.available_time_slots || schedule.available_time_slots.length === 0) {
+      await scheduleAppointmentDirectly(schedule, null);
+      return;
+    }
+    
+    // Si solo hay una hora disponible, agendar directamente
+    if (schedule.available_time_slots.length === 1) {
+      await scheduleAppointmentDirectly(schedule, schedule.available_time_slots[0]);
+      return;
+    }
+    
+    // Si hay múltiples horarios, mostrar selector
+    setSelectedScheduleForTime(schedule);
+    setSelectedTime('');
+    setShowTimeSelector(true);
+  };
+
+  // Confirmar agendamiento con hora seleccionada
+  const confirmScheduleWithTime = async () => {
+    if (!selectedScheduleForTime || !selectedTime) return;
+    
+    setShowTimeSelector(false);
+    await scheduleAppointmentDirectly(selectedScheduleForTime, selectedTime);
+    setSelectedScheduleForTime(null);
+    setSelectedTime('');
+  };
+
+  // Función principal de agendamiento
+  const scheduleAppointmentDirectly = async (schedule: any, selectedTimeSlot?: string) => {
     try {
       const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
       const url = baseUrl.endsWith('/api') 
@@ -690,6 +885,11 @@ export default function UserPortal() {
         availability_id: schedule.availability_id,
         reason: `Consulta de ${selectedSpecialty.name}`
       };
+
+      // Agregar hora específica si fue seleccionada
+      if (selectedTimeSlot) {
+        requestBody.selected_time = selectedTimeSlot;
+      }
 
       // Agregar información de CUPS si existe (para Ecografías)
       if (cupsData) {
@@ -726,13 +926,22 @@ export default function UserPortal() {
         setCupsData(null);
         setCupsManualName('');
         setCupsNotFound(false);
+        
+        // Limpiar caché de horarios y formularios para evitar datos obsoletos
+        try {
+          sessionStorage.removeItem('availableSchedules');
+          sessionStorage.removeItem('selectedTime');
+          sessionStorage.removeItem('scheduleCache');
+        } catch (error) {
+          console.error('Error limpiando sessionStorage:', error);
+        }
       } else {
-        // Manejar error específico de cita activa (409)
+        // Manejar error específico de cita activa por especialidad (409)
         if (response.status === 409) {
           const details = data.details;
           toast({
-            title: "Ya tienes una cita activa",
-            description: data.message || `Ya tienes una cita ${details?.status?.toLowerCase()} programada para el ${details?.scheduled_date} a las ${details?.scheduled_time}. No puedes agendar otra cita hasta completar o cancelar la anterior.`,
+            title: "Ya tienes una cita en esta especialidad",
+            description: data.message || `Ya tienes una cita ${details?.status?.toLowerCase()} programada para el ${details?.scheduled_date} a las ${details?.scheduled_time}. Solo puedes tener una cita activa por especialidad.`,
             variant: "destructive",
             duration: 8000, // Mostrar por más tiempo para que puedan leer
           });
@@ -754,6 +963,339 @@ export default function UserPortal() {
     }
   };
 
+  // Función para cancelar una cita
+  const handleCancelAppointment = async () => {
+    if (!appointmentToCancel || !patient) return;
+
+    try {
+      setCancellingAppointment(true);
+      
+      const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+      const url = baseUrl.endsWith('/api') 
+        ? `${baseUrl}/patients-v2/public/appointments/${appointmentToCancel.appointment_id}/cancel`
+        : `${baseUrl}/api/patients-v2/public/appointments/${appointmentToCancel.appointment_id}/cancel`;
+
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patientId: patient.patient_id,
+          cancellationReason: cancellationReason
+        }),
+      });
+
+      const data = await response.json();
+      
+      if (data.success) {
+        // Actualizar la lista de citas
+        setAppointments(prev => prev.map(apt => 
+          apt.appointment_id === appointmentToCancel.appointment_id 
+            ? { ...apt, status: 'Cancelada' }
+            : apt
+        ));
+
+        // Cerrar modal y limpiar estados
+        setShowCancelDialog(false);
+        setAppointmentToCancel(null);
+        setCancellationReason('');
+
+        toast({
+          title: "Cita cancelada",
+          description: `Tu cita del ${appointmentToCancel.scheduled_date} a las ${appointmentToCancel.scheduled_time} ha sido cancelada exitosamente.`,
+          variant: "default",
+        });
+      } else {
+        // Si el error es que la cita ya está cancelada, actualizar el estado local
+        if (data.error && data.error.includes('ya está cancelada')) {
+          setAppointments(prev => prev.map(apt => 
+            apt.appointment_id === appointmentToCancel.appointment_id 
+              ? { ...apt, status: 'Cancelada' }
+              : apt
+          ));
+          
+          setShowCancelDialog(false);
+          setAppointmentToCancel(null);
+          setCancellationReason('');
+
+          toast({
+            title: "Cita cancelada",
+            description: "Esta cita ya estaba cancelada en el sistema.",
+            variant: "default",
+          });
+        } else {
+          toast({
+            title: "Error al cancelar",
+            description: data.error || "No se pudo cancelar la cita",
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error cancelando cita:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo procesar la cancelación",
+        variant: "destructive",
+      });
+    } finally {
+      setCancellingAppointment(false);
+    }
+  };
+
+  // Función para abrir el diálogo de cancelación
+  const openCancelDialog = (appointment: any) => {
+    setAppointmentToCancel(appointment);
+    setShowCancelDialog(true);
+    setCancellationReason('');
+  };
+
+  // Función para abrir el diálogo de reasignación
+  const openRescheduleDialog = async (appointment: any) => {
+    setAppointmentToReschedule(appointment);
+    setRescheduleReason('');
+    setSelectedNewSchedule(null);
+    setAvailableSchedules([]);
+    setSelectedLocationForReschedule('');
+    setShowLocationSelector(true);
+    setFilteredSchedules([]);
+    setShowRescheduleDialog(true);
+    
+    // Cargar horarios disponibles para mostrar las sedes disponibles
+    await loadAvailableSchedules(appointment.specialty_id, patient.insurance_eps_id);
+  };
+
+  // Función para cargar horarios disponibles
+  const loadAvailableSchedules = async (specialtyId: number, epsId: number) => {
+    setLoadingSchedules(true);
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:4000/api'}/patients-v2/public/available-schedules/${specialtyId}/${epsId}`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const data = await response.json();
+      
+      if (data.success && data.data) {
+        setAvailableSchedules(data.data);
+      } else {
+        toast({
+          title: "Error",
+          description: "No se pudieron cargar los horarios disponibles",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error cargando horarios:', error);
+      toast({
+        title: "Error",
+        description: "Error de conexión al cargar horarios",
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingSchedules(false);
+    }
+  };
+
+  // Función para seleccionar sede y filtrar horarios
+  const selectLocationForReschedule = (locationName: string) => {
+    setSelectedLocationForReschedule(locationName);
+    setShowLocationSelector(false);
+    
+    // Filtrar horarios por sede seleccionada
+    const filtered = availableSchedules.filter(schedule => 
+      schedule.location_name.toLowerCase().includes(locationName.toLowerCase())
+    );
+    setFilteredSchedules(filtered);
+  };
+
+  // Función para obtener las sedes únicas disponibles
+  const getAvailableLocations = () => {
+    const locations = new Set<string>();
+    availableSchedules.forEach(schedule => {
+      const locationName = schedule.location_name.toLowerCase();
+      if (locationName.includes('san gil')) {
+        locations.add('San Gil');
+      } else if (locationName.includes('socorro')) {
+        locations.add('Socorro');
+      }
+    });
+    return Array.from(locations);
+  };
+
+  // Función para obtener color por sede
+  const getLocationColor = (locationName: string) => {
+    if (locationName.toLowerCase().includes('san gil')) {
+      return {
+        bg: 'bg-blue-50 hover:bg-blue-100 border-blue-200 hover:border-blue-300',
+        selected: 'border-blue-500 bg-blue-50',
+        text: 'text-blue-700',
+        badge: 'bg-blue-500'
+      };
+    } else if (locationName.toLowerCase().includes('socorro')) {
+      return {
+        bg: 'bg-orange-50 hover:bg-orange-100 border-orange-200 hover:border-orange-300',
+        selected: 'border-orange-500 bg-orange-50',
+        text: 'text-orange-700',
+        badge: 'bg-orange-500'
+      };
+    }
+    return {
+      bg: 'bg-gray-50 hover:bg-gray-100 border-gray-200 hover:border-gray-300',
+      selected: 'border-gray-500 bg-gray-50',
+      text: 'text-gray-700',
+      badge: 'bg-gray-500'
+    };
+  };
+
+  // Función para procesar la reasignación
+  const handleRescheduleAppointment = async () => {
+    if (!appointmentToReschedule || !selectedNewSchedule || !rescheduleReason.trim()) {
+      toast({
+        title: "Error",
+        description: "Debe seleccionar un nuevo horario y proporcionar un motivo",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Verificar si el horario seleccionado tiene múltiples horas disponibles
+    if (selectedNewSchedule.available_time_slots && selectedNewSchedule.available_time_slots.length > 1) {
+      // Mostrar selector de hora específica para reasignación
+      setSelectedScheduleForRescheduleTime(selectedNewSchedule);
+      setSelectedRescheduleTime('');
+      setShowRescheduleTimeSelector(true);
+      return;
+    }
+
+    // Si solo hay una hora o ningún slot específico, proceder con reasignación directa
+    const selectedTime = selectedNewSchedule.available_time_slots && selectedNewSchedule.available_time_slots.length === 1 
+      ? selectedNewSchedule.available_time_slots[0] 
+      : null;
+
+    await executeReschedule(selectedTime);
+  };
+
+  // Confirmar reasignación con hora seleccionada
+  const confirmRescheduleWithTime = async () => {
+    if (!selectedRescheduleTime) return;
+    
+    setShowRescheduleTimeSelector(false);
+    await executeReschedule(selectedRescheduleTime);
+    setSelectedScheduleForRescheduleTime(null);
+    setSelectedRescheduleTime('');
+  };
+
+  // Función principal de reasignación
+  const executeReschedule = async (selectedTimeSlot?: string) => {
+    setReschedulingAppointment(true);
+    
+    try {
+      const requestBody: any = {
+        patientId: patient.patient_id,
+        newAvailabilityId: selectedNewSchedule.availability_id,
+        reason: rescheduleReason.trim(),
+      };
+
+      // Agregar hora específica si fue seleccionada
+      if (selectedTimeSlot) {
+        requestBody.selected_time = selectedTimeSlot;
+      }
+
+      const response = await fetch(
+        `${import.meta.env.VITE_API_URL || 'http://localhost:4000/api'}/patients-v2/public/appointments/${appointmentToReschedule.appointment_id}/reschedule`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        }
+      );
+
+      const data = await response.json();
+      
+      if (data.success) {
+        // Actualizar la lista de citas con los nuevos datos
+        setAppointments(prev => prev.map(apt => 
+          apt.appointment_id === appointmentToReschedule.appointment_id 
+            ? { 
+                ...apt, 
+                scheduled_date: selectedNewSchedule.appointment_date,
+                scheduled_time: data.data?.scheduled_time || selectedTimeSlot || selectedNewSchedule.available_time || selectedNewSchedule.start_time,
+                doctor_name: selectedNewSchedule.doctor_name,
+                location_name: selectedNewSchedule.location_name
+              }
+            : apt
+        ));
+
+        // Cerrar modal y limpiar estados
+        setShowRescheduleDialog(false);
+        setShowRescheduleTimeSelector(false);
+        setAppointmentToReschedule(null);
+        setSelectedNewSchedule(null);
+        setSelectedScheduleForRescheduleTime(null);
+        setSelectedRescheduleTime('');
+        setRescheduleReason('');
+        setAvailableSchedules([]);
+
+        toast({
+          title: "Cita reagendada",
+          description: `Su cita ha sido reagendada para el ${formatDateDDMMYYYY(selectedNewSchedule.appointment_date)} a las ${selectedTimeSlot || selectedNewSchedule.available_time || selectedNewSchedule.start_time} con ${selectedNewSchedule.doctor_name}.`,
+          variant: "default",
+        });
+      } else {
+        toast({
+          title: "Error al reagendar",
+          description: data.error || "No se pudo reagendar la cita",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error reagendando cita:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo procesar la reasignación",
+        variant: "destructive",
+      });
+    } finally {
+      setReschedulingAppointment(false);
+    }
+  };
+
+  // Función para limpiar caché y cookies del portal de usuarios
+  const clearUserPortalCache = () => {
+    try {
+      // Limpiar localStorage relacionado con agendamiento
+      const keysToRemove = ['selectedSpecialty', 'availableSchedules', 'cupsData', 'appointmentCache'];
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+      
+      // Limpiar sessionStorage
+      sessionStorage.clear();
+      
+      // Limpiar cookies del dominio (excepto autenticación si existe)
+      const cookies = document.cookie.split(';');
+      for (let i = 0; i < cookies.length; i++) {
+        const cookie = cookies[i];
+        const eqPos = cookie.indexOf('=');
+        const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
+        // No eliminar cookie de autenticación si existe
+        if (name !== 'auth_token' && name !== 'user_session') {
+          document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+          document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain=' + window.location.hostname;
+        }
+      }
+      
+      console.log('✅ Caché y cookies limpiados exitosamente');
+    } catch (error) {
+      console.error('Error limpiando caché:', error);
+    }
+  };
+
   // Cerrar modal después de ver resultado de lista de espera
   const handleCloseWaitingListResult = () => {
     setWaitingListResult(null);
@@ -761,7 +1303,10 @@ export default function UserPortal() {
     setSelectedSpecialty(null);
     setAvailableSchedules([]);
     
-    // Recargar citas y lista de espera
+    // Limpiar caché y cookies antes de recargar
+    clearUserPortalCache();
+    
+    // Recargar citas y lista de espera con caché limpio
     window.location.reload();
   };
 
@@ -772,14 +1317,28 @@ export default function UserPortal() {
     setSelectedSpecialty(null);
     setAvailableSchedules([]);
     
-    // Recargar página para mostrar nueva cita
+    // Limpiar caché y cookies antes de recargar
+    clearUserPortalCache();
+    
+    // Recargar página para mostrar nueva cita con caché limpio
     window.location.reload();
   };
 
   // Función para formatear fecha de manera legible
   const formatAppointmentDate = (dateString: string) => {
     try {
-      // Intentar parsear la fecha ISO
+      // Si la fecha viene en formato YYYY-MM-DD, parsearla manualmente
+      // para evitar problemas de zona horaria
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+        const [year, month, day] = dateString.split('-').map(Number);
+        const months = [
+          'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+          'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+        ];
+        return `${day} de ${months[month - 1]} de ${year}`;
+      }
+      
+      // Fallback: intentar parsear como fecha ISO completa
       const date = new Date(dateString);
       
       // Verificar si la fecha es válida
@@ -798,6 +1357,34 @@ export default function UserPortal() {
       return `${day} de ${month} de ${year}`;
     } catch (error) {
       console.error('Error formateando fecha:', error);
+      return dateString; // Retornar original en caso de error
+    }
+  };
+
+  // Función para formatear fecha en formato DD/MM/AAAA
+  const formatDateDDMMYYYY = (dateString: string): string => {
+    try {
+      // Si la fecha viene en formato YYYY-MM-DD, parsearla manualmente
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+        const [year, month, day] = dateString.split('-');
+        return `${day}/${month}/${year}`;
+      }
+      
+      // Fallback: intentar parsear como fecha ISO completa
+      const date = new Date(dateString);
+      
+      // Verificar si la fecha es válida
+      if (isNaN(date.getTime())) {
+        return dateString; // Retornar original si no se puede parsear
+      }
+      
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      
+      return `${day}/${month}/${year}`;
+    } catch (error) {
+      console.error('Error formateando fecha DD/MM/AAAA:', error);
       return dateString; // Retornar original en caso de error
     }
   };
@@ -1181,6 +1768,71 @@ export default function UserPortal() {
             </div>
           ) : (
             appointments.map((apt) => {
+              // Función para obtener colores por especialidad
+              const getSpecialtyColors = (specialtyName: string) => {
+                const specialtyColors: Record<string, { bg: string, text: string, accent: string }> = {
+                  'Medicina General': { 
+                    bg: 'from-blue-600 to-blue-700', 
+                    text: 'text-blue-600', 
+                    accent: 'bg-blue-100' 
+                  },
+                  'Odontología': { 
+                    bg: 'from-emerald-600 to-emerald-700', 
+                    text: 'text-emerald-600', 
+                    accent: 'bg-emerald-100' 
+                  },
+                  'Ginecología': { 
+                    bg: 'from-pink-600 to-pink-700', 
+                    text: 'text-pink-600', 
+                    accent: 'bg-pink-100' 
+                  },
+                  'Cardiología': { 
+                    bg: 'from-red-600 to-red-700', 
+                    text: 'text-red-600', 
+                    accent: 'bg-red-100' 
+                  },
+                  'Psicología': { 
+                    bg: 'from-purple-600 to-purple-700', 
+                    text: 'text-purple-600', 
+                    accent: 'bg-purple-100' 
+                  },
+                  'Dermatología': { 
+                    bg: 'from-orange-600 to-orange-700', 
+                    text: 'text-orange-600', 
+                    accent: 'bg-orange-100' 
+                  },
+                  'Neurología': { 
+                    bg: 'from-indigo-600 to-indigo-700', 
+                    text: 'text-indigo-600', 
+                    accent: 'bg-indigo-100' 
+                  },
+                  'Pediatría': { 
+                    bg: 'from-yellow-600 to-yellow-700', 
+                    text: 'text-yellow-600', 
+                    accent: 'bg-yellow-100' 
+                  },
+                  'Oftalmología': { 
+                    bg: 'from-teal-600 to-teal-700', 
+                    text: 'text-teal-600', 
+                    accent: 'bg-teal-100' 
+                  },
+                  'Urología': { 
+                    bg: 'from-cyan-600 to-cyan-700', 
+                    text: 'text-cyan-600', 
+                    accent: 'bg-cyan-100' 
+                  }
+                };
+
+                // Color por defecto si no se encuentra la especialidad
+                return specialtyColors[specialtyName] || { 
+                  bg: 'from-gray-600 to-gray-700', 
+                  text: 'text-gray-600', 
+                  accent: 'bg-gray-100' 
+                };
+              };
+
+              const specialtyColors = getSpecialtyColors(apt.specialty_name || '');
+
               // Formatear fecha SIN conversión de timezone
               const formatDate = (dateStr: string) => {
                 // Extraer fecha directamente sin crear objeto Date
@@ -1212,10 +1864,10 @@ export default function UserPortal() {
                   return (
                     <div 
                       key={apt.appointment_id} 
-                      className="group bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden"
+                      className={`group bg-white rounded-2xl border-l-4 ${specialtyColors.text.replace('text-', 'border-')} border-t border-r border-b border-gray-200 shadow-sm hover:shadow-xl transition-all duration-300 overflow-hidden`}
                     >
-                      {/* Header con fecha */}
-                      <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 sm:px-6 py-4 sm:py-5">
+                      {/* Header con fecha - Color específico por especialidad */}
+                      <div className={`bg-gradient-to-r ${specialtyColors.bg} text-white px-4 sm:px-6 py-4 sm:py-5`}>
                         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                           {/* Fecha */}
                           <div className="flex items-center gap-4">
@@ -1254,8 +1906,8 @@ export default function UserPortal() {
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           {/* Doctor */}
                           <div className="flex items-start gap-3">
-                            <div className="bg-blue-100 rounded-lg p-2.5 mt-0.5">
-                              <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 24 24">
+                            <div className={`${specialtyColors.accent} rounded-lg p-2.5 mt-0.5`}>
+                              <svg className={`w-5 h-5 ${specialtyColors.text}`} fill="currentColor" viewBox="0 0 24 24">
                                 <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z" />
                               </svg>
                             </div>
@@ -1268,8 +1920,8 @@ export default function UserPortal() {
                           {/* Especialidad */}
                           {apt.specialty_name && (
                             <div className="flex items-start gap-3">
-                              <div className="bg-purple-100 rounded-lg p-2.5 mt-0.5">
-                                <svg className="w-5 h-5 text-purple-600" fill="currentColor" viewBox="0 0 24 24">
+                              <div className={`${specialtyColors.accent} rounded-lg p-2.5 mt-0.5`}>
+                                <svg className={`w-5 h-5 ${specialtyColors.text}`} fill="currentColor" viewBox="0 0 24 24">
                                   <path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2V17zm4 0h-2V7h2V17zm4 0h-2v-4h2V17z" />
                                 </svg>
                               </div>
@@ -1283,9 +1935,9 @@ export default function UserPortal() {
                           {/* Sede */}
                           {apt.location_name && (
                             <div className="flex items-start gap-3">
-                              <div className="bg-green-100 rounded-lg p-2.5 mt-0.5">
-                                <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 24 24">
-                                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" />
+                              <div className={`${specialtyColors.accent} rounded-lg p-2.5 mt-0.5`}>
+                                <svg className={`w-5 h-5 ${specialtyColors.text}`} fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" />
                                 </svg>
                               </div>
                               <div className="flex-1 min-w-0">
@@ -1304,15 +1956,43 @@ export default function UserPortal() {
                           </div>
                         )}
 
-                        {/* Botón QR */}
-                        <button
-                          onClick={() => generateAppointmentQR(apt, patient)}
-                          className="w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold py-3 px-4 rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 group/btn"
-                        >
-                          <QrCode className="w-5 h-5 group-hover/btn:scale-110 transition-transform" />
-                          <Download className="w-5 h-5 group-hover/btn:scale-110 transition-transform" />
-                          <span>Descargar QR de Cita</span>
-                        </button>
+                        {/* Botones de acción */}
+                        <div className="flex flex-col sm:flex-row gap-3">
+                          {/* Botón QR */}
+                          <button
+                            onClick={() => generateAppointmentQR(apt, patient)}
+                            className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 text-white font-semibold py-3 px-4 rounded-xl hover:from-blue-700 hover:to-blue-800 transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 group/btn"
+                          >
+                            <QrCode className="w-5 h-5 group-hover/btn:scale-110 transition-transform" />
+                            <Download className="w-5 h-5 group-hover/btn:scale-110 transition-transform" />
+                            <span className="hidden sm:inline">Descargar QR</span>
+                            <span className="sm:hidden">QR</span>
+                          </button>
+
+                          {/* Botón Reagendar - Solo para citas Confirmadas o Pendientes */}
+                          {(apt.status === 'Confirmada' || apt.status === 'Pendiente') && (
+                            <button
+                              onClick={() => openRescheduleDialog(apt)}
+                              className="flex-1 bg-gradient-to-r from-green-600 to-green-700 text-white font-semibold py-3 px-4 rounded-xl hover:from-green-700 hover:to-green-800 transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 group/btn-reschedule"
+                            >
+                              <CalendarDays className="w-5 h-5 group-hover/btn-reschedule:scale-110 transition-transform" />
+                              <span className="hidden sm:inline">Reagendar Cita</span>
+                              <span className="sm:hidden">Reagendar</span>
+                            </button>
+                          )}
+
+                          {/* Botón Cancelar - Solo para citas Confirmadas o Pendientes */}
+                          {(apt.status === 'Confirmada' || apt.status === 'Pendiente') && (
+                            <button
+                              onClick={() => openCancelDialog(apt)}
+                              className="flex-1 bg-gradient-to-r from-red-600 to-red-700 text-white font-semibold py-3 px-4 rounded-xl hover:from-red-700 hover:to-red-800 transition-all duration-200 active:scale-95 flex items-center justify-center gap-2 group/btn-cancel"
+                            >
+                              <X className="w-5 h-5 group-hover/btn-cancel:scale-110 transition-transform" />
+                              <span className="hidden sm:inline">Cancelar Cita</span>
+                              <span className="sm:hidden">Cancelar</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -1733,106 +2413,312 @@ export default function UserPortal() {
                   </p>
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-4">
-                  {authorizedSpecialties.map((specialty) => (
-                    <div
-                      key={specialty.id}
-                      className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-blue-500 hover:shadow-lg transition-all cursor-pointer group"
-                      onClick={() => handleSelectSpecialty(specialty)}
-                    >
-                      {/* Icono de especialidad */}
-                      <div className="flex items-start gap-4 mb-4">
-                        <div className="bg-blue-100 group-hover:bg-blue-600 rounded-xl p-3 transition-colors">
-                          <svg className="w-8 h-8 text-blue-600 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                      </svg>
+                <>
+                  {/* Panel de Resumen de Especialidades */}
+                  <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl p-6">
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="bg-blue-600 rounded-xl p-2">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">Especialidades disponibles para tu EPS</h3>
+                        <p className="text-sm text-gray-600">Selecciona la especialidad médica que necesitas</p>
+                      </div>
                     </div>
-                    <div className="flex-1">
-                      <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600 transition-colors mb-1">
-                        {specialty.name}
-                      </h3>
-                      <p className="text-sm text-gray-600">{specialty.description}</p>
-                    </div>
-                  </div>
-
-                  {/* Información adicional */}
-                  <div className="space-y-2">
-                    {/* Sedes disponibles */}
-                    <div className="flex items-center gap-2 text-sm">
-                      <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                      </svg>
-                      <span className="text-gray-700">
-                        <span className="font-semibold">{specialty.sedes_disponibles}</span> sede{specialty.sedes_disponibles > 1 ? 's' : ''} disponible{specialty.sedes_disponibles > 1 ? 's' : ''}
+                    
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-gray-700 font-semibold">Total:</span>
+                      <span className="bg-blue-600 text-white px-4 py-1.5 rounded-full text-sm font-bold">
+                        {authorizedSpecialties.length} {authorizedSpecialties.length === 1 ? 'especialidad' : 'especialidades'}
                       </span>
                     </div>
-
-                    {/* Nombre de sedes */}
-                    <div className="flex items-start gap-2 text-sm">
-                      <svg className="w-4 h-4 text-gray-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                      </svg>
-                      <span className="text-gray-600 text-xs leading-relaxed">{specialty.sedes}</span>
-                    </div>
-
-                    {/* Autorización */}
-                    {specialty.requiere_autorizacion === 1 && (
-                      <div className="flex items-center gap-2 text-sm text-orange-600">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                        </svg>
-                        <span className="font-medium">Requiere autorización previa</span>
-                      </div>
-                    )}
-
-                    {/* Copago */}
-                    {specialty.copago_minimo && (
-                      <div className="flex items-center gap-2 text-sm text-green-600">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        <span className="font-medium">Copago: {specialty.copago_minimo}%</span>
-                      </div>
-                    )}
                   </div>
 
-                  {/* Botón de acción */}
-                  <div className="mt-4 pt-4 border-t border-gray-200">
-                    <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white group-hover:bg-blue-700">
-                      Seleccionar esta especialidad
-                    </Button>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-4">
+                    {authorizedSpecialties.map((specialty) => (
+                      <div
+                        key={specialty.id}
+                        className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-blue-500 hover:shadow-lg transition-all cursor-pointer group"
+                        onClick={() => handleSelectSpecialty(specialty)}
+                      >
+                        {/* Icono de especialidad */}
+                        <div className="flex items-start gap-4 mb-4">
+                          <div className="bg-blue-100 group-hover:bg-blue-600 rounded-xl p-3 transition-colors">
+                            <svg className="w-8 h-8 text-blue-600 group-hover:text-white transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600 transition-colors mb-1">
+                              {specialty.name}
+                            </h3>
+                            <p className="text-sm text-gray-600">{specialty.description}</p>
+                          </div>
+                        </div>
+
+                        {/* Información adicional */}
+                        <div className="space-y-3">
+                          {/* Autorización */}
+                          {specialty.requiere_autorizacion === 1 && (
+                            <div className="flex items-center gap-2 text-sm text-orange-600">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                              </svg>
+                              <span className="font-medium">Requiere autorización previa</span>
+                            </div>
+                          )}
+
+                          {/* Copago */}
+                          {specialty.copago_minimo && (
+                            <div className="flex items-center gap-2 text-sm text-green-600">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              <span className="font-medium">Copago: {specialty.copago_minimo}%</span>
+                            </div>
+                    )}
+                        </div>
+
+                        {/* Botón de acción */}
+                        <div className="mt-4 pt-4 border-t border-gray-200">
+                          <Button className="w-full bg-blue-600 hover:bg-blue-700 text-white group-hover:bg-blue-700">
+                            Seleccionar esta especialidad
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                </>
+              )}
             </>
           )}
 
-          {/* Vista de Agendas Disponibles */}
-          {selectedSpecialty && !appointmentResult && !waitingListResult && (
+          {/* Vista de Selección de Sede */}
+          {selectedSpecialty && !selectedLocation && !appointmentResult && !waitingListResult && (
             <>
               {loadingSchedules ? (
                 <div className="flex flex-col items-center justify-center py-12">
                   <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
-                  <p className="text-gray-600">Buscando agendas disponibles...</p>
+                  <p className="text-gray-600">Buscando sedes disponibles...</p>
                 </div>
-              ) : availableSchedules.length > 0 ? (
+              ) : availableLocations.length > 0 ? (
                 <>
                   <Button 
                     variant="outline" 
                     onClick={() => {
                       setSelectedSpecialty(null);
+                      setAvailableLocations([]);
                       setAvailableSchedules([]);
                     }}
                     className="mb-4"
                   >
                     ← Volver a especialidades
                   </Button>
+
+                  {/* Panel de Resumen de Sedes Disponibles */}
+                  <div className="mb-6 bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-2xl p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="bg-blue-600 rounded-xl p-2">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">Selecciona la sede para tu cita</h3>
+                        <p className="text-gray-600">Especialidad: <span className="font-bold text-blue-700">{selectedSpecialty.name}</span></p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-gray-700 font-semibold">Sedes disponibles:</span>
+                      <span className="bg-blue-600 text-white px-4 py-1.5 rounded-full text-sm font-bold">
+                        {availableLocations.length} {availableLocations.length === 1 ? 'sede' : 'sedes'}
+                      </span>
+                      <span className="text-gray-400">•</span>
+                      {(() => {
+                        const locationColors = [
+                          { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-300' },
+                          { bg: 'bg-amber-100', text: 'text-amber-700', border: 'border-amber-300' },
+                          { bg: 'bg-purple-100', text: 'text-purple-700', border: 'border-purple-300' },
+                          { bg: 'bg-rose-100', text: 'text-rose-700', border: 'border-rose-300' },
+                          { bg: 'bg-cyan-100', text: 'text-cyan-700', border: 'border-cyan-300' },
+                        ];
+                        
+                        return availableLocations.map((location, index) => {
+                          const colors = locationColors[index % locationColors.length];
+                          const shortName = location.name
+                            .replace('Sede biosanar ', '')
+                            .replace('Sede Biosanar ', '')
+                            .replace('sede ', '');
+                          
+                          return (
+                            <span 
+                              key={location.name}
+                              className={`${colors.bg} ${colors.text} px-3 py-1 rounded-full text-sm font-bold border-2 ${colors.border}`}
+                            >
+                              {shortName}
+                            </span>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                  
+                  {/* Tarjetas de Sedes con Colores Únicos */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {(() => {
+                      const locationThemes = [
+                        { 
+                          gradient: 'from-emerald-500 to-teal-600',
+                          bg: 'bg-emerald-50',
+                          border: 'border-emerald-200 hover:border-emerald-500',
+                          iconBg: 'bg-emerald-100 group-hover:bg-emerald-600',
+                          iconColor: 'text-emerald-600 group-hover:text-white',
+                          badgeBg: 'bg-emerald-100',
+                          badgeText: 'text-emerald-700',
+                          button: 'bg-emerald-600 hover:bg-emerald-700 group-hover:bg-emerald-700',
+                          titleHover: 'group-hover:text-emerald-600'
+                        },
+                        { 
+                          gradient: 'from-amber-500 to-orange-600',
+                          bg: 'bg-amber-50',
+                          border: 'border-amber-200 hover:border-amber-500',
+                          iconBg: 'bg-amber-100 group-hover:bg-amber-600',
+                          iconColor: 'text-amber-600 group-hover:text-white',
+                          badgeBg: 'bg-amber-100',
+                          badgeText: 'text-amber-700',
+                          button: 'bg-amber-600 hover:bg-amber-700 group-hover:bg-amber-700',
+                          titleHover: 'group-hover:text-amber-600'
+                        },
+                        { 
+                          gradient: 'from-purple-500 to-indigo-600',
+                          bg: 'bg-purple-50',
+                          border: 'border-purple-200 hover:border-purple-500',
+                          iconBg: 'bg-purple-100 group-hover:bg-purple-600',
+                          iconColor: 'text-purple-600 group-hover:text-white',
+                          badgeBg: 'bg-purple-100',
+                          badgeText: 'text-purple-700',
+                          button: 'bg-purple-600 hover:bg-purple-700 group-hover:bg-purple-700',
+                          titleHover: 'group-hover:text-purple-600'
+                        },
+                        { 
+                          gradient: 'from-rose-500 to-pink-600',
+                          bg: 'bg-rose-50',
+                          border: 'border-rose-200 hover:border-rose-500',
+                          iconBg: 'bg-rose-100 group-hover:bg-rose-600',
+                          iconColor: 'text-rose-600 group-hover:text-white',
+                          badgeBg: 'bg-rose-100',
+                          badgeText: 'text-rose-700',
+                          button: 'bg-rose-600 hover:bg-rose-700 group-hover:bg-rose-700',
+                          titleHover: 'group-hover:text-rose-600'
+                        },
+                        { 
+                          gradient: 'from-cyan-500 to-blue-600',
+                          bg: 'bg-cyan-50',
+                          border: 'border-cyan-200 hover:border-cyan-500',
+                          iconBg: 'bg-cyan-100 group-hover:bg-cyan-600',
+                          iconColor: 'text-cyan-600 group-hover:text-white',
+                          badgeBg: 'bg-cyan-100',
+                          badgeText: 'text-cyan-700',
+                          button: 'bg-cyan-600 hover:bg-cyan-700 group-hover:bg-cyan-700',
+                          titleHover: 'group-hover:text-cyan-600'
+                        },
+                      ];
+
+                      return availableLocations.map((location, index) => {
+                        const theme = locationThemes[index % locationThemes.length];
+                        
+                        return (
+                          <div
+                            key={location.name}
+                            className={`bg-white border-2 ${theme.border} rounded-xl p-6 hover:shadow-2xl transition-all duration-300 cursor-pointer group relative overflow-hidden`}
+                            onClick={() => handleSelectLocation(location)}
+                          >
+                            {/* Barra de color superior */}
+                            <div className={`absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r ${theme.gradient}`}></div>
+
+                            {/* Icono de ubicación */}
+                            <div className="flex items-start gap-4 mb-4 mt-2">
+                              <div className={`${theme.iconBg} rounded-xl p-3 transition-colors duration-300`}>
+                                <svg className={`w-8 h-8 ${theme.iconColor} transition-colors duration-300`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                                </svg>
+                              </div>
+                              <div className="flex-1">
+                                <h3 className={`text-lg font-bold text-gray-900 ${theme.titleHover} transition-colors duration-300 mb-1`}>
+                                  {location.name}
+                                </h3>
+                                <p className="text-sm text-gray-600 flex items-center gap-1">
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
+                                  </svg>
+                                  {location.address}
+                                </p>
+                              </div>
+                            </div>
+
+                            {/* Información de agendas disponibles */}
+                            <div className={`flex items-center justify-between gap-2 text-sm ${theme.badgeBg} rounded-lg p-3 mb-4`}>
+                              <div className="flex items-center gap-2">
+                                <svg className={`w-5 h-5 ${theme.badgeText}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                                <span className={`${theme.badgeText} font-semibold`}>
+                                  {location.schedules_count} agenda{location.schedules_count > 1 ? 's' : ''} disponible{location.schedules_count > 1 ? 's' : ''}
+                                </span>
+                              </div>
+                              <svg className={`w-5 h-5 ${theme.badgeText} group-hover:translate-x-1 transition-transform duration-300`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                              </svg>
+                            </div>
+
+                            {/* Botón de acción */}
+                            <Button className={`w-full ${theme.button} text-white transition-all duration-300 shadow-md hover:shadow-lg`}>
+                              Ver agendas en esta sede
+                            </Button>
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </>
+              ) : null}
+            </>
+          )}
+
+          {/* Vista de Agendas Disponibles (filtradas por sede) */}
+          {selectedSpecialty && selectedLocation && !appointmentResult && !waitingListResult && (
+            <>
+              {loadingSchedules ? (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+                  <p className="text-gray-600">Buscando agendas disponibles...</p>
+                </div>
+              ) : (
+                <>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => {
+                      setSelectedLocation(null);
+                    }}
+                    className="mb-4"
+                  >
+                    ← Volver a sedes
+                  </Button>
+
+                  <div className="mb-6">
+                    <h3 className="text-xl font-bold text-gray-900 mb-1">Agendas disponibles en {selectedLocation.name}</h3>
+                    <p className="text-gray-600">Especialidad: <span className="font-semibold">{selectedSpecialty.name}</span></p>
+                  </div>
                   
                   <div className="grid grid-cols-1 gap-4 py-4">
-                    {availableSchedules.map((schedule) => {
+                    {availableSchedules
+                      .filter(schedule => schedule.location_name === selectedLocation.name)
+                      .map((schedule) => {
                       // Formatear fecha directamente sin Date object para evitar problemas de timezone
                       const dateParts = schedule.appointment_date.split('-');
                       const year = dateParts[0];
@@ -1851,8 +2737,7 @@ export default function UserPortal() {
                       return (
                         <div
                           key={schedule.availability_id}
-                          className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-green-500 hover:shadow-lg transition-all cursor-pointer group"
-                          onClick={() => handleScheduleAppointment(schedule)}
+                          className="bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-green-500 hover:shadow-lg transition-all group"
                         >
                           <div className="flex flex-col md:flex-row gap-6">
                             {/* Fecha */}
@@ -1884,16 +2769,35 @@ export default function UserPortal() {
                                 </div>
                               </div>
 
-                              {/* Horario */}
-                              <div className="flex items-center gap-2 text-gray-700">
+                              {/* Horario general */}
+                              <div className="flex items-center gap-2 text-gray-700 mb-3">
                                 <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 <span className="font-semibold">{schedule.start_time} - {schedule.end_time}</span>
                               </div>
 
+                              {/* Horas específicas disponibles */}
+                              {schedule.next_available_times && schedule.next_available_times.length > 0 && (
+                                <div className="mb-3">
+                                  <p className="text-sm text-gray-600 mb-2 font-medium">Próximas horas disponibles:</p>
+                                  <div className="flex flex-wrap gap-2">
+                                    {schedule.next_available_times.slice(0, 3).map((time: string, index: number) => (
+                                      <div key={index} className="bg-blue-50 border border-blue-200 px-3 py-1 rounded-lg">
+                                        <span className="text-sm font-semibold text-blue-700">{time}</span>
+                                      </div>
+                                    ))}
+                                    {schedule.next_available_times.length > 3 && (
+                                      <div className="bg-gray-100 border border-gray-200 px-3 py-1 rounded-lg">
+                                        <span className="text-sm text-gray-600">+{schedule.next_available_times.length - 3} más</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
                               {/* Sede */}
-                              <div className="flex items-center gap-2 text-gray-700 mt-2">
+                              <div className="flex items-center gap-2 text-gray-700">
                                 <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
@@ -1902,15 +2806,21 @@ export default function UserPortal() {
                               </div>
                             </div>
 
-                            {/* Cupos */}
+                            {/* Cupos y botón */}
                             <div className="flex flex-col items-end justify-between">
-                              <div className="bg-green-100 px-4 py-2 rounded-lg">
+                              <div className="bg-green-100 px-4 py-2 rounded-lg mb-4">
                                 <p className="text-xs text-green-700 font-medium">Cupos disponibles</p>
                                 <p className="text-2xl font-bold text-green-600 text-center">{schedule.slots_available}</p>
                               </div>
 
-                              <Button className="bg-green-600 hover:bg-green-700 text-white mt-4 w-full md:w-auto">
-                                Agendar esta cita
+                              <Button 
+                                onClick={() => handleScheduleAppointment(schedule)}
+                                className="bg-green-600 hover:bg-green-700 text-white w-full md:w-auto"
+                              >
+                                {schedule.next_available_times && schedule.next_available_times.length > 1 
+                                  ? 'Seleccionar hora' 
+                                  : 'Agendar esta cita'
+                                }
                               </Button>
                             </div>
                           </div>
@@ -1919,7 +2829,7 @@ export default function UserPortal() {
                     })}
                   </div>
                 </>
-              ) : null}
+              )}
             </>
           )}
 
@@ -2060,6 +2970,448 @@ export default function UserPortal() {
                   className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3"
                 >
                   ¡Perfecto!
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de cancelación de cita */}
+      <Dialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="w-5 h-5" />
+              Cancelar Cita Médica
+            </DialogTitle>
+            <DialogDescription>
+              ¿Estás seguro de que deseas cancelar esta cita? Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {appointmentToCancel && (
+            <div className="space-y-4">
+              {/* Información de la cita a cancelar */}
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-gray-900">Detalles de la cita:</h4>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Fecha:</span> {appointmentToCancel.scheduled_date}</div>
+                  <div><span className="font-medium">Hora:</span> {appointmentToCancel.scheduled_time}</div>
+                  <div><span className="font-medium">Doctor:</span> {appointmentToCancel.doctor_name}</div>
+                  <div><span className="font-medium">Especialidad:</span> {appointmentToCancel.specialty_name}</div>
+                  <div><span className="font-medium">Sede:</span> {appointmentToCancel.location_name}</div>
+                </div>
+              </div>
+
+              {/* Campo para razón de cancelación (opcional) */}
+              <div className="space-y-2">
+                <Label htmlFor="cancellation-reason">
+                  Motivo de cancelación (opcional)
+                </Label>
+                <Input
+                  id="cancellation-reason"
+                  placeholder="Ej: Emergencia familiar, cambio de horario..."
+                  value={cancellationReason}
+                  onChange={(e) => setCancellationReason(e.target.value)}
+                  maxLength={200}
+                />
+              </div>
+
+              {/* Botones de acción */}
+              <div className="flex gap-3 pt-4">
+                <Button 
+                  variant="outline" 
+                  onClick={() => setShowCancelDialog(false)}
+                  className="flex-1"
+                  disabled={cancellingAppointment}
+                >
+                  Mantener Cita
+                </Button>
+                <Button 
+                  onClick={handleCancelAppointment}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                  disabled={cancellingAppointment}
+                >
+                  {cancellingAppointment ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Cancelando...
+                    </div>
+                  ) : (
+                    'Confirmar Cancelación'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de reasignación de cita */}
+      <Dialog open={showRescheduleDialog} onOpenChange={setShowRescheduleDialog}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-green-600">
+              <CalendarDays className="w-5 h-5" />
+              Reagendar Cita Médica
+            </DialogTitle>
+            <DialogDescription>
+              Selecciona un nuevo horario para tu cita médica.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {appointmentToReschedule && (
+            <div className="space-y-6">
+              {/* Información de la cita actual */}
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-gray-900">Cita actual:</h4>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Fecha:</span> {formatDateDDMMYYYY(appointmentToReschedule.scheduled_date)}</div>
+                  <div><span className="font-medium">Hora:</span> {appointmentToReschedule.scheduled_time}</div>
+                  <div><span className="font-medium">Doctor:</span> {appointmentToReschedule.doctor_name}</div>
+                  <div><span className="font-medium">Especialidad:</span> {appointmentToReschedule.specialty_name}</div>
+                  <div><span className="font-medium">Sede:</span> {appointmentToReschedule.location_name}</div>
+                </div>
+              </div>
+
+              {/* Motivo de reasignación */}
+              <div className="space-y-2">
+                <Label htmlFor="reschedule-reason">
+                  Motivo del cambio <span className="text-red-500">*</span>
+                </Label>
+                <Input
+                  id="reschedule-reason"
+                  placeholder="Ej: Conflicto de horario, emergencia..."
+                  value={rescheduleReason}
+                  onChange={(e) => setRescheduleReason(e.target.value)}
+                  maxLength={200}
+                  required
+                />
+              </div>
+
+              {/* Selector de sede y horarios disponibles */}
+              <div className="space-y-4">
+                {showLocationSelector ? (
+                  // Selector de sede
+                  <>
+                    <h4 className="font-semibold text-gray-900">¿En cuál sede deseas agendar?</h4>
+                    
+                    {loadingSchedules ? (
+                      <div className="flex items-center justify-center py-8">
+                        <div className="flex items-center gap-3">
+                          <div className="w-6 h-6 border-2 border-green-600 border-t-transparent rounded-full animate-spin" />
+                          <span className="text-gray-600">Cargando sedes disponibles...</span>
+                        </div>
+                      </div>
+                    ) : getAvailableLocations().length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <CalendarDays className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                        <p>No hay horarios disponibles para esta especialidad en este momento.</p>
+                        <p className="text-sm mt-2">Intenta nuevamente más tarde o contacta al centro médico.</p>
+                      </div>
+                    ) : (
+                      <div className="grid gap-4">
+                        {getAvailableLocations().map((location) => {
+                          const colors = getLocationColor(location);
+                          const scheduleCount = availableSchedules.filter(s => 
+                            s.location_name.toLowerCase().includes(location.toLowerCase())
+                          ).length;
+                          
+                          return (
+                            <div
+                              key={location}
+                              className={`p-6 rounded-lg border-2 cursor-pointer transition-all duration-200 ${colors.bg}`}
+                              onClick={() => selectLocationForReschedule(location)}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-4 h-4 rounded-full ${colors.badge}`}></div>
+                                  <div>
+                                    <h5 className={`font-semibold text-lg ${colors.text}`}>
+                                      Sede {location}
+                                    </h5>
+                                    <p className="text-sm text-gray-600">
+                                      {scheduleCount} horario{scheduleCount !== 1 ? 's' : ''} disponible{scheduleCount !== 1 ? 's' : ''}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className={`px-3 py-1 rounded-full text-white text-sm font-medium ${colors.badge}`}>
+                                  Ver horarios
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  // Mostrar horarios filtrados por sede
+                  <>
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-semibold text-gray-900">
+                        Horarios disponibles en Sede {selectedLocationForReschedule}:
+                      </h4>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setShowLocationSelector(true);
+                          setSelectedLocationForReschedule('');
+                          setSelectedNewSchedule(null);
+                        }}
+                        className="text-xs"
+                      >
+                        Cambiar sede
+                      </Button>
+                    </div>
+                    
+                    {filteredSchedules.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <CalendarDays className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                        <p>No hay horarios disponibles en esta sede.</p>
+                      </div>
+                    ) : (
+                      <div className="grid gap-3 max-h-60 overflow-y-auto">
+                        {filteredSchedules.map((schedule) => {
+                          const colors = getLocationColor(schedule.location_name);
+                          return (
+                            <div
+                              key={schedule.availability_id}
+                              className={`p-4 rounded-lg border-2 cursor-pointer transition-all duration-200 ${
+                                selectedNewSchedule?.availability_id === schedule.availability_id
+                                  ? colors.selected
+                                  : colors.bg
+                              }`}
+                              onClick={() => setSelectedNewSchedule(schedule)}
+                            >
+                              <div className="flex justify-between items-start">
+                                <div className="space-y-1">
+                                  <div className="font-semibold text-gray-900">
+                                    {formatDateDDMMYYYY(schedule.appointment_date)}
+                                  </div>
+                                  <div className="text-sm text-gray-600">
+                                    Dr. {schedule.doctor_name}
+                                  </div>
+                                  <div className={`text-sm ${colors.text} flex items-center gap-1`}>
+                                    <div className={`w-2 h-2 rounded-full ${colors.badge}`}></div>
+                                    {schedule.location_name}
+                                  </div>
+                                  {/* Horarios disponibles */}
+                                  {schedule.available_time_slots && schedule.available_time_slots.length > 0 && (
+                                    <div className="flex flex-wrap gap-1 mt-2">
+                                      {schedule.available_time_slots.slice(0, 4).map((time, index) => (
+                                        <span key={index} className={`text-xs px-2 py-1 rounded-md ${colors.badge} text-white`}>
+                                          {time}
+                                        </span>
+                                      ))}
+                                      {schedule.available_time_slots.length > 4 && (
+                                        <span className="text-xs text-gray-500">+{schedule.available_time_slots.length - 4} más</span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex items-center">
+                                  {selectedNewSchedule?.availability_id === schedule.availability_id && (
+                                    <div className={`w-5 h-5 rounded-full flex items-center justify-center ${colors.badge}`}>
+                                      <div className="w-2 h-2 bg-white rounded-full" />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {/* Botones de acción */}
+              <div className="flex gap-3 pt-4">
+                <Button 
+                  variant="outline" 
+                  onClick={() => setShowRescheduleDialog(false)}
+                  className="flex-1"
+                  disabled={reschedulingAppointment}
+                >
+                  Cancelar
+                </Button>
+                <Button 
+                  onClick={handleRescheduleAppointment}
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                  disabled={reschedulingAppointment || !selectedNewSchedule || !rescheduleReason.trim()}
+                >
+                  {reschedulingAppointment ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Reagendando...
+                    </div>
+                  ) : (
+                    'Confirmar Nuevo Horario'
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de selección de hora específica */}
+      <Dialog open={showTimeSelector} onOpenChange={setShowTimeSelector}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-green-600">
+              <Clock className="w-5 h-5" />
+              Seleccionar Hora de Cita
+            </DialogTitle>
+            <DialogDescription>
+              Selecciona la hora específica en la que deseas agendar tu cita.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedScheduleForTime && (
+            <div className="space-y-4">
+              {/* Información de la agenda seleccionada */}
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-gray-900">Detalles de la agenda:</h4>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Fecha:</span> {formatDateDDMMYYYY(selectedScheduleForTime.appointment_date)}</div>
+                  <div><span className="font-medium">Doctor:</span> Dr. {selectedScheduleForTime.doctor_name}</div>
+                  <div><span className="font-medium">Especialidad:</span> {selectedSpecialty?.name}</div>
+                  <div><span className="font-medium">Sede:</span> {selectedScheduleForTime.location_name}</div>
+                </div>
+              </div>
+
+              {/* Selección de hora */}
+              <div className="space-y-3">
+                <Label className="text-sm font-medium text-gray-900">
+                  Horarios disponibles:
+                </Label>
+                <div className="grid grid-cols-2 gap-3">
+                  {selectedScheduleForTime.available_time_slots?.map((time: string) => (
+                    <button
+                      key={time}
+                      type="button"
+                      className={`p-3 text-center rounded-lg border-2 transition-all duration-200 ${
+                        selectedTime === time
+                          ? 'border-green-500 bg-green-50 text-green-700'
+                          : 'border-gray-200 bg-white hover:border-green-300 text-gray-700'
+                      }`}
+                      onClick={() => setSelectedTime(time)}
+                    >
+                      <div className="font-semibold">{time}</div>
+                      <div className="text-xs text-gray-500 mt-1">Disponible</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Botones de acción */}
+              <div className="flex gap-3 pt-4">
+                <Button 
+                  variant="outline" 
+                  onClick={() => {
+                    setShowTimeSelector(false);
+                    setSelectedScheduleForTime(null);
+                    setSelectedTime('');
+                  }}
+                  className="flex-1"
+                >
+                  Cancelar
+                </Button>
+                <Button 
+                  onClick={confirmScheduleWithTime}
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white"
+                  disabled={!selectedTime}
+                >
+                  Confirmar Hora
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Modal de selección de hora para reagendamiento */}
+      <Dialog open={showRescheduleTimeSelector} onOpenChange={setShowRescheduleTimeSelector}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-blue-600">
+              <Clock className="w-5 h-5" />
+              Seleccionar Nueva Hora
+            </DialogTitle>
+            <DialogDescription>
+              Selecciona la hora específica para reagendar tu cita.
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedScheduleForRescheduleTime && (
+            <div className="space-y-4">
+              {/* Información de la agenda seleccionada */}
+              <div className="bg-gray-50 rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-gray-900">Nueva agenda seleccionada:</h4>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Fecha:</span> {formatDateDDMMYYYY(selectedScheduleForRescheduleTime.appointment_date)}</div>
+                  <div><span className="font-medium">Doctor:</span> Dr. {selectedScheduleForRescheduleTime.doctor_name}</div>
+                  <div><span className="font-medium">Sede:</span> {selectedScheduleForRescheduleTime.location_name}</div>
+                </div>
+              </div>
+
+              {/* Selección de horarios disponibles */}
+              <div>
+                <h4 className="font-semibold text-gray-900 mb-3">Horarios disponibles:</h4>
+                {selectedScheduleForRescheduleTime.available_time_slots && selectedScheduleForRescheduleTime.available_time_slots.length > 0 ? (
+                  <div className="grid grid-cols-3 gap-2 max-h-48 overflow-y-auto">
+                    {selectedScheduleForRescheduleTime.available_time_slots.map((time) => (
+                      <button
+                        key={time}
+                        onClick={() => setSelectedRescheduleTime(time)}
+                        className={`p-2 text-sm rounded-lg border transition-all duration-200 ${
+                          selectedRescheduleTime === time
+                            ? 'bg-blue-100 border-blue-500 text-blue-700 font-medium'
+                            : 'bg-white border-gray-300 hover:border-blue-300 hover:bg-blue-50'
+                        }`}
+                      >
+                        {time}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-4 text-gray-500">
+                    No hay horarios específicos disponibles
+                  </div>
+                )}
+              </div>
+
+              {/* Botones de acción */}
+              <div className="flex gap-3 pt-4">
+                <Button 
+                  variant="outline" 
+                  onClick={() => {
+                    setShowRescheduleTimeSelector(false);
+                    setSelectedScheduleForRescheduleTime(null);
+                    setSelectedRescheduleTime('');
+                  }}
+                  className="flex-1"
+                >
+                  Cancelar
+                </Button>
+                <Button 
+                  onClick={() => executeReschedule(selectedRescheduleTime)}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
+                  disabled={!selectedRescheduleTime || reschedulingAppointment}
+                >
+                  {reschedulingAppointment ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Reagendando...
+                    </div>
+                  ) : (
+                    'Confirmar Reagendamiento'
+                  )}
                 </Button>
               </div>
             </div>

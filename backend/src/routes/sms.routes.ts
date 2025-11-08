@@ -993,4 +993,178 @@ router.delete('/history/clear', requireAuth, async (req: Request, res: Response)
   }
 });
 
+/**
+ * POST /api/sms/notify-availability-patients
+ * Envía SMS a todos los pacientes agendados en una disponibilidad específica
+ * Body: { availability_id: number }
+ */
+router.post('/notify-availability-patients', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { availability_id } = req.body;
+
+    if (!availability_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Se requiere el campo availability_id',
+      });
+    }
+
+    // Obtener información de la disponibilidad
+    const [availabilityRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT 
+        a.id,
+        a.date,
+        a.start_time,
+        a.end_time,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name,
+        l.address as location_address
+       FROM availabilities a
+       JOIN doctors d ON a.doctor_id = d.id
+       JOIN specialties s ON a.specialty_id = s.id
+       JOIN locations l ON a.location_id = l.id
+       WHERE a.id = ?`,
+      [availability_id]
+    );
+
+    if (availabilityRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Disponibilidad no encontrada',
+      });
+    }
+
+    const availability = availabilityRows[0];
+
+    // Obtener todos los pacientes confirmados en esta disponibilidad
+    const [appointmentsRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT 
+        ap.id as appointment_id,
+        ap.scheduled_at,
+        p.id as patient_id,
+        p.name as patient_name,
+        p.phone as patient_phone,
+        p.email as patient_email
+       FROM appointments ap
+       JOIN patients p ON ap.patient_id = p.id
+       WHERE ap.availability_id = ?
+         AND ap.status = 'Confirmada'
+         AND p.phone IS NOT NULL
+         AND p.phone != ''
+       ORDER BY ap.scheduled_at`,
+      [availability_id]
+    );
+
+    if (appointmentsRows.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No hay pacientes con teléfono registrado en esta disponibilidad',
+        data: {
+          total_pacientes: 0,
+          sms_enviados: 0,
+          sms_fallidos: 0
+        }
+      });
+    }
+
+    // Formatear fecha y hora
+    const appointmentDate = new Date(availability.date);
+    const formattedDate = appointmentDate.toLocaleDateString('es-CO', { 
+      weekday: 'long', 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    });
+    const formattedTime = availability.start_time.substring(0, 5); // HH:MM
+
+    // Enviar SMS a cada paciente
+    let successCount = 0;
+    let failCount = 0;
+    const results = [];
+
+    for (const appointment of appointmentsRows) {
+      try {
+        const message = `Hola ${appointment.patient_name}! 📅 Recordatorio de su cita:\n\n` +
+          `🏥 Especialidad: ${availability.specialty_name}\n` +
+          `👨‍⚕️ Doctor: ${availability.doctor_name}\n` +
+          `📍 Sede: ${availability.location_name}\n` +
+          `📆 Fecha: ${formattedDate}\n` +
+          `🕐 Hora: ${formattedTime}\n\n` +
+          `Por favor asista puntualmente. ¡Le esperamos!\n` +
+          `- Fundación Biosanar IPS`;
+
+        const result = await labsmobileService.sendSMS({
+          number: appointment.patient_phone,
+          message,
+          recipient_name: appointment.patient_name,
+          patient_id: appointment.patient_id,
+          appointment_id: appointment.appointment_id,
+          user_id: (req as any).user?.id,
+          template_id: 'appointment_reminder'
+        });
+
+        if (result.success) {
+          successCount++;
+          results.push({
+            patient_id: appointment.patient_id,
+            patient_name: appointment.patient_name,
+            phone: appointment.patient_phone,
+            status: 'enviado',
+            message_id: result.message_id
+          });
+        } else {
+          failCount++;
+          results.push({
+            patient_id: appointment.patient_id,
+            patient_name: appointment.patient_name,
+            phone: appointment.patient_phone,
+            status: 'fallido',
+            error: result.error
+          });
+        }
+
+        // Pequeña pausa entre envíos para evitar saturar la API
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error: any) {
+        failCount++;
+        results.push({
+          patient_id: appointment.patient_id,
+          patient_name: appointment.patient_name,
+          phone: appointment.patient_phone,
+          status: 'error',
+          error: error.message
+        });
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `SMS enviados: ${successCount} exitosos, ${failCount} fallidos`,
+      data: {
+        availability_info: {
+          doctor: availability.doctor_name,
+          specialty: availability.specialty_name,
+          location: availability.location_name,
+          date: formattedDate,
+          time: formattedTime
+        },
+        total_pacientes: appointmentsRows.length,
+        sms_enviados: successCount,
+        sms_fallidos: failCount,
+        resultados: results
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error en POST /api/sms/notify-availability-patients:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al enviar notificaciones SMS',
+      details: error.message
+    });
+  }
+});
+
 export default router;

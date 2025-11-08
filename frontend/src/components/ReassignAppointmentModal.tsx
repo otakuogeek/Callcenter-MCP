@@ -33,6 +33,11 @@ interface ReassignModalProps {
   patientName: string;
   currentAvailabilityId: number;
   onReassignSuccess: () => void;
+  patientPhone?: string | null;
+  currentDoctor?: string;
+  currentDate?: string;
+  currentTime?: string;
+  currentLocation?: string;
 }
 
 const ReassignAppointmentModal: React.FC<ReassignModalProps> = ({
@@ -42,6 +47,11 @@ const ReassignAppointmentModal: React.FC<ReassignModalProps> = ({
   patientName,
   currentAvailabilityId,
   onReassignSuccess,
+  patientPhone,
+  currentDoctor,
+  currentDate,
+  currentTime,
+  currentLocation,
 }) => {
   const [loading, setLoading] = useState(false);
   const [availableAgendas, setAvailableAgendas] = useState<AvailableAgenda[]>([]);
@@ -107,9 +117,57 @@ const ReassignAppointmentModal: React.FC<ReassignModalProps> = ({
       const response = await api.reassignAppointment(appointmentId, selectedAgendaId);
 
       if (response.success && response.data) {
+        // Enviar SMS al paciente informando de la reasignación
+        if (patientPhone) {
+          try {
+            const oldDateFormatted = currentDate 
+              ? format(new Date(currentDate + 'T12:00:00'), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })
+              : 'Fecha anterior';
+            
+            const newDateFormatted = format(
+              new Date(response.data.new_date + 'T12:00:00'), 
+              "EEEE, d 'de' MMMM 'de' yyyy", 
+              { locale: es }
+            );
+
+            const message = `Hola ${patientName}. Su cita ha sido REASIGNADA.\n\n` +
+              `📅 CITA ANTERIOR:\n` +
+              `👨‍⚕️ Doctor: ${currentDoctor || 'N/A'}\n` +
+              `📍 Sede: ${currentLocation || 'N/A'}\n` +
+              `📆 Fecha: ${oldDateFormatted}\n` +
+              `🕐 Hora: ${currentTime || 'N/A'}\n\n` +
+              `✅ NUEVA CITA:\n` +
+              `👨‍⚕️ Doctor: ${response.data.new_doctor}\n` +
+              `📍 Sede: ${response.data.new_location}\n` +
+              `📆 Fecha: ${newDateFormatted}\n` +
+              `🕐 Hora: ${response.data.new_time?.substring(0, 5) || 'Por asignar'}\n\n` +
+              `Puede verificar su cita en:\n` +
+              `🌐 https://biosanarcall.site/users\n\n` +
+              `- Fundación Biosanar IPS`;
+
+            await fetch(`${import.meta.env.VITE_API_URL}/sms/send`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+              },
+              body: JSON.stringify({
+                number: patientPhone,
+                message,
+                recipient_name: patientName,
+                patient_id: appointmentId,
+                template_id: 'appointment_reassignment'
+              })
+            });
+          } catch (smsError) {
+            console.error('Error enviando SMS de reasignación:', smsError);
+            // No detener el flujo si falla el SMS
+          }
+        }
+
         toast({
           title: "Reasignación exitosa",
-          description: `${response.data.patient_name} ha sido reasignado/a exitosamente`,
+          description: `${response.data.patient_name} ha sido reasignado/a exitosamente. ${patientPhone ? 'SMS enviado.' : ''}`,
           variant: "default",
         });
 

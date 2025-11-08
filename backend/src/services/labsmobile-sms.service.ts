@@ -298,6 +298,38 @@ class LabsMobileSMSService {
   }
 
   /**
+   * Formatea una fecha del formato YYYY-MM-DD al formato DD/MM/YYYY
+   */
+  private formatDate(dateString: string): string {
+    try {
+      const date = new Date(dateString);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${day}/${month}/${year}`;
+    } catch (error) {
+      console.warn('Error formateando fecha:', dateString);
+      return dateString; // Retornar original si hay error
+    }
+  }
+
+  /**
+   * Formatea una hora del formato HH:mm al formato 12 horas (h:mm AM/PM)
+   */
+  private formatTime(timeString: string): string {
+    try {
+      const [hours, minutes] = timeString.split(':');
+      const hour = parseInt(hours);
+      const ampm = hour >= 12 ? 'PM' : 'AM';
+      const hour12 = hour % 12 || 12; // Convertir 0 a 12
+      return `${hour12}:${minutes} ${ampm}`;
+    } catch (error) {
+      console.warn('Error formateando hora:', timeString);
+      return timeString; // Retornar original si hay error
+    }
+  }
+
+  /**
    * Envía SMS de confirmación de cita
    */
   async sendAppointmentConfirmation(
@@ -308,7 +340,10 @@ class LabsMobileSMSService {
     doctorName: string,
     location: string
   ): Promise<SMSResult> {
-    const message = `Hola ${patientName}, su cita con ${doctorName} está confirmada para el ${appointmentDate} a las ${appointmentTime} en ${location}. Fundación Biosanar IPS.`;
+    const formattedDate = this.formatDate(appointmentDate);
+    const formattedTime = this.formatTime(appointmentTime);
+    
+    const message = `Hola ${patientName}, su cita con ${doctorName} está confirmada para el ${formattedDate} a las ${formattedTime} en ${location}. Fundación Biosanar IPS.`;
     
     return this.sendSMS({
       number: phone,
@@ -327,7 +362,10 @@ class LabsMobileSMSService {
     doctorName: string,
     location: string
   ): Promise<SMSResult> {
-    const message = `Recordatorio: ${patientName}, su cita con ${doctorName} es mañana ${appointmentDate} a las ${appointmentTime} en ${location}. Fundación Biosanar IPS.`;
+    const formattedDate = this.formatDate(appointmentDate);
+    const formattedTime = this.formatTime(appointmentTime);
+    
+    const message = `Recordatorio: ${patientName}, su cita con ${doctorName} es mañana ${formattedDate} a las ${formattedTime} en ${location}. Fundación Biosanar IPS.`;
     
     return this.sendSMS({
       number: phone,
@@ -345,7 +383,10 @@ class LabsMobileSMSService {
     appointmentTime: string,
     reason?: string
   ): Promise<SMSResult> {
-    let message = `${patientName}, su cita del ${appointmentDate} a las ${appointmentTime} ha sido cancelada.`;
+    const formattedDate = this.formatDate(appointmentDate);
+    const formattedTime = this.formatTime(appointmentTime);
+    
+    let message = `${patientName}, su cita del ${formattedDate} a las ${formattedTime} ha sido cancelada.`;
     if (reason) {
       message += ` Motivo: ${reason}.`;
     }

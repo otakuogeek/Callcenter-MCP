@@ -93,8 +93,14 @@ const DoctorDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [showAccountInfo, setShowAccountInfo] = useState(false);
   const [showChangePassword, setShowChangePassword] = useState(false);
-  const [showMedicalRecord, setShowMedicalRecord] = useState(false);
-  const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+    const [showMedicalRecord, setShowMedicalRecord] = useState(false);
+    const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+    // Estados para acciones de doctor sobre cita
+    const [showConfirmStatusDialog, setShowConfirmStatusDialog] = useState(false);
+    const [confirmAction, setConfirmAction] = useState<'Completada' | 'Cancelada' | null>(null);
+    const [actionTargetAppointment, setActionTargetAppointment] = useState<Appointment | null>(null);
+    const [cancellationReason, setCancellationReason] = useState('');
+    const [processingAction, setProcessingAction] = useState(false);
   
   // Estados para el calendario de navegación por semana
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
@@ -141,7 +147,7 @@ const DoctorDashboard = () => {
   const [changingPassword, setChangingPassword] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { logout, getMe, getStats, getAppointments, changePassword, createMedicalRecord, transcribeAudio } = useDoctorAuth();
+  const { logout, getMe, getStats, getAppointments, changePassword, createMedicalRecord, transcribeAudio, updateAppointmentStatus } = useDoctorAuth();
 
   useEffect(() => {
     loadDoctorData();
@@ -359,6 +365,38 @@ const DoctorDashboard = () => {
       });
     } finally {
       setSavingRecord(false);
+    }
+  };
+
+  // Ejecutar cambio de estado (Completada / Cancelada) solicitado por el doctor
+  const performStatusChange = async () => {
+    if (!actionTargetAppointment || !confirmAction) return;
+    try {
+      setProcessingAction(true);
+      const extra: any = {};
+      if (confirmAction === 'Cancelada' && cancellationReason.trim()) extra.cancellation_reason = cancellationReason.trim();
+
+      await updateAppointmentStatus(actionTargetAppointment.id, confirmAction, extra);
+
+      toast({
+        title: 'Estado actualizado',
+        description: `La cita ha sido marcada como ${confirmAction.toLowerCase()}.`,
+      });
+
+      // Refrescar datos
+      await loadDoctorData();
+      setShowConfirmStatusDialog(false);
+      setActionTargetAppointment(null);
+      setConfirmAction(null);
+      setCancellationReason('');
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'No se pudo actualizar el estado de la cita',
+        variant: 'destructive'
+      });
+    } finally {
+      setProcessingAction(false);
     }
   };
 
@@ -922,6 +960,29 @@ const DoctorDashboard = () => {
                                   </div>
                                 </div>
 
+                                {/* Acciones del doctor: marcar completada / cancelar */}
+                                <div className="ml-4 flex-shrink-0 flex items-center gap-2">
+                                  {appointment.status === 'Confirmada' && (
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button size="sm" variant="outline" onClick={(e: any) => e.stopPropagation()}>
+                                          Acciones
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent>
+                                        <DropdownMenuLabel>Acciones</DropdownMenuLabel>
+                                        <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Completada'); setShowConfirmStatusDialog(true); }}>
+                                          Marcar como completada
+                                        </DropdownMenuItem>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Cancelada'); setShowConfirmStatusDialog(true); }}>
+                                          Cancelar cita
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  )}
+                                </div>
+
                                 {/* Indicador de clic */}
                                 <ChevronDown className="h-5 w-5 text-gray-400 rotate-[-90deg]" />
                               </div>
@@ -1070,6 +1131,28 @@ const DoctorDashboard = () => {
                                   )}
                                 </div>
                               </div>
+                              {/* Acciones del doctor: marcar completada / cancelar */}
+                              <div className="ml-4 flex-shrink-0 flex items-start gap-2">
+                                {appointment.status === 'Confirmada' && (
+                                  <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                      <Button size="sm" variant="outline" onClick={(e: any) => e.stopPropagation()}>
+                                        Acciones
+                                      </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent>
+                                      <DropdownMenuLabel>Acciones</DropdownMenuLabel>
+                                      <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Completada'); setShowConfirmStatusDialog(true); }}>
+                                        Marcar como completada
+                                      </DropdownMenuItem>
+                                      <DropdownMenuSeparator />
+                                      <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Cancelada'); setShowConfirmStatusDialog(true); }}>
+                                        Cancelar cita
+                                      </DropdownMenuItem>
+                                    </DropdownMenuContent>
+                                  </DropdownMenu>
+                                )}
+                              </div>
                             </div>
                           </CardContent>
                         </Card>
@@ -1087,6 +1170,46 @@ const DoctorDashboard = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+        {/* Dialog: Confirmar cambio de estado de cita (Completada / Cancelada) */}
+        <Dialog open={showConfirmStatusDialog} onOpenChange={setShowConfirmStatusDialog}>
+          <DialogContent className="sm:max-w-[520px]">
+            <DialogHeader>
+              <DialogTitle>
+                {confirmAction === 'Completada' ? 'Marcar cita como completada' : 'Cancelar cita'}
+              </DialogTitle>
+              <DialogDescription>
+                {actionTargetAppointment ? (
+                  <>
+                    {confirmAction === 'Completada' ? (
+                      <span>Confirma que deseas marcar la cita de <strong>{actionTargetAppointment.patient_name}</strong> a las <strong>{actionTargetAppointment.start_time}</strong> como <strong>completada</strong>.</span>
+                    ) : (
+                      <span>Indica el motivo de cancelación para la cita de <strong>{actionTargetAppointment.patient_name}</strong> a las <strong>{actionTargetAppointment.start_time}</strong>.</span>
+                    )}
+                  </>
+                ) : null}
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="py-4">
+              {confirmAction === 'Cancelada' && (
+                <div className="space-y-2">
+                  <Label>Motivo de cancelación (opcional)</Label>
+                  <Textarea value={cancellationReason} onChange={(e) => setCancellationReason(e.target.value)} placeholder="Ingrese motivo" />
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 mt-4">
+                <Button variant="ghost" onClick={() => { setShowConfirmStatusDialog(false); setActionTargetAppointment(null); setConfirmAction(null); setCancellationReason(''); }}>
+                  Cancelar
+                </Button>
+                <Button onClick={performStatusChange} disabled={processingAction}>
+                  {processingAction ? 'Procesando...' : (confirmAction === 'Completada' ? 'Marcar como completada' : 'Confirmar cancelación')}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
       {/* Diálogo de Información de Cuenta */}
       <Dialog open={showAccountInfo} onOpenChange={setShowAccountInfo}>

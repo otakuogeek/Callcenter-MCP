@@ -96,7 +96,13 @@ async function request<T>(
     try {
       const errorData = await res.json();
       logger.debug('Error response data:', errorData);
-      msg = errorData.message || errorData.error || msg;
+      
+      // Si hay detalles adicionales, incluirlos en el mensaje
+      if (errorData.details) {
+        msg = `${errorData.message || msg}\n\n${errorData.details}`;
+      } else {
+        msg = errorData.message || errorData.error || msg;
+      }
     } catch {
       logger.debug('No se pudo parsear la respuesta de error como JSON');
     }
@@ -338,6 +344,23 @@ export const api = {
       `/locations/${locationId}/specialties`, 
       { method: 'PUT', body: { specialty_ids } }
     ),
+  getLocationDailyCapacity: (locationId: number) =>
+    request<{
+      location: { id: number; name: string };
+      appointments: Array<{
+        date: string;
+        total_appointments: number;
+        confirmed: number;
+        completed: number;
+        cancelled: number;
+      }>;
+      availability: Array<{
+        date: string;
+        total_slots: number;
+        available_slots: number;
+        booked_slots: number;
+      }>;
+    }>(`/locations/${locationId}/daily-capacity`),
   getLocationMetrics: (locationId: number, month?: number, year?: number) => {
     const params = new URLSearchParams();
     if (month) params.set('month', String(month));
@@ -1244,7 +1267,7 @@ export const api = {
       doctor_name: string;
       specialty_name: string;
       location_name: string;
-    }[]>(`/availabilities${specialtyId ? `?specialty_id=${specialtyId}` : ''}`),
+    }[]>(`/availabilities/public${specialtyId ? `?specialty_id=${specialtyId}` : ''}`),
 
   // Asignar cita desde lista de espera a una agenda real
   assignFromWaitingList: (data: {
@@ -1524,6 +1547,39 @@ export const api = {
       }>;
       count: number;
     }>('/elevenlabs/agents');
+  },
+
+  // Analytics de citas
+  async getAppointmentAnalytics(startDate: string, endDate: string) {
+    return this.get<{
+      success: boolean;
+      data: {
+        sourceStats: {
+          web: number;
+          phone: number;
+          system: number;
+        };
+        dailyStats: Array<{
+          date: string;
+          web: number;
+          phone: number;
+          system: number;
+          total: number;
+        }>;
+        occupancyStats: Array<{
+          doctor: string;
+          specialty: string;
+          totalSlots: number;
+          bookedSlots: number;
+          occupancyRate: number;
+        }>;
+        weeklyTrend: Array<{
+          week: string;
+          appointments: number;
+          cancellations: number;
+        }>;
+      };
+    }>(`/analytics/appointments?start_date=${startDate}&end_date=${endDate}`);
   }
 };
 

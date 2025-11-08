@@ -348,6 +348,33 @@ export function useDoctorAuth() {
     }
   }
 
+  // Actualizar estado de una cita (por ejemplo: Confirmada -> Completada / Cancelada)
+  async function updateAppointmentStatus(appointmentId: number, status: 'Completada' | 'Cancelada' | 'Confirmada' | 'Pendiente', extra?: { cancellation_reason?: string }) {
+    const token = localStorage.getItem('doctorToken');
+    if (!token) throw new Error('No autenticado');
+
+    setLoading(true);
+    setError(null);
+    try {
+      const payload: any = { status };
+      if (extra?.cancellation_reason) payload.cancellation_reason = extra.cancellation_reason;
+
+      const response = await axios.put(
+        `${API_URL}/appointments/${appointmentId}`,
+        payload,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      return response.data;
+    } catch (e: any) {
+      const errorMessage = e?.response?.data?.message || e?.response?.data?.error || 'Error actualizando cita';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return { 
     login, 
     logout, 
@@ -360,6 +387,7 @@ export function useDoctorAuth() {
     getPatientHistory,
     createMedicalRecord,
     transcribeAudio,
+    updateAppointmentStatus,
     loading, 
     error 
   };

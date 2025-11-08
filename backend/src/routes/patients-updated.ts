@@ -8,6 +8,7 @@ import pool from '../db/pool';
 import { sendPatientRegistrationEmail } from '../utils/emailService';
 import { z } from 'zod';
 import { cacheWrap } from '../utils/cache';
+import labsmobileService from '../services/labsmobile-sms.service';
 
 interface PatientRegistrationData {
   id: number;
@@ -108,71 +109,6 @@ router.get('/public/authorized-specialties/:epsId', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: 'Error al obtener especialidades autorizadas' 
-    });
-  }
-});
-
-// ===== OBTENER AGENDAS DISPONIBLES POR ESPECIALIDAD (para portal público) =====
-// GET /api/patients-v2/public/available-schedules/:specialtyId/:epsId
-// Endpoint para mostrar las agendas disponibles para agendar citas
-router.get('/public/available-schedules/:specialtyId/:epsId', async (req, res) => {
-  console.log('✅ Endpoint /public/available-schedules ALCANZADO');
-  
-  try {
-    const { specialtyId, epsId } = req.params;
-    
-    if (!specialtyId || !epsId) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Specialty ID y EPS ID son requeridos' 
-      });
-    }
-
-    // Buscar agendas disponibles con cupos libres
-    const [schedules] = await pool.execute(
-      `SELECT 
-        a.id as availability_id,
-        a.date as appointment_date,
-        TIME_FORMAT(a.start_time, '%h:%i %p') as start_time,
-        TIME_FORMAT(a.end_time, '%h:%i %p') as end_time,
-        a.capacity as total_slots,
-        (a.capacity - a.booked_slots) as slots_available,
-        d.id as doctor_id,
-        d.name as doctor_name,
-        s.name as specialty_name,
-        l.name as location_name,
-        l.address as location_address
-       FROM availabilities a
-       JOIN doctors d ON a.doctor_id = d.id
-       JOIN specialties s ON a.specialty_id = s.id
-       JOIN locations l ON a.location_id = l.id
-       JOIN eps_specialty_location_authorizations auth ON 
-         auth.specialty_id = a.specialty_id AND 
-         auth.location_id = a.location_id AND 
-         auth.eps_id = ?
-       WHERE a.specialty_id = ?
-         AND a.date >= CURDATE()
-         AND a.status = 'Activa'
-         AND (a.capacity - a.booked_slots) > 0
-         AND auth.authorized = 1
-         AND (auth.expiration_date IS NULL OR auth.expiration_date >= CURDATE())
-       ORDER BY a.date ASC, a.start_time ASC
-       LIMIT 20`,
-      [epsId, specialtyId]
-    );
-
-    console.log(`✅ Agendas disponibles encontradas: ${(schedules as any[]).length}`);
-    
-    res.json({ 
-      success: true, 
-      data: schedules,
-      has_availability: (schedules as any[]).length > 0
-    });
-  } catch (e) {
-    console.error('❌ Error getting available schedules:', e);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Error al obtener agendas disponibles' 
     });
   }
 });
@@ -761,6 +697,7 @@ router.get('/:id/appointments', async (req, res) => {
         a.status,
         a.reason,
         a.created_at,
+        a.specialty_id,
         d.name as doctor_name,
         s.name as specialty_name,
         l.name as location_name
@@ -1322,12 +1259,13 @@ router.post('/public/schedule-appointment', async (req, res) => {
       availability_id,
       reason, 
       cups_id, 
-      cups_name
+      cups_name,
+      selected_time  // Nueva hora específica seleccionada por el usuario
     } = req.body;
     
     console.log('📥 Datos recibidos:', { 
       patient_id, specialty_id, doctor_id, availability_id, 
-      reason, cups_id, cups_name 
+      reason, cups_id, cups_name, selected_time 
     });
     
     // Validar datos requeridos
@@ -1338,29 +1276,32 @@ router.post('/public/schedule-appointment', async (req, res) => {
       });
     }
 
-    // Validar que el paciente no tenga citas activas (Confirmada o Pendiente)
-    console.log(`🔍 Verificando si el paciente ${patient_id} tiene citas activas...`);
+    // Validar que el paciente no tenga citas activas en la MISMA ESPECIALIDAD (Confirmada o Pendiente)
+    console.log(`🔍 Verificando si el paciente ${patient_id} tiene citas activas en la especialidad ${specialty_id}...`);
     const [existingAppointments] = await pool.execute(
-      `SELECT id, scheduled_at, status, reason 
-       FROM appointments 
-       WHERE patient_id = ? 
-         AND status IN ('Confirmada', 'Pendiente') 
-         AND scheduled_at >= NOW()
+      `SELECT a.id, a.scheduled_at, a.status, a.reason, s.name as specialty_name
+       FROM appointments a
+       JOIN specialties s ON a.specialty_id = s.id
+       WHERE a.patient_id = ? 
+         AND a.specialty_id = ?
+         AND a.status IN ('Confirmada', 'Pendiente') 
+         AND a.scheduled_at >= NOW()
        LIMIT 1`,
-      [patient_id]
+      [patient_id, specialty_id]
     );
 
     if ((existingAppointments as any[]).length > 0) {
       const existingAppointment = (existingAppointments as any[])[0];
       const scheduledDate = new Date(existingAppointment.scheduled_at);
       
-      console.log(`⚠️ Paciente ${patient_id} ya tiene una cita activa: ID ${existingAppointment.id}`);
+      console.log(`⚠️ Paciente ${patient_id} ya tiene una cita activa en ${existingAppointment.specialty_name}: ID ${existingAppointment.id}`);
       
       return res.status(409).json({
         success: false,
-        error: 'Ya tienes una cita activa programada',
+        error: 'Ya tienes una cita activa en esta especialidad',
         details: {
           existing_appointment_id: existingAppointment.id,
+          specialty_name: existingAppointment.specialty_name,
           scheduled_date: scheduledDate.toLocaleDateString('es-CO'),
           scheduled_time: scheduledDate.toLocaleTimeString('es-CO', { 
             hour: '2-digit', 
@@ -1369,11 +1310,11 @@ router.post('/public/schedule-appointment', async (req, res) => {
           status: existingAppointment.status,
           reason: existingAppointment.reason
         },
-        message: `Ya tienes una cita ${existingAppointment.status.toLowerCase()} programada para el ${scheduledDate.toLocaleDateString('es-CO')} a las ${scheduledDate.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}. No puedes agendar otra cita hasta completar o cancelar la anterior.`
+        message: `Ya tienes una cita ${existingAppointment.status.toLowerCase()} en ${existingAppointment.specialty_name} programada para el ${scheduledDate.toLocaleDateString('es-CO')} a las ${scheduledDate.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}. No puedes agendar otra cita en la misma especialidad hasta completar o cancelar la anterior.`
       });
     }
 
-    console.log(`✅ Paciente ${patient_id} no tiene citas activas, puede agendar nueva cita`);
+    console.log(`✅ Paciente ${patient_id} no tiene citas activas en la especialidad ${specialty_id}, puede agendar nueva cita`);
 
     // Obtener duración de la especialidad
     const [specialtyInfo] = await pool.execute(
@@ -1420,25 +1361,94 @@ router.post('/public/schedule-appointment', async (req, res) => {
       });
     }
 
-    // 1. Buscar la última cita agendada para el mismo doctor y especialidad en la fecha
-    console.log(`🔍 Buscando última cita para doctor ${doctor_id}, especialidad ${specialty_id}, fecha ${appointment_date}`);
+    // 1. Buscar la última cita agendada para la misma disponibilidad (availability_id)
+    console.log(`🔍 Buscando última cita para availability_id ${availability_id}, doctor ${doctor_id}, especialidad ${specialty_id}, fecha ${appointment_date}`);
     
     const [lastAppointments] = await pool.execute(
       `SELECT scheduled_at, duration_minutes 
        FROM appointments 
-       WHERE doctor_id = ? 
+       WHERE availability_id = ? 
+         AND doctor_id = ? 
          AND specialty_id = ? 
          AND DATE(scheduled_at) = DATE(?) 
          AND status IN ('Pendiente', 'Confirmada')
        ORDER BY scheduled_at DESC 
        LIMIT 1`,
-      [doctor_id, specialty_id, appointment_date]
+      [availability_id, doctor_id, specialty_id, appointment_date]
     );
 
     let newAppointmentTime: Date;
-    const baseDate = new Date(appointment_date);
     
-    if ((lastAppointments as any[]).length > 0) {
+    // Crear fecha base correctamente en zona horaria de Colombia
+    // appointment_date puede venir como Date object o como string desde MySQL
+    let baseDate: Date;
+    
+    if (appointment_date instanceof Date) {
+      // Ya es un objeto Date
+      baseDate = new Date(appointment_date.getFullYear(), appointment_date.getMonth(), appointment_date.getDate(), 0, 0, 0, 0);
+    } else if (typeof appointment_date === 'string') {
+      // Es un string, parsearlo correctamente
+      const dateParts = appointment_date.split('-');
+      baseDate = new Date(
+        parseInt(dateParts[0]), // año
+        parseInt(dateParts[1]) - 1, // mes (0-indexed)
+        parseInt(dateParts[2]), // día
+        0, 0, 0, 0 // hora, minuto, segundo, milisegundo
+      );
+    } else {
+      // Fallback: intentar crear Date directamente
+      baseDate = new Date(appointment_date);
+      baseDate.setHours(0, 0, 0, 0);
+    }
+    
+    // NUEVA LÓGICA: Si el usuario seleccionó una hora específica, usarla
+    if (selected_time) {
+      console.log(`🕐 Usando hora específica seleccionada: ${selected_time}`);
+      
+      // Validar que la hora seleccionada esté en formato correcto (HH:mm)
+      const timePattern = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+      if (!timePattern.test(selected_time)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Formato de hora seleccionada inválido. Use formato HH:mm'
+        });
+      }
+      
+      // Verificar que la hora seleccionada no esté ocupada
+      const [conflictingAppointments] = await pool.execute(
+        `SELECT id 
+         FROM appointments 
+         WHERE availability_id = ? 
+           AND doctor_id = ? 
+           AND specialty_id = ? 
+           AND DATE(scheduled_at) = DATE(?) 
+           AND TIME_FORMAT(scheduled_at, '%H:%i') = ?
+           AND status IN ('Pendiente', 'Confirmada')
+         LIMIT 1`,
+        [availability_id, doctor_id, specialty_id, appointment_date, selected_time]
+      );
+      
+      if ((conflictingAppointments as any[]).length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: `La hora ${selected_time} ya está ocupada. Por favor seleccione otra hora.`
+        });
+      }
+      
+      // Usar la hora seleccionada
+      const timeParts = selected_time.split(':');
+      newAppointmentTime = new Date(baseDate);
+      newAppointmentTime.setHours(
+        parseInt(timeParts[0]), 
+        parseInt(timeParts[1]), 
+        0, 
+        0
+      );
+      
+      console.log(`✅ Cita programada para hora específica: ${newAppointmentTime.toLocaleString()}`);
+    }
+    // LÓGICA ORIGINAL: Cálculo secuencial automático
+    else if ((lastAppointments as any[]).length > 0) {
       // 2. Si hay citas previas, calcular próximo horario disponible
       const lastAppointment = (lastAppointments as any[])[0];
       const lastScheduledAt = new Date(lastAppointment.scheduled_at);
@@ -1448,15 +1458,46 @@ router.post('/public/schedule-appointment', async (req, res) => {
       newAppointmentTime = new Date(lastScheduledAt);
       newAppointmentTime.setMinutes(newAppointmentTime.getMinutes() + lastDuration);
       
+      console.log(`📅 Encontrada cita previa en esta availability_id`);
       console.log(`📅 Última cita: ${lastScheduledAt.toLocaleString()}, duración: ${lastDuration} min`);
       console.log(`⏰ Nueva cita programada para: ${newAppointmentTime.toLocaleString()}`);
     } else {
-      // 3. Si no hay citas previas, usar horario base (8:00 AM)
+      console.log(`🆕 No hay citas previas en esta availability_id, usando horario de inicio del bloque`);
+      // 3. Si no hay citas previas, usar el start_time del bloque de disponibilidad
+      const startTimeParts = availability.start_time.split(':');
       newAppointmentTime = new Date(baseDate);
-      newAppointmentTime.setHours(8, 0, 0, 0); // 8:00 AM por defecto
+      newAppointmentTime.setHours(
+        parseInt(startTimeParts[0]), 
+        parseInt(startTimeParts[1]), 
+        0, 
+        0
+      );
       
-      console.log(`🕐 Primera cita del día programada para: ${newAppointmentTime.toLocaleString()}`);
+      console.log(`🕐 Primera cita del bloque programada para: ${newAppointmentTime.toLocaleString()} (usando start_time: ${availability.start_time})`);
     }
+
+    // Validar que la nueva cita + duración no exceda el horario de fin del bloque
+    const endTimeParts = availability.end_time.split(':');
+    const blockEndTime = new Date(baseDate);
+    blockEndTime.setHours(
+      parseInt(endTimeParts[0]), 
+      parseInt(endTimeParts[1]), 
+      0, 
+      0
+    );
+    
+    const appointmentEndTime = new Date(newAppointmentTime);
+    appointmentEndTime.setMinutes(appointmentEndTime.getMinutes() + duration_minutes);
+    
+    if (appointmentEndTime > blockEndTime) {
+      console.log(`❌ La cita excedería el horario del bloque. Fin de cita: ${appointmentEndTime.toLocaleString()}, Fin de bloque: ${blockEndTime.toLocaleString()}`);
+      return res.status(400).json({
+        success: false,
+        error: 'No hay tiempo suficiente en este bloque para la duración de la cita'
+      });
+    }
+
+    console.log(`✅ Validación de horario exitosa. Cita: ${newAppointmentTime.toLocaleString()} - ${appointmentEndTime.toLocaleString()}`);
 
     // 4. Obtener información del doctor para la respuesta
     const [doctorInfo] = await pool.execute(
@@ -1500,6 +1541,13 @@ router.post('/public/schedule-appointment', async (req, res) => {
     console.log(`📈 Slot incrementado en availabilities ID: ${availability_id}`);
 
     // 8. Respuesta exitosa con información completa
+    // Formatear fecha correctamente sin problemas de zona horaria
+    const localDate = new Date(newAppointmentTime);
+    const year = localDate.getFullYear();
+    const month = String(localDate.getMonth() + 1).padStart(2, '0');
+    const day = String(localDate.getDate()).padStart(2, '0');
+    const formattedDate = `${year}-${month}-${day}`;
+    
     res.json({ 
       success: true, 
       data: { 
@@ -1510,8 +1558,13 @@ router.post('/public/schedule-appointment', async (req, res) => {
           minute: '2-digit',
           hour12: true 
         }),
-        scheduled_date: newAppointmentTime.toLocaleDateString('es-CO'),
-        appointment_date: appointment_date,
+        scheduled_date: localDate.toLocaleDateString('es-CO', {
+          timeZone: 'America/Bogota',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        }),
+        appointment_date: formattedDate,
         scheduled_datetime: newAppointmentTime.toISOString(),
         duration_minutes: 15,
         cups_name: cups_name || null,
@@ -1527,6 +1580,601 @@ router.post('/public/schedule-appointment', async (req, res) => {
       success: false, 
       error: 'Error al agendar la cita',
       details: error.message 
+    });
+  }
+});
+
+// Endpoint público para cancelar citas (solo el propio paciente)
+router.put('/public/appointments/:appointmentId/cancel', async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const { patientId, cancellationReason } = req.body;
+
+    if (!appointmentId || !patientId) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de cita y ID de paciente son requeridos'
+      });
+    }
+
+    console.log(`🚫 Intentando cancelar cita ${appointmentId} para paciente ${patientId}`);
+
+    // 1. Verificar que la cita existe y pertenece al paciente
+    const [appointmentRows] = await pool.execute(
+      `SELECT 
+        a.id, a.patient_id, a.status, a.availability_id,
+        a.scheduled_at, d.name as doctor_name, s.name as specialty_name,
+        l.name as location_name, p.name as patient_name
+       FROM appointments a
+       LEFT JOIN doctors d ON a.doctor_id = d.id  
+       LEFT JOIN specialties s ON a.specialty_id = s.id
+       LEFT JOIN locations l ON a.location_id = l.id
+       LEFT JOIN patients p ON a.patient_id = p.id
+       WHERE a.id = ? AND a.patient_id = ?`,
+      [appointmentId, patientId]
+    );
+
+    if ((appointmentRows as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Cita no encontrada o no pertenece a este paciente'
+      });
+    }
+
+    const appointment = (appointmentRows as any[])[0];
+    
+    // 2. Verificar que la cita se puede cancelar (no está ya cancelada o completada)
+    if (appointment.status === 'Cancelada') {
+      return res.status(400).json({
+        success: false,
+        error: 'Esta cita ya está cancelada'
+      });
+    }
+
+    if (appointment.status === 'Completada') {
+      return res.status(400).json({
+        success: false,
+        error: 'No se puede cancelar una cita que ya fue completada'
+      });
+    }
+
+    // 3. Verificar que no se esté cancelando muy tarde (opcional - se puede ajustar)
+    const scheduledTime = new Date(appointment.scheduled_at);
+    const now = new Date();
+    const hoursUntilAppointment = (scheduledTime.getTime() - now.getTime()) / (1000 * 60 * 60);
+
+    if (hoursUntilAppointment < 2) {
+      console.log(`⚠️ Cita programada en ${hoursUntilAppointment} horas - permitir cancelación tardía`);
+      // Por ahora permitiremos la cancelación, pero se puede agregar restricción aquí
+    }
+
+    // 4. Actualizar el estado de la cita a 'Cancelada'
+    const reason = cancellationReason ? `Cancelada por paciente: ${cancellationReason}` : 'Cancelada por paciente';
+    
+    await pool.execute(
+      `UPDATE appointments 
+       SET status = 'Cancelada', 
+           cancellation_reason = ?,
+           updated_at = NOW()
+       WHERE id = ?`,
+      [reason, appointmentId]
+    );
+
+    // 5. Liberar el cupo en la availability si existe
+    if (appointment.availability_id) {
+      await pool.execute(
+        `UPDATE availabilities 
+         SET booked_slots = CASE 
+           WHEN booked_slots > 0 THEN booked_slots - 1 
+           ELSE 0 
+         END 
+         WHERE id = ?`,
+        [appointment.availability_id]
+      );
+      console.log(`✅ Liberado cupo en availability_id ${appointment.availability_id}`);
+    }
+
+    console.log(`✅ Cita ${appointmentId} cancelada exitosamente`);
+
+    // 6. Enviar notificación SMS al administrador
+    try {
+      const adminPhone = process.env.CANCELLATION_NOTIFICATION_PHONE || process.env.ADMIN_NOTIFICATION_PHONE;
+      if (adminPhone) {
+        const scheduledDate = new Date(appointment.scheduled_at);
+        const appointmentDate = scheduledDate.toLocaleDateString('es-CO', {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric'
+        });
+
+        const appointmentTime = scheduledDate.toLocaleTimeString('es-CO', { 
+          hour: '2-digit', 
+          minute: '2-digit' 
+        });
+
+        // Mensaje de notificación de cancelación
+        const notificationMessage = `Se informa que el paciente: ${appointment.patient_name || 'Paciente'}, ha cancelado su cita con: ${appointment.doctor_name || 'Doctor'} para la fecha ${appointmentDate} a las ${appointmentTime}.`;
+
+        const smsResult = await labsmobileService.sendSMS({
+          number: adminPhone,
+          message: notificationMessage,
+          recipient_name: 'Administrador',
+          patient_id: appointment.patient_id,
+          appointment_id: appointment.id
+        });
+
+        if (smsResult.success) {
+          console.log(`✅ Notificación de cancelación enviada exitosamente al administrador: ${adminPhone}`);
+        } else {
+          console.log(`⚠️ Error enviando notificación de cancelación: ${smsResult.error}`);
+        }
+      } else {
+        console.log(`⚠️ No se pudo enviar notificación: CANCELLATION_NOTIFICATION_PHONE no configurado`);
+      }
+    } catch (smsError: any) {
+      console.error('❌ Error enviando notificación SMS al administrador:', smsError);
+      // No interrumpir el flujo si falla el SMS
+    }
+
+    // 7. Respuesta exitosa con detalles de la cita cancelada
+    res.json({
+      success: true,
+      data: {
+        appointment_id: appointment.id,
+        status: 'Cancelada',
+        doctor_name: appointment.doctor_name,
+        specialty_name: appointment.specialty_name,
+        location_name: appointment.location_name,
+        scheduled_date: new Date(appointment.scheduled_at).toLocaleDateString('es-CO'),
+        scheduled_time: new Date(appointment.scheduled_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
+        cancellation_reason: reason
+      },
+      message: 'Cita cancelada exitosamente'
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error cancelando cita:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error al cancelar la cita',
+      details: error.message
+    });
+  }
+});
+
+// ===== OBTENER CITAS DISPONIBLES PARA REASIGNACIÓN (para portal público) =====
+// GET /api/patients-v2/public/available-schedules/:specialtyId/:epsId
+// Lista las agendas disponibles para reasignar una cita a una especialidad específica
+router.get('/public/available-schedules/:specialtyId/:epsId', async (req, res) => {
+  try {
+    const { specialtyId, epsId } = req.params;
+
+    if (!specialtyId || !epsId) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de especialidad y EPS son requeridos'
+      });
+    }
+
+    console.log(`✅ Endpoint /public/available-schedules ALCANZADO`);
+
+    // Primero obtenemos la duración de la especialidad
+    const [specialtyRows] = await pool.execute(
+      'SELECT default_duration_minutes FROM specialties WHERE id = ?',
+      [specialtyId]
+    );
+    
+    const duration = (specialtyRows as any[])[0]?.default_duration_minutes || 15;
+
+    // Obtener agendas disponibles con cálculo de hora real disponible
+    const [availabilityRows] = await pool.execute(
+      `SELECT 
+        av.id as availability_id,
+        DATE_FORMAT(av.date, '%Y-%m-%d') as appointment_date,
+        TIME_FORMAT(av.start_time, '%h:%i %p') as start_time,
+        TIME_FORMAT(av.end_time, '%h:%i %p') as end_time,
+        av.capacity as total_slots,
+        av.booked_slots,
+        GREATEST(0, CAST(av.capacity AS SIGNED) - CAST(av.booked_slots AS SIGNED)) as slots_available,
+        d.name as doctor_name,
+        d.id as doctor_id,
+        s.name as specialty_name,
+        l.name as location_name,
+        l.id as location_id,
+        av.date as raw_date,
+        av.start_time as raw_start_time,
+        av.end_time as raw_end_time
+       FROM availabilities av
+       INNER JOIN doctors d ON av.doctor_id = d.id
+       INNER JOIN specialties s ON av.specialty_id = s.id
+       INNER JOIN locations l ON av.location_id = l.id
+       WHERE av.specialty_id = ?
+       AND av.status IN ('Activa', 'Completa')
+       AND av.date >= CURDATE()
+       AND GREATEST(0, CAST(av.capacity AS SIGNED) - CAST(av.booked_slots AS SIGNED)) > 0
+       AND (av.is_paused = 0 OR av.is_paused IS NULL)
+       ORDER BY av.date ASC, av.start_time ASC`,
+      [specialtyId]
+    );
+
+    let availabilities = availabilityRows as any[];
+    console.log(`✅ Agendas encontradas antes del cálculo: ${availabilities.length}`);
+
+    // Calcular la hora real disponible para cada agenda
+    for (let i = 0; i < availabilities.length; i++) {
+      const availability = availabilities[i];
+      
+      // Buscar la última cita programada en esta agenda
+      const [lastAppointmentRows] = await pool.execute(
+        `SELECT MAX(scheduled_at) as last_scheduled_time 
+         FROM appointments 
+         WHERE availability_id = ? AND status IN ('Confirmada', 'Pendiente')
+         AND doctor_id = ? AND specialty_id = ?
+         AND DATE(scheduled_at) = ?`,
+        [availability.availability_id, availability.doctor_id, specialtyId, availability.raw_date]
+      );
+
+      let availableTime;
+      const lastScheduledTime = (lastAppointmentRows as any[])[0]?.last_scheduled_time;
+
+      if (lastScheduledTime) {
+        // Hay citas previas, calcular próximo horario disponible
+        const nextTime = new Date(lastScheduledTime);
+        nextTime.setMinutes(nextTime.getMinutes() + duration);
+        availableTime = nextTime;
+      } else {
+        // No hay citas, usar hora de inicio de la agenda
+        const startTime = new Date(availability.raw_date);
+        const [startHour, startMinute] = availability.raw_start_time.split(':');
+        startTime.setHours(parseInt(startHour), parseInt(startMinute), 0, 0);
+        availableTime = startTime;
+      }
+
+      // Verificar que el horario calculado esté dentro del rango de la agenda
+      const endTime = new Date(availability.raw_date);
+      const [endHour, endMinute] = availability.raw_end_time.split(':');
+      endTime.setHours(parseInt(endHour), parseInt(endMinute), 0, 0);
+      
+      // Verificar que hay tiempo suficiente para la cita completa
+      const appointmentEndTime = new Date(availableTime);
+      appointmentEndTime.setMinutes(appointmentEndTime.getMinutes() + duration);
+
+      if (appointmentEndTime <= endTime) {
+        // Hay tiempo suficiente, actualizar con la hora real disponible
+        availability.available_time = availableTime.toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit', 
+          hour12: true 
+        });
+        availability.calculated_time = availableTime.toISOString();
+      } else {
+        // No hay tiempo suficiente, marcar como no disponible
+        availability.slots_available = 0;
+        availability.available_time = 'Sin cupos';
+      }
+      
+      // Limpiar campos temporales
+      delete availability.raw_date;
+      delete availability.raw_start_time;
+      delete availability.raw_end_time;
+    }
+
+    // Filtrar solo las agendas que realmente tienen tiempo disponible
+    availabilities = availabilities.filter(av => av.slots_available > 0);
+
+    console.log(`✅ Agendas disponibles después del cálculo: ${availabilities.length}`);
+
+    res.json({
+      success: true,
+      data: availabilities,
+      message: `Se encontraron ${availabilities.length} opciones disponibles`
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error obteniendo horarios disponibles:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error al obtener horarios disponibles',
+      details: error.message
+    });
+  }
+});
+
+// ===== REASIGNAR CITA (para portal público) =====
+// PUT /api/patients-v2/public/appointments/:appointmentId/reschedule
+// Permite al paciente reasignar su cita a una nueva fecha/hora disponible
+router.put('/public/appointments/:appointmentId/reschedule', async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const { patientId, newAvailabilityId, reason, selected_time } = req.body;
+
+    if (!appointmentId || !patientId || !newAvailabilityId) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de cita, ID de paciente y nueva disponibilidad son requeridos'
+      });
+    }
+
+    console.log(`🔄 Intentando reasignar cita ${appointmentId} del paciente ${patientId} a availability ${newAvailabilityId}`, selected_time ? `con hora específica ${selected_time}` : '');
+
+    // 1. Verificar que la cita actual existe y pertenece al paciente
+    const [appointmentRows] = await pool.execute(
+      `SELECT 
+        a.id, a.patient_id, a.status, a.availability_id, a.specialty_id,
+        a.scheduled_at, a.doctor_id,
+        d.name as doctor_name, s.name as specialty_name, l.name as location_name
+       FROM appointments a
+       LEFT JOIN doctors d ON a.doctor_id = d.id  
+       LEFT JOIN specialties s ON a.specialty_id = s.id
+       LEFT JOIN locations l ON a.location_id = l.id
+       WHERE a.id = ? AND a.patient_id = ?`,
+      [appointmentId, patientId]
+    );
+
+    if ((appointmentRows as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Cita no encontrada o no pertenece a este paciente'
+      });
+    }
+
+    const currentAppointment = (appointmentRows as any[])[0];
+    
+    // 2. Verificar que la cita se puede reasignar
+    if (currentAppointment.status === 'Cancelada') {
+      return res.status(400).json({
+        success: false,
+        error: 'No se puede reasignar una cita cancelada'
+      });
+    }
+
+    if (currentAppointment.status === 'Completada') {
+      return res.status(400).json({
+        success: false,
+        error: 'No se puede reasignar una cita completada'
+      });
+    }
+
+    // 3. Verificar que la nueva availability existe y tiene cupos
+    const [newAvailabilityRows] = await pool.execute(
+      `SELECT 
+        av.id, av.doctor_id, av.specialty_id, av.location_id, av.date, 
+        av.start_time, av.end_time, av.capacity, av.booked_slots,
+        av.status, d.name as doctor_name, s.name as specialty_name, l.name as location_name
+       FROM availabilities av
+       LEFT JOIN doctors d ON av.doctor_id = d.id
+       LEFT JOIN specialties s ON av.specialty_id = s.id
+       LEFT JOIN locations l ON av.location_id = l.id
+       WHERE av.id = ? AND av.status IN ('Activa', 'Completa')`,
+      [newAvailabilityId]
+    );
+
+    if ((newAvailabilityRows as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'La nueva agenda no existe o no está disponible'
+      });
+    }
+
+    const newAvailability = (newAvailabilityRows as any[])[0];
+
+    // 4. Verificar que la nueva agenda es de la misma especialidad
+    if (newAvailability.specialty_id !== currentAppointment.specialty_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Solo puedes reasignar a una agenda de la misma especialidad'
+      });
+    }
+
+    // 5. Verificar que hay cupos disponibles
+    if (newAvailability.booked_slots >= newAvailability.capacity) {
+      return res.status(400).json({
+        success: false,
+        error: 'La nueva agenda no tiene cupos disponibles'
+      });
+    }
+
+    // 6. Obtener duración de la especialidad
+    const [specialtyRows] = await pool.execute(
+      'SELECT default_duration_minutes FROM specialties WHERE id = ?',
+      [currentAppointment.specialty_id]
+    );
+    
+    const duration = (specialtyRows as any[])[0]?.default_duration_minutes || 15;
+
+    // 7. Calcular nueva hora de la cita
+    let newScheduledTime;
+    
+    if (selected_time) {
+      // Usar la hora específica seleccionada por el usuario
+      console.log(`⏰ Usando hora específica seleccionada: ${selected_time}`);
+      
+      // Validar formato de hora
+      const timeRegex = /^([01]?\d|2[0-3]):([0-5]?\d)$/;
+      if (!timeRegex.test(selected_time)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Formato de hora inválido. Use HH:MM'
+        });
+      }
+      
+      const [selectedHour, selectedMinute] = selected_time.split(':');
+      newScheduledTime = new Date(newAvailability.date);
+      newScheduledTime.setHours(parseInt(selectedHour), parseInt(selectedMinute), 0, 0);
+      
+      // Verificar que la hora esté dentro del horario de disponibilidad
+      const availabilityStart = new Date(newAvailability.date);
+      const [startHour, startMinute] = newAvailability.start_time.split(':');
+      availabilityStart.setHours(parseInt(startHour), parseInt(startMinute), 0, 0);
+      
+      const availabilityEnd = new Date(newAvailability.date);
+      const [endHour, endMinute] = newAvailability.end_time.split(':');
+      availabilityEnd.setHours(parseInt(endHour), parseInt(endMinute), 0, 0);
+      
+      if (newScheduledTime < availabilityStart || newScheduledTime >= availabilityEnd) {
+        return res.status(400).json({
+          success: false,
+          error: 'La hora seleccionada está fuera del horario disponible'
+        });
+      }
+      
+      // Verificar que no hay conflictos con otras citas en esa hora exacta
+      const appointmentEndTime = new Date(newScheduledTime);
+      appointmentEndTime.setMinutes(appointmentEndTime.getMinutes() + duration);
+      
+      // Verificar conflictos con citas existentes
+      const [conflictRows] = await pool.execute(
+        `SELECT id FROM appointments 
+         WHERE availability_id = ? 
+         AND doctor_id = ?
+         AND status IN ('Confirmada', 'Pendiente')
+         AND DATE(scheduled_at) = ?
+         AND id != ?
+         AND (
+           (scheduled_at <= ? AND DATE_ADD(scheduled_at, INTERVAL ? MINUTE) > ?)
+           OR 
+           (scheduled_at < ? AND DATE_ADD(scheduled_at, INTERVAL ? MINUTE) >= ?)
+         )`,
+        [
+          newAvailabilityId, 
+          newAvailability.doctor_id, 
+          newAvailability.date, 
+          appointmentId,
+          newScheduledTime, duration, newScheduledTime,
+          appointmentEndTime, duration, appointmentEndTime
+        ]
+      );
+      
+      if ((conflictRows as any[]).length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Ya hay una cita programada en ese horario'
+        });
+      }
+      
+    } else {
+      // Lógica original: calcular hora automáticamente
+      // Buscar la última cita en la nueva availability
+      const [lastAppointmentRows] = await pool.execute(
+        `SELECT MAX(scheduled_at) as last_scheduled_time 
+         FROM appointments 
+         WHERE availability_id = ? AND status IN ('Confirmada', 'Pendiente')
+         AND doctor_id = ? AND specialty_id = ?
+         AND DATE(scheduled_at) = ?`,
+        [newAvailabilityId, newAvailability.doctor_id, newAvailability.specialty_id, newAvailability.date]
+      );
+
+      const lastScheduledTime = (lastAppointmentRows as any[])[0]?.last_scheduled_time;
+
+      if (lastScheduledTime) {
+        // Hay citas previas, programar después de la última
+        newScheduledTime = new Date(lastScheduledTime);
+        newScheduledTime.setMinutes(newScheduledTime.getMinutes() + duration);
+      } else {
+        // Primera cita del día, usar la hora de inicio de la availability
+        const [startHour, startMinute] = newAvailability.start_time.split(':');
+        newScheduledTime = new Date(newAvailability.date);
+        newScheduledTime.setHours(parseInt(startHour), parseInt(startMinute), 0, 0);
+      }
+      
+      // Validar que la nueva hora esté dentro del horario de la availability
+      const endTime = new Date(newAvailability.date);
+      const [endHour, endMinute] = newAvailability.end_time.split(':');
+      endTime.setHours(parseInt(endHour), parseInt(endMinute), 0, 0);
+
+      const appointmentEndTime = new Date(newScheduledTime);
+      appointmentEndTime.setMinutes(appointmentEndTime.getMinutes() + duration);
+
+      if (appointmentEndTime > endTime) {
+        return res.status(400).json({
+          success: false,
+          error: 'No hay tiempo suficiente en esta agenda para programar la cita'
+        });
+      }
+    }
+
+    // 8. Realizar la reasignación en una transacción
+    const connection = await pool.getConnection();
+    
+    try {
+      await connection.beginTransaction();
+
+      // Liberar cupo en la availability anterior (solo si es diferente)
+      if (currentAppointment.availability_id !== newAvailabilityId) {
+        await connection.execute(
+          `UPDATE availabilities 
+           SET booked_slots = CASE 
+             WHEN booked_slots > 0 THEN booked_slots - 1 
+             ELSE 0 
+           END 
+           WHERE id = ?`,
+          [currentAppointment.availability_id]
+        );
+        console.log(`✅ Liberado cupo en availability_id ${currentAppointment.availability_id}`);
+
+        // Ocupar cupo en la nueva availability
+        await connection.execute(
+          `UPDATE availabilities 
+           SET booked_slots = booked_slots + 1 
+           WHERE id = ?`,
+          [newAvailabilityId]
+        );
+        console.log(`📈 Ocupado cupo en availability_id ${newAvailabilityId}`);
+      }
+
+      // Actualizar la cita
+      await connection.execute(
+        `UPDATE appointments 
+         SET 
+           availability_id = ?,
+           doctor_id = ?,
+           location_id = ?,
+           scheduled_at = ?,
+           rescheduled_reason = ?,
+           rescheduled_at = NOW(),
+           updated_at = NOW()
+         WHERE id = ?`,
+        [
+          newAvailabilityId,
+          newAvailability.doctor_id,
+          newAvailability.location_id,
+          newScheduledTime,
+          reason || 'Reasignada por el paciente',
+          appointmentId
+        ]
+      );
+
+      await connection.commit();
+      console.log(`✅ Cita ${appointmentId} reasignada exitosamente`);
+
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    // 9. Respuesta exitosa con detalles de la nueva cita
+    res.json({
+      success: true,
+      data: {
+        appointmentId: appointmentId,
+        oldDate: currentAppointment.scheduled_at,
+        newDate: newScheduledTime,
+        doctor: newAvailability.doctor_name,
+        specialty: newAvailability.specialty_name,
+        location: newAvailability.location_name,
+        duration: duration
+      },
+      message: 'Cita reasignada exitosamente'
+    });
+
+  } catch (error: any) {
+    console.error('❌ Error reasignando cita:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error al reasignar la cita',
+      details: error.message
     });
   }
 });

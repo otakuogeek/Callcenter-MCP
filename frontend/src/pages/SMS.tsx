@@ -6,9 +6,29 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { MessageSquare, Search, CheckCircle2, XCircle, Clock, Filter, Send, X, UserPlus, RefreshCw } from "lucide-react";
+import { 
+  MessageSquare, 
+  Search, 
+  CheckCircle2, 
+  XCircle, 
+  Clock, 
+  Filter, 
+  Send, 
+  X, 
+  UserPlus, 
+  RefreshCw,
+  Eye,
+  Copy,
+  ChevronLeft,
+  ChevronRight,
+  MoreVertical,
+  Maximize2,
+  Expand,
+  Phone
+} from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { useToast } from "@/hooks/use-toast";
@@ -36,6 +56,19 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface SMSLog {
   id: number;
@@ -65,6 +98,10 @@ const SMS = () => {
   const [patientSearch, setPatientSearch] = useState("");
   const [selectedPatients, setSelectedPatients] = useState<Patient[]>([]);
   const [message, setMessage] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize] = useState(10);
+  const [selectedMessage, setSelectedMessage] = useState<SMSLog | null>(null);
+  const [isMessageDetailOpen, setIsMessageDetailOpen] = useState(false);
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -83,22 +120,37 @@ const SMS = () => {
 
   // Fetch SMS history
   const { data: smsData, isLoading } = useQuery({
-    queryKey: ['sms-history'],
+    queryKey: ['sms-history', searchTerm, statusFilter, currentPage, pageSize],
     queryFn: async () => {
       const token = localStorage.getItem('token');
       const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
       
-      const response = await fetch(`${baseUrl}/sms/history?limit=100`, {
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: pageSize.toString(),
+      });
+
+      // El backend no maneja 'search', solo filtros específicos
+      if (statusFilter !== 'all') {
+        params.append('status', statusFilter);
+      }
+
+      const response = await fetch(`${baseUrl}/sms/history?${params.toString()}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
       });
 
       if (!response.ok) {
-        throw new Error('Error al cargar historial de SMS');
+        console.error('❌ Error response:', response.status, response.statusText);
+        const errorText = await response.text();
+        console.error('❌ Error details:', errorText);
+        throw new Error(`Error al cargar historial de SMS: ${response.status}`);
       }
 
-      return response.json();
+      const result = await response.json();
+      console.log('✅ SMS Data received:', result);
+      return result;
     },
     refetchInterval: 30000, // Refetch every 30 seconds
   });
@@ -228,7 +280,44 @@ const SMS = () => {
   });
 
   const smsLogs: SMSLog[] = smsData?.data || [];
+  const totalLogs = smsData?.pagination?.total || 0;
+  const totalPages = Math.ceil(totalLogs / pageSize);
   const patients: Patient[] = patientsData?.data || [];
+  
+  // Utility functions
+  const truncateMessage = (text: string, maxLength: number = 50) => {
+    return text.length > maxLength ? `${text.substring(0, maxLength)}...` : text;
+  };
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast({
+        title: "Copiado",
+        description: "Mensaje copiado al portapapeles",
+      });
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "No se pudo copiar el mensaje",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const openMessageDetail = (message: SMSLog) => {
+    setSelectedMessage(message);
+    setIsMessageDetailOpen(true);
+  };
+
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case 'sent': return 'default';
+      case 'delivered': return 'secondary';
+      case 'failed': return 'destructive';
+      default: return 'outline';
+    }
+  };
   
   // Debug log for patients
   console.log('🔍 Patients in UI:', { 
@@ -298,41 +387,32 @@ const SMS = () => {
     });
   };
 
-  // Filter SMS logs
+  // Since filtering is handled server-side for status, but search is local
   const filteredLogs = smsLogs.filter((sms) => {
     const matchesSearch = 
       sms.recipient_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
       sms.recipient_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
       sms.message.toLowerCase().includes(searchTerm.toLowerCase());
 
-    const matchesStatus = statusFilter === "all" || sms.status === statusFilter;
-
-    return matchesSearch && matchesStatus;
+    return matchesSearch;
   });
 
-  // Calculate stats
+  // Debug log
+  console.log('SMS Data received:', smsData);
+  console.log('SMS Logs:', smsLogs);
+  console.log('Filtered logs:', filteredLogs);
+
+  // Calculate stats from current page
   const stats = {
-    total: smsLogs.length,
-    success: smsLogs.filter(s => s.status === 'success').length,
+    total: totalLogs,
+    success: smsLogs.filter(s => s.status === 'sent' || s.status === 'delivered').length,
     failed: smsLogs.filter(s => s.status === 'failed').length,
     pending: smsLogs.filter(s => s.status === 'pending').length,
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'success':
-        return <Badge className="bg-green-500 hover:bg-green-600"><CheckCircle2 className="w-3 h-3 mr-1" /> Enviado</Badge>;
-      case 'failed':
-        return <Badge variant="destructive"><XCircle className="w-3 h-3 mr-1" /> Fallido</Badge>;
-      case 'pending':
-        return <Badge variant="secondary"><Clock className="w-3 h-3 mr-1" /> Pendiente</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
-
   return (
-    <SidebarProvider>
+    <TooltipProvider>
+      <SidebarProvider>
       <AppSidebar />
       <main className="w-full min-h-screen bg-gradient-to-br from-medical-50 to-white">
         <div className="p-6 space-y-6">
@@ -642,14 +722,15 @@ const SMS = () => {
                         <TableHead>Fecha</TableHead>
                         <TableHead>Destinatario</TableHead>
                         <TableHead>Número</TableHead>
-                        <TableHead>Mensaje</TableHead>
+                        <TableHead className="min-w-[300px]">Mensaje</TableHead>
                         <TableHead>Estado</TableHead>
                         <TableHead className="text-center">Partes</TableHead>
+                        <TableHead className="text-center">Acciones</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {filteredLogs.map((sms) => (
-                        <TableRow key={sms.id}>
+                        <TableRow key={sms.id} className="hover:bg-gray-50">
                           <TableCell className="whitespace-nowrap">
                             {format(new Date(sms.sent_at), "dd/MM/yyyy HH:mm", { locale: es })}
                           </TableCell>
@@ -660,27 +741,216 @@ const SMS = () => {
                             {sms.recipient_number}
                           </TableCell>
                           <TableCell className="max-w-md">
-                            <div className="truncate" title={sms.message}>
-                              {sms.message}
+                            <div className="flex items-center gap-2">
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <div className="flex-1 cursor-help">
+                                    <p className="truncate text-sm">
+                                      {truncateMessage(sms.message, 80)}
+                                    </p>
+                                  </div>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-xs">
+                                  <div className="whitespace-pre-wrap text-sm">
+                                    {sms.message}
+                                  </div>
+                                </TooltipContent>
+                              </Tooltip>
+                              {sms.message.length > 80 && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs"
+                                  onClick={() => openMessageDetail(sms)}
+                                >
+                                  <Expand className="h-3 w-3" />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
                           <TableCell>
-                            {getStatusBadge(sms.status)}
+                            <Badge variant={getStatusBadgeVariant(sms.status)}>
+                              {sms.status === 'sent' ? 'Enviado' : 
+                               sms.status === 'delivered' ? 'Entregado' : 
+                               sms.status === 'failed' ? 'Fallido' : sms.status}
+                            </Badge>
                           </TableCell>
                           <TableCell className="text-center">
                             <Badge variant="outline">{sms.parts}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                  <MoreVertical className="h-4 w-4" />
+                                  <span className="sr-only">Abrir menú</span>
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-48">
+                                <DropdownMenuItem onClick={() => openMessageDetail(sms)}>
+                                  <Eye className="mr-2 h-4 w-4" />
+                                  Ver detalles
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => copyToClipboard(sms.message)}>
+                                  <Copy className="mr-2 h-4 w-4" />
+                                  Copiar mensaje
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem onClick={() => copyToClipboard(sms.recipient_number)}>
+                                  <Phone className="mr-2 h-4 w-4" />
+                                  Copiar teléfono
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
                   </Table>
+                  
+                  {/* Paginación */}
+                  {totalLogs > pageSize && (
+                    <div className="flex items-center justify-between px-2 py-4">
+                      <div className="text-sm text-gray-500">
+                        Mostrando {((currentPage - 1) * pageSize) + 1} - {Math.min(currentPage * pageSize, totalLogs)} de {totalLogs} mensajes
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                          disabled={currentPage === 1}
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                          Anterior
+                        </Button>
+                        <div className="text-sm font-medium">
+                          Página {currentPage} de {totalPages}
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                          disabled={currentPage === totalPages}
+                        >
+                          Siguiente
+                          <ChevronRight className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
           </Card>
         </div>
       </main>
+
+      {/* Modal de detalle del mensaje */}
+      <Dialog open={isMessageDetailOpen} onOpenChange={setIsMessageDetailOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <MessageSquare className="h-5 w-5" />
+              Detalles del mensaje
+            </DialogTitle>
+          </DialogHeader>
+          {selectedMessage && (
+            <div className="space-y-6">
+              {/* Información del destinatario */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-gray-600">Destinatario</Label>
+                  <p className="text-sm font-medium">
+                    {selectedMessage.recipient_name || 'Sin nombre'}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-gray-600">Teléfono</Label>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-mono">{selectedMessage.recipient_number}</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2"
+                      onClick={() => copyToClipboard(selectedMessage.recipient_number)}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Información del envío */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-gray-600">Fecha de envío</Label>
+                  <p className="text-sm">
+                    {format(new Date(selectedMessage.sent_at), "dd/MM/yyyy HH:mm", { locale: es })}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-gray-600">Estado</Label>
+                  <div>
+                    <Badge variant={getStatusBadgeVariant(selectedMessage.status)}>
+                      {selectedMessage.status === 'sent' ? 'Enviado' : 
+                       selectedMessage.status === 'delivered' ? 'Entregado' : 
+                       selectedMessage.status === 'failed' ? 'Fallido' : selectedMessage.status}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium text-gray-600">Partes SMS</Label>
+                  <div>
+                    <Badge variant="outline">{selectedMessage.parts}</Badge>
+                  </div>
+                </div>
+              </div>
+
+              {/* Mensaje completo */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium text-gray-600">Mensaje completo</Label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500">
+                      {selectedMessage.message.length} caracteres
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      onClick={() => copyToClipboard(selectedMessage.message)}
+                    >
+                      <Copy className="h-3 w-3 mr-1" />
+                      Copiar
+                    </Button>
+                  </div>
+                </div>
+                <div className="bg-gray-50 rounded-lg p-4 border">
+                  <p className="text-sm whitespace-pre-wrap leading-relaxed">
+                    {selectedMessage.message}
+                  </p>
+                </div>
+              </div>
+
+              {/* Información técnica */}
+              <div className="border-t pt-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs text-gray-500">
+                  <div>
+                    <span className="font-medium">ID del mensaje:</span> {selectedMessage.id}
+                  </div>
+                  <div>
+                    <span className="font-medium">ID externo:</span> {selectedMessage.external_id || 'N/A'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
     </SidebarProvider>
+    </TooltipProvider>
   );
 };
 

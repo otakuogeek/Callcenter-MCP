@@ -19,9 +19,35 @@ const schema = z.object({
   emergency_hours: z.string().optional().nullable(),
 });
 
-router.get('/', requireAuth, async (_req: Request, res: Response) => {
+router.get('/', requireAuth, async (req: Request, res: Response) => {
   try {
-    const [rows] = await pool.query('SELECT * FROM locations ORDER BY name ASC');
+    const { eps_id, specialty_id } = req.query;
+    let query = `
+      SELECT l.*, z.name as zone_name
+      FROM locations l
+      LEFT JOIN zones z ON l.zone_id = z.id
+    `;
+    const params: any[] = [];
+
+    // Filtrar por autorizaciones de EPS si se especifica
+    if (eps_id) {
+      query += `
+        WHERE l.id IN (
+          SELECT DISTINCT location_id 
+          FROM eps_specialty_location_authorizations 
+          WHERE eps_id = ? AND authorized = 1
+          ${specialty_id ? 'AND specialty_id = ?' : ''}
+        )
+      `;
+      params.push(eps_id);
+      if (specialty_id) {
+        params.push(specialty_id);
+      }
+    }
+
+    query += ' ORDER BY l.name ASC';
+    
+    const [rows] = await pool.query(query, params);
     return res.json(rows);
   } catch (e: any) {
     if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
@@ -202,6 +228,138 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
     await pool.query('DELETE FROM locations WHERE id = ?', [id]);
     return res.status(204).send();
   } catch {
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Estadísticas de capacidad diaria por sede
+router.get('/:id/daily-capacity', requireAuth, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
+  
+  try {
+    // Obtener información de la sede
+    const [locRows] = await pool.query<any[]>('SELECT name, capacity FROM locations WHERE id = ?', [id]);
+    if (!Array.isArray(locRows) || locRows.length === 0) {
+      return res.status(404).json({ message: 'Location not found' });
+    }
+    const location = locRows[0];
+    
+    // Obtener citas confirmadas por día (últimos 30 días y próximos 30 días)
+    const [appointmentsData] = await pool.query<any[]>(`
+      SELECT 
+        DATE(a.scheduled_at) as date,
+        COUNT(a.id) as total_appointments,
+        SUM(CASE WHEN a.status = 'Confirmada' THEN 1 ELSE 0 END) as confirmed,
+        SUM(CASE WHEN a.status = 'Completada' THEN 1 ELSE 0 END) as completed,
+        SUM(CASE WHEN a.status = 'Cancelada' THEN 1 ELSE 0 END) as cancelled
+      FROM appointments a
+      INNER JOIN availabilities av ON a.availability_id = av.id
+      WHERE av.location_id = ?
+        AND a.scheduled_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND a.scheduled_at <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      GROUP BY DATE(a.scheduled_at)
+      ORDER BY date ASC
+    `, [id]);
+    
+    // Obtener disponibilidad total por día (slots disponibles)
+    const [availabilityData] = await pool.query<any[]>(`
+      SELECT 
+        av.date,
+        SUM(av.capacity) as total_slots,
+        SUM(GREATEST(0, CAST(av.capacity AS SIGNED) - CAST(av.booked_slots AS SIGNED))) as available_slots,
+        SUM(av.booked_slots) as booked_slots
+      FROM availabilities av
+      WHERE av.location_id = ?
+        AND av.date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        AND av.date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY)
+      GROUP BY av.date
+      ORDER BY av.date ASC
+    `, [id]);
+    
+    return res.json({
+      location: {
+        id,
+        name: location.name,
+        capacity: location.capacity
+      },
+      appointments: appointmentsData,
+      availability: availabilityData
+    });
+  } catch (error) {
+    console.error('Error getting daily capacity:', error);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Endpoint para debugging: mostrar resumen de autorizaciones por zona
+router.get('/zones/authorizations', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const [rows] = await pool.query(`
+      SELECT 
+        z.name as zone_name,
+        e.name as eps_name,
+        l.name as location_name,
+        COUNT(DISTINCT auth.specialty_id) as specialty_count,
+        COUNT(auth.id) as total_authorizations
+      FROM zones z
+      LEFT JOIN locations l ON z.id = l.zone_id
+      LEFT JOIN eps_specialty_location_authorizations auth ON l.id = auth.location_id AND auth.authorized = 1
+      LEFT JOIN eps e ON auth.eps_id = e.id
+      GROUP BY z.id, e.id, l.id
+      HAVING total_authorizations > 0
+      ORDER BY z.name, e.name, l.name
+    `);
+    
+    return res.json(rows);
+  } catch (e: any) {
+    console.error('Error fetching zone authorizations:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Endpoint público para obtener ubicaciones autorizadas para un EPS (sin autenticación)
+router.get('/public/eps/:eps_id', async (req: Request, res: Response) => {
+  const epsId = Number(req.params.eps_id);
+  if (Number.isNaN(epsId)) return res.status(400).json({ message: 'Invalid EPS ID' });
+
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT l.*, z.name as zone_name, e.name as eps_name
+      FROM locations l
+      LEFT JOIN zones z ON l.zone_id = z.id
+      JOIN eps_specialty_location_authorizations auth ON l.id = auth.location_id
+      JOIN eps e ON auth.eps_id = e.id
+      WHERE auth.eps_id = ? AND auth.authorized = 1
+      ORDER BY l.name ASC
+    `, [epsId]);
+    
+    return res.json(rows);
+  } catch (e: any) {
+    console.error('Error fetching locations for EPS (public):', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Endpoint específico para obtener ubicaciones autorizadas para un EPS (requiere auth)
+router.get('/eps/:eps_id', requireAuth, async (req: Request, res: Response) => {
+  const epsId = Number(req.params.eps_id);
+  if (Number.isNaN(epsId)) return res.status(400).json({ message: 'Invalid EPS ID' });
+
+  try {
+    const [rows] = await pool.query(`
+      SELECT DISTINCT l.*, z.name as zone_name, e.name as eps_name
+      FROM locations l
+      LEFT JOIN zones z ON l.zone_id = z.id
+      JOIN eps_specialty_location_authorizations auth ON l.id = auth.location_id
+      JOIN eps e ON auth.eps_id = e.id
+      WHERE auth.eps_id = ? AND auth.authorized = 1
+      ORDER BY l.name ASC
+    `, [epsId]);
+    
+    return res.json(rows);
+  } catch (e: any) {
+    console.error('Error fetching locations for EPS:', e);
     return res.status(500).json({ message: 'Server error' });
   }
 });

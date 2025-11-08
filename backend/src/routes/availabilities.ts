@@ -2612,4 +2612,142 @@ router.post('/:id/toggle-pause', requireAuth, async (req: Request, res: Response
   }
 });
 
+// ===== ENDPOINT PÚBLICO PARA OBTENER AVAILABILITIES =====
+// GET /api/availabilities/public - Para uso desde portal de usuarios sin autenticación
+// Función auxiliar para calcular slots de tiempo disponibles
+async function calculateAvailableTimeSlots(availability: any): Promise<string[]> {
+  try {
+    const startTime = availability.start_time; // formato HH:mm:ss
+    const endTime = availability.end_time;     // formato HH:mm:ss
+    const duration = availability.duration_minutes || availability.default_duration_minutes || 15;
+    const availabilityId = availability.id;
+    const date = availability.date;
+
+    // Convertir times a minutos desde medianoche
+    const parseTimeToMinutes = (time: string): number => {
+      const [hours, minutes] = time.split(':').map(Number);
+      return hours * 60 + minutes;
+    };
+
+    const formatMinutesToTime = (minutes: number): string => {
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+    };
+
+    const startMinutes = parseTimeToMinutes(startTime);
+    const endMinutes = parseTimeToMinutes(endTime);
+    
+    // Generar todos los slots posibles
+    const allSlots: string[] = [];
+    for (let time = startMinutes; time + duration <= endMinutes; time += duration) {
+      allSlots.push(formatMinutesToTime(time));
+    }
+
+    // Consultar citas ya agendadas para esta agenda y fecha
+    const [bookedAppointments] = await pool.query(
+      `SELECT TIME_FORMAT(scheduled_at, '%H:%i') AS booked_time 
+       FROM appointments 
+       WHERE availability_id = ? 
+         AND DATE(scheduled_at) = ? 
+         AND status NOT IN ('Cancelada', 'No Show')
+       ORDER BY scheduled_at`,
+      [availabilityId, date]
+    );
+
+    // Crear set de horas ocupadas
+    const bookedTimes = new Set(
+      (bookedAppointments as any[]).map(app => app.booked_time)
+    );
+
+    // Filtrar slots disponibles
+    const availableSlots = allSlots.filter(slot => !bookedTimes.has(slot));
+    
+    console.log(`[CALCULATE-TIME-SLOTS] Agenda ${availabilityId}: ${availableSlots.length}/${allSlots.length} slots disponibles`);
+    return availableSlots;
+  } catch (error) {
+    console.error('[CALCULATE-TIME-SLOTS] Error:', error);
+    return [];
+  }
+}
+
+router.get('/public', async (req: Request, res: Response) => {
+  const date = String(req.query.date || '');
+  const specialtyId = req.query.specialty_id ? Number(req.query.specialty_id) : null;
+  
+  let whereClause = '';
+  let params: any[] = [];
+  
+  try {
+    if (date) {
+      whereClause = 'WHERE a.date = ?';
+      params.push(date);
+    } else {
+      whereClause = 'WHERE a.date >= CURDATE()';
+    }
+    
+    // Agregar filtro por especialidad si se proporciona
+    if (specialtyId) {
+      whereClause += ' AND a.specialty_id = ?';
+      params.push(specialtyId);
+    }
+    
+    // Mostrar solo agendas activas con cupos disponibles
+    whereClause += ' AND a.status IN ("Activa", "Completa") AND (a.is_paused = 0 OR a.is_paused IS NULL)';
+    whereClause += ' AND GREATEST(0, CAST(a.capacity AS SIGNED) - CAST(a.booked_slots AS SIGNED)) > 0';
+    
+    console.log('[AVAILABILITIES-PUBLIC] Query params:', { date, specialtyId, whereClause, params });
+    
+    const [rows] = await pool.query(
+      `SELECT a.id,
+              DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
+              a.start_time,
+              a.end_time,
+              a.doctor_id,
+              a.specialty_id,
+              a.location_id,
+              a.capacity,
+              a.booked_slots,
+              GREATEST(0, CAST(a.capacity AS SIGNED) - CAST(a.booked_slots AS SIGNED)) AS available_slots,
+              a.duration_minutes,
+              s.default_duration_minutes,
+              a.status,
+              d.name AS doctor_name, 
+              s.name AS specialty_name, 
+              l.name AS location_name
+       FROM availabilities a
+       JOIN doctors d ON d.id = a.doctor_id
+       JOIN specialties s ON s.id = a.specialty_id  
+       JOIN locations l ON l.id = a.location_id
+       ${whereClause}
+       ORDER BY a.date ASC, a.start_time ASC 
+       LIMIT 100`,
+      params
+    );
+    
+    console.log(`[AVAILABILITIES-PUBLIC] Found ${Array.isArray(rows) ? rows.length : 0} rows with available slots`);
+    
+    // Calcular horarios disponibles para cada agenda
+    const availabilitiesWithTimeSlots = await Promise.all(
+      (rows as any[]).map(async (availability) => {
+        const availableTimeSlots = await calculateAvailableTimeSlots(availability);
+        
+        return {
+          ...availability,
+          available_time_slots: availableTimeSlots,
+          next_available_times: availableTimeSlots.slice(0, 5) // Mostrar las próximas 5 horas disponibles
+        };
+      })
+    );
+    
+    return res.json(availabilitiesWithTimeSlots);
+  } catch (e: any) {
+    console.error('[AVAILABILITIES-PUBLIC] Error:', e);
+    if (e && (e.code === 'ER_NO_SUCH_TABLE' || e.errno === 1146)) {
+      return res.json([]);
+    }
+    return res.status(500).json({ message: 'Server error', error: e.message });
+  }
+});
+
 export default router;

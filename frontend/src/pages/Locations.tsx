@@ -11,12 +11,191 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { MapPin, Phone, Clock, Users, Building, Edit, Settings, TrendingUp, Plus, Trash2, AlertTriangle, Loader2 } from "lucide-react";
+import { MapPin, Phone, Clock, Users, Building, Edit, Settings, TrendingUp, Plus, Trash2, AlertTriangle, Loader2, Calendar, Activity } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, LineChart, Line, Legend, Tooltip } from "recharts";
+
+// Componente auxiliar para mostrar la capacidad diaria de una sede
+const DailyCapacityTab = ({ locationId }: { locationId?: number }) => {
+  const [capacityData, setCapacityData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!locationId) {
+      setLoading(false);
+      return;
+    }
+
+    const loadCapacityData = async () => {
+      try {
+        setLoading(true);
+        const data = await api.getLocationDailyCapacity(locationId);
+        setCapacityData(data);
+      } catch (error) {
+        console.error('Error loading capacity data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadCapacityData();
+  }, [locationId]);
+
+  if (loading) {
+    return (
+      <div className="h-64 flex items-center justify-center text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin mr-2" /> Cargando datos de capacidad diaria...
+      </div>
+    );
+  }
+
+  if (!capacityData) {
+    return (
+      <div className="text-center text-muted-foreground p-8">
+        No hay datos disponibles
+      </div>
+    );
+  }
+
+  // Combinar datos de citas y disponibilidad por fecha
+  const combinedData = capacityData.appointments.map((apt: any) => {
+    const avail = capacityData.availability.find((a: any) => a.date === apt.date);
+    return {
+      date: new Date(apt.date).toLocaleDateString('es-ES', { day: '2-digit', month: 'short' }),
+      fullDate: apt.date,
+      confirmed: apt.confirmed,
+      completed: apt.completed,
+      cancelled: apt.cancelled,
+      total_appointments: apt.total_appointments,
+      total_slots: avail?.total_slots || 0,
+      available_slots: avail?.available_slots || 0,
+      booked_slots: avail?.booked_slots || 0,
+      utilizacion: avail?.total_slots > 0 
+        ? Math.round((avail.booked_slots / avail.total_slots) * 100) 
+        : 0,
+    };
+  });
+
+  // Calcular totales
+  const totals = combinedData.reduce((acc: any, day: any) => ({
+    confirmed: acc.confirmed + day.confirmed,
+    completed: acc.completed + day.completed,
+    cancelled: acc.cancelled + day.cancelled,
+    total_slots: acc.total_slots + day.total_slots,
+    available_slots: acc.available_slots + day.available_slots,
+    booked_slots: acc.booked_slots + day.booked_slots,
+  }), {
+    confirmed: 0,
+    completed: 0,
+    cancelled: 0,
+    total_slots: 0,
+    available_slots: 0,
+    booked_slots: 0,
+  });
+
+  const avgUtilization = totals.total_slots > 0 
+    ? Math.round((totals.booked_slots / totals.total_slots) * 100)
+    : 0;
+
+  return (
+    <div className="space-y-6">
+      {/* Resumen de estadísticas */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-sm text-gray-600">Citas Confirmadas</p>
+              <p className="text-2xl font-bold text-medical-700">{totals.confirmed}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-sm text-gray-600">Citas Completadas</p>
+              <p className="text-2xl font-bold text-success-700">{totals.completed}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-sm text-gray-600">Cupos Disponibles</p>
+              <p className="text-2xl font-bold text-blue-700">{totals.available_slots}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <div className="text-center">
+              <p className="text-sm text-gray-600">Utilización Promedio</p>
+              <p className="text-2xl font-bold text-warning-700">{avgUtilization}%</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Gráfico de citas por día */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Calendar className="w-5 h-5 text-medical-600" />
+            Citas por Día (últimos 30 días + próximos 30 días)
+          </CardTitle>
+          <CardDescription>
+            Distribución de citas confirmadas, completadas y canceladas
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={combinedData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="date" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="confirmed" fill="#0ea5e9" name="Confirmadas" />
+                <Bar dataKey="completed" fill="#22c55e" name="Completadas" />
+                <Bar dataKey="cancelled" fill="#ef4444" name="Canceladas" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Gráfico de utilización de capacidad */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Activity className="w-5 h-5 text-medical-600" />
+            Utilización de Capacidad
+          </CardTitle>
+          <CardDescription>
+            Porcentaje de cupos reservados vs disponibles
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={combinedData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="date" />
+                <YAxis />
+                <Tooltip />
+                <Legend />
+                <Line type="monotone" dataKey="utilizacion" stroke="#0ea5e9" strokeWidth={2} name="Utilización (%)" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
 
 const Locations = () => {
   const { toast } = useToast();
@@ -875,9 +1054,10 @@ const Locations = () => {
               </DialogHeader>
               
               <Tabs defaultValue="info" className="space-y-6">
-                <TabsList className="grid w-full grid-cols-3">
+                <TabsList className="grid w-full grid-cols-4">
                   <TabsTrigger value="info">Información General</TabsTrigger>
                   <TabsTrigger value="schedule">Horarios y Contacto</TabsTrigger>
+                  <TabsTrigger value="capacity">Capacidad Diaria</TabsTrigger>
                   <TabsTrigger value="metrics">Métricas de Ocupación</TabsTrigger>
                 </TabsList>
 
@@ -1085,6 +1265,10 @@ const Locations = () => {
                       </CardContent>
                     </Card>
                   </div>
+                </TabsContent>
+
+                <TabsContent value="capacity" className="space-y-4">
+                  <DailyCapacityTab locationId={selectedLocation?.id} />
                 </TabsContent>
 
                 <TabsContent value="metrics" className="space-y-4">
