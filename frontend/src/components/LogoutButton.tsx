@@ -19,7 +19,7 @@ const LogoutButton = () => {
       description: "Ha cerrado sesión exitosamente",
     });
     
-    navigate("/login");
+    navigate("/admin/login");
   };
 
   return (

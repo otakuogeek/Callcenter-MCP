@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
+import { formatTime24Colombia, getTodayColombia, COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -313,14 +314,14 @@ function generateRoomRecommendations(room: any, appointments: any[], occupancyRa
     });
   }
 
-  // Verificar brechas grandes
+  // Verificar brechas grandes (usando timezone Colombia)
   const gaps = identifyUtilizationGaps(
     appointments.map(a => ({
-      start: new Date(a.scheduled_at).toTimeString().slice(0, 5),
-      end: new Date(new Date(a.scheduled_at).getTime() + a.duration_minutes * 60000).toTimeString().slice(0, 5),
+      start: formatTime24Colombia(a.scheduled_at),
+      end: formatTime24Colombia(new Date(new Date(a.scheduled_at + 'Z').getTime() + a.duration_minutes * 60000)),
       appointment_id: a.id
     })),
-    new Date().toISOString().split('T')[0]
+    getTodayColombia()
   );
 
   const largeGaps = gaps.filter(gap => gap.duration_minutes >= 60);

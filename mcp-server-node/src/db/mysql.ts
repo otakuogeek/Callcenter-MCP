@@ -11,7 +11,7 @@ const dbConfig = {
   acquireTimeout: 60000,
   timeout: 60000,
   multipleStatements: false,
-  timezone: '+00:00'
+  timezone: process.env.DB_TIMEZONE || '+00:00' // UTC-0 para consistencia
 };
 
 // Create connection pool

@@ -8,7 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { safeFormatDate } from "@/utils/dateHelpers";
+import { safeFormatDate, convertUTCToColombiaTime } from "@/utils/dateHelpers";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Calendar, Clock, User, MapPin, CheckCircle, AlertCircle, XCircle, Trash2, ArrowRight, RotateCcw, MessageCircle } from "lucide-react";
@@ -197,24 +197,19 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
       // 2. Enviar SMS de notificación al paciente (si tiene teléfono)
       if (appointmentToCancel.patient_phone && availability) {
         try {
-          const appointmentDate = new Date(availability.date);
-          const formattedDate = appointmentDate.toLocaleDateString('es-CO', { 
-            weekday: 'long', 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
-          });
-          
+          const scheduledTimeRaw = appointmentToCancel.scheduled_at?.includes('T')
+            ? appointmentToCancel.scheduled_at.split('T')[1].substring(0, 5)
+            : appointmentToCancel.scheduled_at?.split(' ')[1]?.substring(0, 5) || 'N/A';
+          const scheduledTimeFormatted = convertUTCToColombiaTime(scheduledTimeRaw);
           const message = `Hola ${appointmentToCancel.patient_name}. Lamentamos informarle que su cita ha sido CANCELADA.\n\n` +
-            `📅 Cita cancelada:\n` +
-            `👨‍⚕️ Doctor: ${availability.doctor}\n` +
-            `🏥 Especialidad: ${availability.specialty}\n` +
-            `📍 Sede: ${availability.locationName}\n` +
-            `📆 Fecha: ${formattedDate}\n` +
-            `🕐 Hora: ${appointmentToCancel.scheduled_at?.substring(11, 16) || 'N/A'}\n\n` +
+            `Cita cancelada:\n` +
+            `Doctor: ${availability.doctor}\n` +
+            `Especialidad: ${availability.specialty}\n` +
+            `Sede: ${availability.locationName}\n` +
+            `Hora: ${scheduledTimeFormatted}\n\n` +
             `Motivo: ${cancelReason}\n\n` +
             `Para reagendar, comuníquese con nosotros.\n` +
-            `- Fundación Biosanar IPS`;
+            `- Fundacion Biosanar IPS`;
 
           await fetch(`${import.meta.env.VITE_API_URL}/sms/send`, {
             method: 'POST',
@@ -721,10 +716,11 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                   const confirmedAppointments = appointments.filter(ap => ap.status === 'Confirmada');
                   
                   return confirmedAppointments.map((ap) => {
-                    // Extraer la hora directamente del string para evitar problemas de zona horaria
-                    const scheduledTime = ap.scheduled_at.includes('T') 
+                    // Extraer la hora directamente del string y convertir a UTC-5 (Colombia)
+                    const scheduledTimeRaw = ap.scheduled_at.includes('T') 
                       ? ap.scheduled_at.split('T')[1].substring(0, 5)  // ISO: "2025-10-21T14:00:00.000Z" → "14:00"
                       : ap.scheduled_at.split(' ')[1].substring(0, 5); // MySQL: "2025-10-21 14:00:00" → "14:00"
+                    const scheduledTime = convertUTCToColombiaTime(scheduledTimeRaw);
                     
                     // Obtener todas las citas de este paciente
                     const patientAppointments = ap.patient_document 
@@ -866,9 +862,10 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                                 const otherDate = other.scheduled_at.includes('T')
                                   ? other.scheduled_at.split('T')[0]
                                   : other.scheduled_at.split(' ')[0];
-                                const otherTime = other.scheduled_at.includes('T')
+                                const otherTimeRaw = other.scheduled_at.includes('T')
                                   ? other.scheduled_at.split('T')[1].substring(0, 5)
                                   : other.scheduled_at.split(' ')[1].substring(0, 5);
+                                const otherTime = convertUTCToColombiaTime(otherTimeRaw);
                                 
                                 const isDeleting = deletingIds.has(other.id);
                                 
@@ -927,10 +924,11 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                   ) : (
                     <div className="space-y-2 max-h-60 overflow-auto pr-1">
                       {appointments.filter(ap => ap.status === 'Cancelada').map((ap) => {
-                        // Extraer la hora
-                        const scheduledTime = ap.scheduled_at.includes('T') 
+                        // Extraer la hora y convertir a UTC-5 (Colombia)
+                        const scheduledTimeRaw = ap.scheduled_at.includes('T') 
                           ? ap.scheduled_at.split('T')[1].substring(0, 5)
                           : ap.scheduled_at.split(' ')[1].substring(0, 5);
+                        const scheduledTime = convertUTCToColombiaTime(scheduledTimeRaw);
                         
                         const isRestoring = deletingIds.has(ap.id);
                         
@@ -1212,7 +1210,7 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                   <div>
                     <p className="text-gray-600">Hora:</p>
                     <p className="font-semibold text-gray-900">
-                      {appointmentToCancel.scheduled_at?.substring(11, 16) || availability.startTime}
+                      {convertUTCToColombiaTime(appointmentToCancel.scheduled_at?.substring(11, 16) || availability.startTime)}
                     </p>
                   </div>
                 </div>

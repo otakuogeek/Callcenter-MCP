@@ -18,6 +18,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import api from "@/lib/api";
 import { EnhancedStaggerContainer, EnhancedStaggerChild, AnimatedCard } from "@/components/ui/enhanced-animated-container";
 import { LoadingSkeleton } from "@/components/ui/loading-skeleton";
+import { formatTimeColombia } from "@/utils/dateHelpers";
 
 const Dashboard = () => {
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -118,7 +119,7 @@ const Dashboard = () => {
             type: l.specialty_name || 'Consulta',
             status: l.status_name || statusById.get(Number(l.status_id))?.name || '—',
             agent: l.user_name || '-',
-            time: l.created_at ? new Date(l.created_at).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }) : '',
+            time: l.created_at ? formatTimeColombia(l.created_at) : '',
           }));
         setRecentCalls(recent);
       } catch {

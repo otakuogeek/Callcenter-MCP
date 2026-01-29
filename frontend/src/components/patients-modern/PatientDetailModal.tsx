@@ -11,6 +11,12 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   User,
   Phone,
   Mail,
@@ -24,13 +30,15 @@ import {
   Download,
   X,
   CalendarDays,
-  Clock
+  Clock,
+  History
 } from 'lucide-react';
 import { Patient, calculateAge, getInitials, getAvatarColor } from '@/types/patient';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { api } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+import { PatientHistoryModal } from './PatientHistoryModal';
 
 interface Appointment {
   id: number;
@@ -62,6 +70,7 @@ export const PatientDetailModal = ({
   const [activeTab, setActiveTab] = useState('basic');
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [loadingAppointments, setLoadingAppointments] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const { toast } = useToast();
 
   // Cargar citas cuando se abre el modal
@@ -196,14 +205,33 @@ export const PatientDetailModal = ({
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="text-sm font-semibold text-gray-600">Nombre Completo</label>
-                    <p className="text-base mt-1">{patient.name}</p>
+                    <label className="text-sm font-semibold text-gray-600">ID Paciente</label>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            onClick={() => setHistoryModalOpen(true)}
+                            className="flex items-center gap-2 mt-1 px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer group"
+                          >
+                            <span className="font-mono text-blue-600 font-bold text-base">#{patient.id}</span>
+                            <History className="h-4 w-4 text-blue-500 opacity-60 group-hover:opacity-100" />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Ver historial completo de citas y cola de espera</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-gray-600">Documento</label>
                     <p className="text-base mt-1 font-mono">
                       {patient.document_type || 'CC'} {patient.document}
                     </p>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-sm font-semibold text-gray-600">Nombre Completo</label>
+                    <p className="text-base mt-1">{patient.name}</p>
                   </div>
                   <div>
                     <label className="text-sm font-semibold text-gray-600">Fecha de Nacimiento</label>
@@ -472,6 +500,11 @@ export const PatientDetailModal = ({
                               <div className="flex justify-between items-start mb-2">
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-xs font-mono text-blue-600 bg-blue-100 px-2 py-0.5 rounded">
+                                      Orden #{apt.id}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 mb-1">
                                     <CalendarDays className="h-4 w-4 text-blue-600" />
                                     <span className="font-semibold text-gray-900">
                                       {format(appointmentDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
@@ -479,7 +512,7 @@ export const PatientDetailModal = ({
                                   </div>
                                   <div className="flex items-center gap-2 text-sm text-gray-600">
                                     <Clock className="h-3 w-3" />
-                                    <span>{apt.start_time || format(appointmentDate, 'HH:mm')}</span>
+                                    <span>{format(appointmentDate, 'HH:mm')}</span>
                                   </div>
                                   {requestDate && (
                                     <div className="flex items-center gap-2 text-xs text-gray-500 mt-1 italic">
@@ -546,6 +579,11 @@ export const PatientDetailModal = ({
                               <div className="flex justify-between items-start mb-2">
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-xs font-mono text-gray-600 bg-gray-200 px-2 py-0.5 rounded">
+                                      Orden #{apt.id}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 mb-1">
                                     <CalendarDays className="h-4 w-4 text-gray-600" />
                                     <span className="font-semibold text-gray-900">
                                       {format(appointmentDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
@@ -553,7 +591,7 @@ export const PatientDetailModal = ({
                                   </div>
                                   <div className="flex items-center gap-2 text-sm text-gray-600">
                                     <Clock className="h-3 w-3" />
-                                    <span>{apt.start_time || format(appointmentDate, 'HH:mm')}</span>
+                                    <span>{format(appointmentDate, 'HH:mm')}</span>
                                   </div>
                                   {requestDate && (
                                     <div className="flex items-center gap-2 text-xs text-gray-500 mt-1 italic">
@@ -610,6 +648,16 @@ export const PatientDetailModal = ({
           </Button>
         </div>
       </DialogContent>
+
+      {/* Modal de Historial Completo */}
+      {patient && (
+        <PatientHistoryModal
+          patientId={patient.id}
+          patientName={patient.name}
+          isOpen={historyModalOpen}
+          onClose={() => setHistoryModalOpen(false)}
+        />
+      )}
     </Dialog>
   );
 };

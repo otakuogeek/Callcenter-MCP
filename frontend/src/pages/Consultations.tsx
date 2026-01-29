@@ -19,6 +19,7 @@ const Consultations = () => {
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [conversationDetails, setConversationDetails] = useState<any>(null);
   const [selectedDate, setSelectedDate] = useState<string>(''); // Inicialmente sin filtro
+  const [transcriptSearch, setTranscriptSearch] = useState(''); // Búsqueda en transcripciones
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 20;
 
@@ -99,7 +100,16 @@ const Consultations = () => {
       if (convDate !== selectedDate) return false;
     }
     
-    // Filtrar por búsqueda de texto
+    // Filtrar por búsqueda en transcripciones
+    if (transcriptSearch) {
+      const transcript = conv.transcript || [];
+      const transcriptText = Array.isArray(transcript) 
+        ? transcript.map((t: any) => t.message || t.text || '').join(' ').toLowerCase()
+        : JSON.stringify(transcript).toLowerCase();
+      if (!transcriptText.includes(transcriptSearch.toLowerCase())) return false;
+    }
+    
+    // Filtrar por búsqueda de texto (ID, teléfono, summary)
     if (!search) return true;
     return conv.conversation_id?.toLowerCase().includes(search.toLowerCase()) ||
            conv.caller_number?.toLowerCase().includes(search.toLowerCase()) ||
@@ -115,7 +125,7 @@ const Consultations = () => {
   // Resetear página cuando cambian los filtros
   useEffect(() => {
     setCurrentPage(1);
-  }, [selectedDate, search]);
+  }, [selectedDate, search, transcriptSearch]);
 
   if (loading && !consultations) {
     return (
@@ -220,42 +230,71 @@ const Consultations = () => {
                 <CardTitle className="text-medical-700">Filtros de Búsqueda</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="flex gap-4">
-                  <div className="flex-1">
-                    <div className="relative">
-                      <Search className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
-                      <Input 
-                        placeholder="Buscar por ID de conversación o número de teléfono..." 
-                        className="pl-10"
-                        value={search}
-                        onChange={e=>setSearch(e.target.value)}
+                <div className="space-y-4">
+                  {/* Fila 1: Búsqueda general y fecha */}
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <div className="relative">
+                        <Search className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                        <Input 
+                          placeholder="Buscar por ID de conversación o número de teléfono..." 
+                          className="pl-10"
+                          value={search}
+                          onChange={e=>setSearch(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Calendar className="w-4 h-4 text-gray-600" />
+                      <Input
+                        type="date"
+                        value={selectedDate}
+                        onChange={e => setSelectedDate(e.target.value)}
+                        className="w-auto"
+                        placeholder="Todas las fechas"
                       />
+                      {selectedDate && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setSelectedDate('')}
+                          className="text-xs"
+                        >
+                          Limpiar
+                        </Button>
+                      )}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Calendar className="w-4 h-4 text-gray-600" />
-                    <Input
-                      type="date"
-                      value={selectedDate}
-                      onChange={e => setSelectedDate(e.target.value)}
-                      className="w-auto"
-                      placeholder="Todas las fechas"
-                    />
-                    {selectedDate && (
+                  
+                  {/* Fila 2: Búsqueda en transcripciones */}
+                  <div className="flex gap-4">
+                    <div className="flex-1">
+                      <div className="relative">
+                        <FileText className="absolute left-3 top-3 w-4 h-4 text-gray-400" />
+                        <Input 
+                          placeholder="Buscar frases dentro de las transcripciones..." 
+                          className="pl-10"
+                          value={transcriptSearch}
+                          onChange={e=>setTranscriptSearch(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    {transcriptSearch && (
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setSelectedDate('')}
+                        onClick={() => setTranscriptSearch('')}
                         className="text-xs"
                       >
-                        Limpiar
+                        Limpiar búsqueda
                       </Button>
                     )}
+                    {(search || selectedDate || transcriptSearch) && (
+                      <Badge variant="outline" className="h-9 flex items-center">
+                        {filteredConsultations.length} resultados
+                      </Badge>
+                    )}
                   </div>
-                  <Button variant="outline" className="flex items-center gap-2">
-                    <Filter className="w-4 h-4" />
-                    Filtros
-                  </Button>
                 </div>
               </CardContent>
             </Card>

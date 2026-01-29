@@ -32,6 +32,7 @@ import { useToast } from '@/hooks/use-toast';
 import { motion } from 'framer-motion';
 import QuickPatientSelector from './QuickPatientSelector';
 import api from '@/lib/api';
+import { convertColombiaTimeToUTC } from '@/utils/dateHelpers';
 
 interface Patient {
   id: number;
@@ -74,6 +75,7 @@ interface AppointmentForm {
   reason: string;
   notes: string;
   insuranceType: string;
+  cupsId: string;  // Código CUPS del procedimiento
 }
 
 export const QuickAppointmentModal = ({ 
@@ -86,6 +88,8 @@ export const QuickAppointmentModal = ({
   const [loading, setLoading] = useState(false);
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [showPatientSelector, setShowPatientSelector] = useState(true);
+  const [cupsList, setCupsList] = useState<Array<{ id: number; code: string; name: string }>>([]);
+  const [cupsLoading, setCupsLoading] = useState(false);
   
   const [appointmentForm, setAppointmentForm] = useState<AppointmentForm>({
     patientId: null,
@@ -93,7 +97,8 @@ export const QuickAppointmentModal = ({
     duration: '30',
     reason: '',
     notes: '',
-    insuranceType: ''
+    insuranceType: '',
+    cupsId: ''  // Código CUPS
   });
 
   // Resetear formulario cuando se abra/cierre el modal
@@ -107,10 +112,31 @@ export const QuickAppointmentModal = ({
         duration: '30',
         reason: '',
         notes: '',
-        insuranceType: ''
+        insuranceType: '',
+        cupsId: ''
       });
     }
   }, [isOpen]);
+
+  // Cargar CUPS cuando se abre el modal y hay especialidad
+  useEffect(() => {
+    if (!isOpen || !availabilityData?.specialty) {
+      setCupsList([]);
+      return;
+    }
+    setCupsLoading(true);
+    api.getCups({ status: 'Activo', category: availabilityData.specialty, page: 1, limit: 100 })
+      .then((response: any) => {
+        const items = response?.data || response || [];
+        setCupsList(items.map((c: any) => ({
+          id: Number(c.id),
+          code: c.code,
+          name: c.name
+        })));
+      })
+      .catch(() => setCupsList([]))
+      .finally(() => setCupsLoading(false));
+  }, [isOpen, availabilityData?.specialty]);
 
   const handlePatientSelect = (patient: Patient) => {
     setSelectedPatient(patient);
@@ -175,8 +201,9 @@ export const QuickAppointmentModal = ({
       // Construir la fecha y hora de la cita correctamente
       // El backend espera formato: 'YYYY-MM-DD HH:MM:SS'
       const dateStr = availabilityData.date.split('T')[0]; // Obtener solo la fecha sin tiempo
-      const timeStr = availabilityData.startTime.split(':').slice(0, 2).join(':'); // Formato HH:MM
-      const scheduledAt = `${dateStr} ${timeStr}:00`; // Formato completo YYYY-MM-DD HH:MM:SS
+      const timeStrColombia = availabilityData.startTime.split(':').slice(0, 2).join(':'); // HH:mm (Colombia)
+      const timeStrUTC = convertColombiaTimeToUTC(timeStrColombia); // HH:mm (UTC)
+      const scheduledAt = `${dateStr} ${timeStrUTC}:00`; // UTC en BD
       
       const appointmentData = {
         patient_id: selectedPatient.id,
@@ -190,7 +217,8 @@ export const QuickAppointmentModal = ({
         status: 'Confirmada',
         reason: appointmentForm.reason,
         notes: appointmentForm.notes || null,
-        insurance_type: appointmentForm.insuranceType || null
+        insurance_type: appointmentForm.insuranceType || null,
+        cups_id: appointmentForm.cupsId ? parseInt(appointmentForm.cupsId) : null
       };
 
       console.log('Datos de cita que se están enviando:', appointmentData);
@@ -433,6 +461,29 @@ export const QuickAppointmentModal = ({
                     <SelectItem value="Particular">Particular</SelectItem>
                     <SelectItem value="Prepagada">Prepagada</SelectItem>
                     <SelectItem value="SOAT">SOAT</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="cupsId">Código CUPS (Procedimiento)</Label>
+                <Select
+                  value={appointmentForm.cupsId}
+                  onValueChange={(value) => 
+                    setAppointmentForm(prev => ({ ...prev, cupsId: value }))
+                  }
+                  disabled={cupsLoading}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={cupsLoading ? "Cargando CUPS..." : "Seleccionar código CUPS"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Sin CUPS</SelectItem>
+                    {cupsList.map(c => (
+                      <SelectItem key={c.id} value={String(c.id)}>
+                        {c.code} - {c.name}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>

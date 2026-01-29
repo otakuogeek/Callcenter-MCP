@@ -7,8 +7,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Plus, Edit, Trash2, Shield } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Plus, Edit, Trash2, Shield, AlertTriangle, Users } from "lucide-react";
 import api from "@/lib/api";
+import { toast } from "sonner";
 
 interface EPSRow {
   id: number;
@@ -29,6 +32,18 @@ const EpsManagement = () => {
   const [isDateDialogOpen, setIsDateDialogOpen] = useState(false);
   const [dateEditingId, setDateEditingId] = useState<number | null>(null);
   const [dateValue, setDateValue] = useState<string>("");
+  
+  // Estado para modal de transferencia
+  const [isTransferDialogOpen, setIsTransferDialogOpen] = useState(false);
+  const [transferInfo, setTransferInfo] = useState<{
+    epsId: number;
+    epsName: string;
+    patientsCount: number;
+    availableEps: { id: number; name: string; code: string }[];
+  } | null>(null);
+  const [selectedTargetEps, setSelectedTargetEps] = useState<string>("");
+  const [isTransferring, setIsTransferring] = useState(false);
+  
   const [epsForm, setEpsForm] = useState({
     name: "",
     code: "",
@@ -68,8 +83,69 @@ const EpsManagement = () => {
     } catch {}
   };
 
-  const handleDeleteEps = async (epsId: number) => {
-    try { await api.deleteEps(epsId); setEpsList((l) => l.filter(e => e.id !== epsId)); } catch {}
+  const handleDeleteEps = async (eps: EPSRow) => {
+    const token = localStorage.getItem('token');
+    try { 
+      const res = await fetch(`/api/eps/${eps.id}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        // Verificar si el error es por pacientes asociados
+        if (errorData.can_transfer) {
+          setTransferInfo({
+            epsId: eps.id,
+            epsName: eps.name,
+            patientsCount: errorData.patients_count,
+            availableEps: errorData.available_eps || []
+          });
+          setIsTransferDialogOpen(true);
+          return;
+        }
+        toast.error(errorData.message || "Error al eliminar EPS");
+        return;
+      }
+      
+      setEpsList((l) => l.filter(e => e.id !== eps.id));
+      toast.success("EPS eliminada correctamente");
+    } catch (error: any) {
+      toast.error("Error al eliminar EPS");
+    }
+  };
+
+  const handleTransferPatients = async (deleteAfter: boolean) => {
+    if (!transferInfo || !selectedTargetEps) {
+      toast.error("Seleccione una EPS destino");
+      return;
+    }
+    
+    setIsTransferring(true);
+    try {
+      const response = await api.transferEpsPatients(transferInfo.epsId, {
+        targetEpsId: Number(selectedTargetEps),
+        deleteAfterTransfer: deleteAfter
+      });
+      
+      toast.success(response.message || "Pacientes transferidos exitosamente");
+      
+      // Actualizar lista si se eliminó la EPS
+      if (deleteAfter) {
+        setEpsList((l) => l.filter(e => e.id !== transferInfo.epsId));
+      }
+      
+      setIsTransferDialogOpen(false);
+      setTransferInfo(null);
+      setSelectedTargetEps("");
+    } catch (error: any) {
+      toast.error(error.response?.data?.message || "Error al transferir pacientes");
+    } finally {
+      setIsTransferring(false);
+    }
   };
 
   const toggleEpsStatus = async (epsId: number) => {
@@ -304,7 +380,7 @@ const EpsManagement = () => {
                         variant="outline" 
                         size="sm" 
                         className="text-red-600"
-                        onClick={() => handleDeleteEps(eps.id)}
+                        onClick={() => handleDeleteEps(eps)}
                       >
                         <Trash2 className="w-3 h-3 mr-1" />
                         Eliminar
@@ -337,6 +413,79 @@ const EpsManagement = () => {
                   <Button onClick={saveAgreementDate}>Guardar</Button>
                 </div>
               </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Dialog para transferir pacientes */}
+          <Dialog open={isTransferDialogOpen} onOpenChange={(open) => {
+            if (!open) {
+              setTransferInfo(null);
+              setSelectedTargetEps("");
+            }
+            setIsTransferDialogOpen(open);
+          }}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-amber-600">
+                  <AlertTriangle className="w-5 h-5" />
+                  EPS con Pacientes Asociados
+                </DialogTitle>
+                <DialogDescription>
+                  La EPS tiene pacientes y no se puede eliminar directamente.
+                </DialogDescription>
+              </DialogHeader>
+              
+              {transferInfo && (
+                <div className="space-y-4">
+                  <Alert className="bg-amber-50 border-amber-200">
+                    <Users className="h-4 w-4 text-amber-600" />
+                    <AlertDescription className="text-amber-800">
+                      <strong>{transferInfo.epsName}</strong> tiene{" "}
+                      <strong>{transferInfo.patientsCount}</strong> pacientes asociados.
+                    </AlertDescription>
+                  </Alert>
+                  
+                  <div>
+                    <Label>Transferir pacientes a:</Label>
+                    <Select value={selectedTargetEps} onValueChange={setSelectedTargetEps}>
+                      <SelectTrigger className="mt-2">
+                        <SelectValue placeholder="Seleccione una EPS destino" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {transferInfo.availableEps.map((eps) => (
+                          <SelectItem key={eps.id} value={String(eps.id)}>
+                            {eps.name} ({eps.code})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  
+                  <div className="flex flex-col gap-2 pt-2">
+                    <Button 
+                      onClick={() => handleTransferPatients(true)}
+                      disabled={!selectedTargetEps || isTransferring}
+                      className="bg-red-600 hover:bg-red-700"
+                    >
+                      {isTransferring ? "Transfiriendo..." : "Transferir y Eliminar EPS"}
+                    </Button>
+                    <Button 
+                      variant="outline"
+                      onClick={() => handleTransferPatients(false)}
+                      disabled={!selectedTargetEps || isTransferring}
+                    >
+                      {isTransferring ? "Transfiriendo..." : "Solo Transferir Pacientes"}
+                    </Button>
+                    <Button 
+                      variant="ghost"
+                      onClick={() => setIsTransferDialogOpen(false)}
+                      disabled={isTransferring}
+                    >
+                      Cancelar
+                    </Button>
+                  </div>
+                </div>
+              )}
             </DialogContent>
           </Dialog>
         </CardContent>

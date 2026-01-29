@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, Bot, Phone, Calendar, Clock } from "lucide-react";
+import { formatFullDateColombia, formatDateColombia } from "@/utils/dateHelpers";
 
 interface Patient {
   id: string;
@@ -63,12 +64,7 @@ const CancelAppointmentModal = ({ isOpen, onClose, patient }: CancelAppointmentM
       
       let explanation = `Estimado/a ${patient.patientName},
 
-Nos dirigimos a usted para informarle que, debido a una situación médica imprevista del ${patient.doctor}, nos vemos en la necesidad de cancelar su cita programada para el día ${new Date(patient.date).toLocaleDateString('es-ES', { 
-  weekday: 'long', 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
-})} a las ${patient.time} en el área de ${patient.specialty}.
+Nos dirigimos a usted para informarle que, debido a una situación médica imprevista del ${patient.doctor}, nos vemos en la necesidad de cancelar su cita programada para el día ${formatFullDateColombia(patient.date)} a las ${patient.time} en el área de ${patient.specialty}.
 
 Lamentamos profundamente cualquier inconveniente que esta cancelación pueda causarle. Entendemos la importancia de su cita médica y queremos asegurarle que estamos trabajando para reprogramar su consulta a la mayor brevedad posible.`;
 
@@ -76,12 +72,7 @@ Lamentamos profundamente cualquier inconveniente que esta cancelación pueda cau
       if (enableRescheduling && newDate && newTime) {
         explanation += `
 
-Nos complace informarle que hemos podido reagendar su cita para el día ${new Date(newDate).toLocaleDateString('es-ES', { 
-  weekday: 'long', 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
-})} a las ${newTime}. Por favor confirme su disponibilidad para esta nueva fecha.`;
+Nos complace informarle que hemos podido reagendar su cita para el día ${formatFullDateColombia(newDate)} a las ${newTime}. Por favor confirme su disponibilidad para esta nueva fecha.`;
       } else {
         explanation += `
 
@@ -137,7 +128,7 @@ Clínica Medical Center`;
         
         toast({
           title: "Cita Reagendada",
-          description: `La cita ha sido reagendada automáticamente para el ${new Date(newDate).toLocaleDateString('es-ES')} a las ${newTime}`,
+          description: `La cita ha sido reagendada automáticamente para el ${formatDateColombia(newDate)} a las ${newTime}`,
         });
       }
 
@@ -213,7 +204,7 @@ Clínica Medical Center`;
             <div className="grid grid-cols-2 gap-2 text-sm">
               <p><strong>Paciente:</strong> {patient.patientName}</p>
               <p><strong>Teléfono:</strong> {patient.phone}</p>
-              <p><strong>Fecha:</strong> {new Date(patient.date).toLocaleDateString('es-ES')}</p>
+              <p><strong>Fecha:</strong> {formatDateColombia(patient.date)}</p>
               <p><strong>Hora:</strong> {patient.time}</p>
               <p><strong>Doctor:</strong> {patient.doctor}</p>
               <p><strong>Especialidad:</strong> {patient.specialty}</p>

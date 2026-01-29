@@ -7,6 +7,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Clock, Phone, FileText, CheckCircle, Trash2, PhoneCall } from "lucide-react";
+import { useMemo, memo } from "react";
 
 interface PatientItemProps {
   item: any;
@@ -29,7 +30,8 @@ interface PatientItemProps {
   calculateAge: (birthDate: string) => string;
 }
 
-const PatientCard = ({
+// Memoizar el componente PatientCard para evitar re-renders innecesarios
+const PatientCard = memo(({
   item,
   sectionSpecialtyName,
   sectionSpecialtyId,
@@ -114,6 +116,20 @@ const PatientCard = ({
                 ⚡ Reagendar
               </Badge>
             )}
+            {/* Badge de advertencia para cita existente */}
+            {item.existing_appointment_info && (
+              <div className="flex flex-col gap-1">
+                <Badge 
+                  className="text-xs bg-green-600 text-white hover:bg-green-700 font-bold border border-green-400"
+                  title={`Ya tiene cita programada: ${item.existing_appointment_info}`}
+                >
+                  ✅ CITA ASIGNADA
+                </Badge>
+                <div className="text-xs text-green-700 font-medium bg-green-50 p-1 rounded border border-green-200">
+                  {item.existing_appointment_info}
+                </div>
+              </div>
+            )}
             {/* Badge para pacientes con múltiples solicitudes */}
             {isMultipleRequests && (
               <Badge 
@@ -147,6 +163,12 @@ const PatientCard = ({
           <div className="text-xs text-gray-500 mt-1">
             {item.reason ? item.reason : 'Sin motivo especificado'}
           </div>
+          {/* Información de cita existente */}
+          {item.existing_appointment_info && (
+            <div className="text-xs bg-yellow-50 border border-yellow-200 rounded p-2 mt-2 text-yellow-800">
+              <span className="font-semibold">⚠️ Cita programada:</span> {item.existing_appointment_info}
+            </div>
+          )}
           {/* Información del servicio CUPS */}
           {item.cups_code && (
             <div className="flex items-center gap-2 mt-2">
@@ -223,14 +245,17 @@ const PatientCard = ({
       </div>
     </div>
   );
-};
+});
+
+// Nombre para debugging
+PatientCard.displayName = 'PatientCard';
 
 interface VirtualizedPatientListProps {
   patients: any[];
   sectionSpecialtyName: string;
   sectionSpecialtyId: number;
-  hasMultipleRequests: (doc: string) => boolean;
-  getDuplicateRequestsCount: (doc: string) => number;
+  hasMultipleRequests: (doc: string, specialtyId: number) => boolean;
+  getDuplicateRequestsCount: (doc: string, specialtyId: number) => number;
   changingPriorityId: number | null;
   callingPatientId: number | null;
   loadingItemId: number | null;
@@ -266,56 +291,64 @@ export const VirtualizedPatientList = ({
   formatRequestDateTime,
   calculateAge,
 }: VirtualizedPatientListProps) => {
-  // Si patients es undefined, significa que aún no se ha cargado (lazy loading)
-  if (patients === undefined) {
+  // Memoizar la función de renderizado de elementos para mejor rendimiento
+  const renderPatientItem = (item: any, index: number) => {
+    const isMultiple = hasMultipleRequests(item.patient_document, sectionSpecialtyId);
+    const reqCount = getDuplicateRequestsCount(item.patient_document, sectionSpecialtyId);
+    
     return (
-      <div className="text-sm text-medical-600 italic py-4 text-center flex items-center justify-center gap-2">
-        <Clock className="w-4 h-4 animate-spin" />
-        Cargando pacientes...
+      <PatientCard
+        key={item.id || `${item.patient_id}-${index}`}
+        item={item}
+        sectionSpecialtyName={sectionSpecialtyName}
+        sectionSpecialtyId={sectionSpecialtyId}
+        isMultipleRequests={isMultiple}
+        requestCount={reqCount}
+        changingPriorityId={changingPriorityId}
+        callingPatientId={callingPatientId}
+        loadingItemId={loadingItemId}
+        deletingItemId={deletingItemId}
+        loading={loading}
+        handleChangePriority={handleChangePriority}
+        handleCallPatient={handleCallPatient}
+        handleOpenCupsDialog={handleOpenCupsDialog}
+        handleAssignFromQueue={handleAssignFromQueue}
+        handleDeleteFromQueue={handleDeleteFromQueue}
+        formatWaitTime={formatWaitTime}
+        formatRequestDateTime={formatRequestDateTime}
+        calculateAge={calculateAge}
+      />
+    );
+  };
+
+  // Memoizar los items renderizados para evitar re-renders innecesarios
+  const memoizedItems = useMemo(() => {
+    // Si patients es undefined, significa que aún no se ha cargado
+    if (patients === undefined) {
+      return (
+        <div className="text-sm text-medical-600 italic py-4 text-center flex items-center justify-center gap-2">
+          <Clock className="w-4 h-4 animate-spin" />
+          Cargando pacientes...
+        </div>
+      );
+    }
+
+    // Si patients es un array vacío, realmente no hay pacientes
+    if (patients.length === 0) {
+      return (
+        <div className="text-sm text-gray-500 italic py-4 text-center">
+          No hay pacientes en espera
+        </div>
+      );
+    }
+
+    // Renderizar TODOS los pacientes sin límite
+    return (
+      <div className="space-y-3">
+        {patients.map((item, index) => renderPatientItem(item, index))}
       </div>
     );
-  }
+  }, [patients, changingPriorityId, callingPatientId, loadingItemId, deletingItemId, loading]);
 
-  // Si patients es un array vacío, realmente no hay pacientes
-  if (patients.length === 0) {
-    return (
-      <div className="text-sm text-gray-500 italic py-4 text-center">
-        No hay pacientes en espera
-      </div>
-    );
-  }
-
-  // Renderizar directamente sin virtualización para evitar problemas de minificación
-  return (
-    <div className="space-y-3">
-      {patients.map((item, index) => {
-        const isMultiple = hasMultipleRequests(item.patient_document);
-        const reqCount = getDuplicateRequestsCount(item.patient_document);
-        
-        return (
-          <PatientCard
-            key={item.id || index}
-            item={item}
-            sectionSpecialtyName={sectionSpecialtyName}
-            sectionSpecialtyId={sectionSpecialtyId}
-            isMultipleRequests={isMultiple}
-            requestCount={reqCount}
-            changingPriorityId={changingPriorityId}
-            callingPatientId={callingPatientId}
-            loadingItemId={loadingItemId}
-            deletingItemId={deletingItemId}
-            loading={loading}
-            handleChangePriority={handleChangePriority}
-            handleCallPatient={handleCallPatient}
-            handleOpenCupsDialog={handleOpenCupsDialog}
-            handleAssignFromQueue={handleAssignFromQueue}
-            handleDeleteFromQueue={handleDeleteFromQueue}
-            formatWaitTime={formatWaitTime}
-            formatRequestDateTime={formatRequestDateTime}
-            calculateAge={calculateAge}
-          />
-        );
-      })}
-    </div>
-  );
+  return memoizedItems;
 };

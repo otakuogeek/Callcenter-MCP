@@ -434,7 +434,7 @@ export interface AppConfig {
   };
   services: {
     elevenLabs?: ExternalServiceConfig;
-    zadarma?: ExternalServiceConfig;
+    labsMobile?: ExternalServiceConfig;
     mailService?: ExternalServiceConfig;
   };
 }

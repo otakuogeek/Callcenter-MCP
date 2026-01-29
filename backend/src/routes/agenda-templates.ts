@@ -34,7 +34,7 @@ const templateSchema = z.object({
   location_id: z.number().optional(),
   days_of_week: z.any(), // se normaliza
   time_slots: z.any(),
-  duration_minutes: z.number().min(15).max(240).default(30),
+  duration_minutes: z.number().min(1).max(240).default(30),
   break_between_slots: z.number().min(0).max(60).default(0),
   active: z.boolean().default(true)
 });

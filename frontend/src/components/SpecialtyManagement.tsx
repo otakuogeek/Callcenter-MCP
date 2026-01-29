@@ -12,7 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Switch } from "@/components/ui/switch";
 import api from "@/lib/api";
 
-interface Specialty { id: number; name: string; description?: string; default_duration_minutes: number; active: number | boolean; }
+interface Specialty { id: number; name: string; description?: string; default_duration_minutes: number; active: number | boolean; allows_double_appointment?: number | boolean; }
 
 const SpecialtyManagement = () => {
   const [specialties, setSpecialties] = useState<Specialty[]>([]);
@@ -22,7 +22,7 @@ const SpecialtyManagement = () => {
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingSpecialty, setEditingSpecialty] = useState<Specialty | null>(null);
-  const [formData, setFormData] = useState({ name: "", description: "", default_duration_minutes: 30 });
+  const [formData, setFormData] = useState({ name: "", description: "", default_duration_minutes: 30, allows_double_appointment: false });
   const { toast } = useToast();
 
   useEffect(() => {
@@ -51,7 +51,7 @@ const SpecialtyManagement = () => {
         setSpecialties(prev => [...prev, created]);
         toast({ title: "Especialidad creada", description: `Se agregó "${name}"` });
       }
-      setFormData({ name: "", description: "", default_duration_minutes: 30 });
+      setFormData({ name: "", description: "", default_duration_minutes: 30, allows_double_appointment: false });
       setEditingSpecialty(null);
       setIsDialogOpen(false);
     } catch (e: any) {
@@ -65,6 +65,7 @@ const SpecialtyManagement = () => {
       name: specialty.name,
       description: specialty.description || "",
       default_duration_minutes: Number(specialty.default_duration_minutes) || 30,
+      allows_double_appointment: Boolean(Number(specialty.allows_double_appointment)),
     });
     setIsDialogOpen(true);
   };
@@ -113,7 +114,7 @@ const SpecialtyManagement = () => {
             <DialogTrigger asChild>
               <Button 
                 onClick={() => {
-                  setFormData({ name: "", description: "", default_duration_minutes: 30 });
+                  setFormData({ name: "", description: "", default_duration_minutes: 30, allows_double_appointment: false });
                   setEditingSpecialty(null);
                 }}
               >
@@ -163,6 +164,19 @@ const SpecialtyManagement = () => {
                     onChange={(e) => setFormData({...formData, default_duration_minutes: parseInt(e.target.value)})}
                   />
                 </div>
+                <div className="flex items-center gap-3 pt-2">
+                  <Switch
+                    id="allows_double_appointment"
+                    checked={formData.allows_double_appointment}
+                    onCheckedChange={(checked) => setFormData({...formData, allows_double_appointment: checked})}
+                  />
+                  <Label htmlFor="allows_double_appointment" className="cursor-pointer">
+                    Permite cita doble
+                  </Label>
+                </div>
+                <p className="text-xs text-gray-500 -mt-2 ml-12">
+                  Habilita la opción de agendar citas de duración extendida (doble tiempo)
+                </p>
                 <div className="flex gap-2 justify-end">
                   <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
                     Cancelar
@@ -197,6 +211,11 @@ const SpecialtyManagement = () => {
                     <Badge variant={Number(specialty.active) ? "default" : "secondary"}>
                       {Number(specialty.active) ? "Activa" : "Inactiva"}
                     </Badge>
+                    {Boolean(Number(specialty.allows_double_appointment)) && (
+                      <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                        Cita Doble
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-sm text-gray-600 mb-2">{specialty.description}</p>
                   <div className="flex items-center gap-4 text-sm text-gray-500">

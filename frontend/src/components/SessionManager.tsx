@@ -23,6 +23,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import api from '@/lib/api';
+import { formatDateTimeColombia } from '@/utils/dateHelpers';
 
 interface UserSession {
   id: string;
@@ -184,13 +185,7 @@ export function SessionManager({ isAdmin = false }: { isAdmin?: boolean }) {
 
   // Formatear fecha
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString('es-ES', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    return formatDateTimeColombia(dateString);
   };
 
   // Calcular tiempo desde última actividad

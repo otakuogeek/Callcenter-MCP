@@ -11,10 +11,11 @@ import { useToast } from "@/hooks/use-toast";
 import CancelAppointmentModal from "./CancelAppointmentModal";
 import EditAvailabilityModal from "./EditAvailabilityModal";
 import RescheduleAvailabilityModal from "./RescheduleAvailabilityModal";
+import { convertUTCToColombiaTime24 } from "@/utils/dateHelpers";
 
 interface ViewAppointmentsModalProps { isOpen: boolean; onClose: () => void; date: string | null; }
 
-type Appointment = { id: number; patient_name: string; patient_document?: string; patient_phone?: string | null; patient_email?: string | null; scheduled_at: string; duration_minutes: number; status: string; doctor_name: string; specialty_name: string; location_name: string; appointment_type: string; reason?: string | null; notes?: string | null; insurance_type?: string | null; availability_id?: number; };
+type Appointment = { id: number; patient_name: string; patient_document?: string; patient_phone?: string | null; patient_email?: string | null; scheduled_at: string; duration_minutes: number; status: string; doctor_name: string; specialty_name: string; location_name: string; appointment_type: string; reason?: string | null; notes?: string | null; insurance_type?: string | null; availability_id?: number; cups_id?: number; cups_code?: string; cups_name?: string; cups_description?: string; cups_category?: string; cups_price?: number; };
 type Availability = { id: number; doctor_id: number; specialty_id: number; location_id: number; location_name: string; specialty_name: string; doctor_name: string; date: string; start_time: string; end_time: string; capacity: number; booked_slots: number; status: string; notes?: string; appointments?: Appointment[] };
 
 const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalProps) => {
@@ -57,7 +58,20 @@ const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalP
   };
   const getStatusIcon = (s: string) => { switch (s) { case "Confirmada": case "Activa": return <CheckCircle className="w-3 h-3" />; case "Pendiente": return <AlertCircle className="w-3 h-3" />; case "Completada": case "Completa": return <CheckCircle className="w-3 h-3" />; case "Cancelada": return <XCircle className="w-3 h-3" />; default: return <Clock className="w-3 h-3" />; } };
   const formatDate = (d: string) => { try { return format(new Date(d + 'T00:00:00'), "EEEE, d 'de' MMMM 'de' yyyy", { locale: es }); } catch { return d; } };
-  const formatTime = (t: string) => { try { if (t.includes('T')) return format(new Date(t), "HH:mm", { locale: es }); const [h, m] = t.split(':'); return `${h}:${m}`; } catch { return t; } };
+  const formatTime = (t: string) => {
+    try {
+      if (!t) return t;
+      if (t.includes('T')) {
+        return new Date(t).toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+      if (/^\d{4}-\d{2}-\d{2} /.test(t)) {
+        return new Date(t.replace(' ', 'T') + 'Z').toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+      return convertUTCToColombiaTime24(t);
+    } catch {
+      return t;
+    }
+  };
 
   const handleCancelAppointment = (apt: Appointment) => { const pd = { id: apt.id, patientName: apt.patient_name, phone: apt.patient_phone, email: apt.patient_email, date: date!, time: formatTime(apt.scheduled_at), doctor: apt.doctor_name, specialty: apt.specialty_name }; setSelectedPatient(pd); setIsCancelModalOpen(true); };
   const handleCloseCancelModal = () => { setIsCancelModalOpen(false); setSelectedPatient(null); loadData(); };
@@ -139,12 +153,23 @@ const ViewAppointmentsModal = ({ isOpen, onClose, date }: ViewAppointmentsModalP
                                 <div className="flex items-center gap-3">
                                   <div className="text-sm font-medium text-gray-600">#{i + 1}</div>
                                   <Badge className={`${getStatusColor(apt.status)} text-xs`}>{apt.status}</Badge>
-                                  <div>
+                                  <div className="flex-1">
                                     <p className="font-medium text-gray-900">{apt.patient_name}</p>
                                     <p className="text-xs text-gray-600">
                                       {formatTime(apt.scheduled_at)} <span className="ml-2">({apt.duration_minutes} min)</span>
                                       {apt.reason && (<span className="ml-2 text-blue-600">• {apt.reason}</span>)}
                                     </p>
+                                    {/* Información del servicio CUPS */}
+                                    {apt.cups_code && (
+                                      <div className="flex items-center gap-2 mt-1">
+                                        <Badge variant="outline" className="text-xs font-mono">
+                                          {apt.cups_code}
+                                        </Badge>
+                                        <span className="text-xs text-medical-700 font-medium">
+                                          {apt.cups_name}
+                                        </span>
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                                 <div className="flex items-center gap-2">

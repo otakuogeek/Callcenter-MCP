@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { api } from '@/lib/api';
 import { logger } from '@/lib/logger';
-import { safeDateFromString, safeDayOfWeek, safeFormatDate } from '@/utils/dateHelpers';
+import { safeDateFromString, safeDayOfWeek, safeFormatDate, formatDateColombia } from '@/utils/dateHelpers';
 
 interface TimeSlot {
   distribution_id: number;
@@ -107,10 +107,7 @@ export function AvailabilityDropdown({
       const formattedDate = safeFormatDate(dateStr, 'EEEE, d MMMM', { locale: es }, '');
       if (!formattedDate) return `${dayName} (${dateStr})`;
       
-      const date = safeDateFromString(dateStr);
-      if (!date) return `${dayName} (${dateStr})`;
-      
-      return `${formattedDate} (${date.toLocaleDateString('es-ES')})`;
+      return `${formattedDate} (${formatDateColombia(dateStr)})`;
     } catch {
       return `${dayName} (${dateStr})`;
     }

@@ -38,7 +38,7 @@ function validateToken(token: string): AuthPayload | null {
       return testPayload;
     }
 
-    const raw = jwt.verify(token, process.env.JWT_SECRET || 'secret') as any;
+    const raw = jwt.verify(token, process.env.JWT_SECRET!) as any;
     
     // Normalizar campos (compatibilidad con tokens históricos)
     const normalized: AuthPayload = {

@@ -17,6 +17,7 @@ import { Patient } from '@/types/patient';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import QRCode from 'qrcode';
+import { formatDateTimeColombia } from '@/utils/dateHelpers';
 
 // Función auxiliar para formatear fechas sin conversión de zona horaria
 const formatDateWithoutTimezone = (dateString: string | null | undefined): string => {
@@ -226,8 +227,26 @@ const PatientDetailsModal = ({ patient, isOpen, onClose, onSave }: PatientDetail
         },
         cita: {
           id: appointment.id,
-          fecha: appointment.scheduled_at.split(' ')[0],
-          hora: appointment.start_time || appointment.scheduled_at.split(' ')[1]?.substring(0, 5) || '',
+          fecha: (() => {
+            try {
+              const raw = String(appointment.scheduled_at || '');
+              const iso = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
+              const d = new Date(iso);
+              return isNaN(d.getTime()) ? raw.split(' ')[0] : d.toLocaleDateString('en-CA', { timeZone: 'America/Bogota' });
+            } catch {
+              return String(appointment.scheduled_at || '').split(' ')[0];
+            }
+          })(),
+          hora: (() => {
+            try {
+              const raw = String(appointment.scheduled_at || '');
+              const iso = raw.includes('T') ? raw : raw.replace(' ', 'T') + 'Z';
+              const d = new Date(iso);
+              return isNaN(d.getTime()) ? '' : d.toLocaleTimeString('es-CO', { timeZone: 'America/Bogota', hour: '2-digit', minute: '2-digit', hour12: false });
+            } catch {
+              return '';
+            }
+          })(),
           doctor: appointment.doctor_name || 'Por asignar',
           especialidad: appointment.specialty_name || 'No especificada',
           sede: appointment.location_name || 'No especificada',
@@ -686,13 +705,13 @@ const PatientDetailsModal = ({ patient, isOpen, onClose, onSave }: PatientDetail
                 {displayPatient?.created_at && (
                   <p className="flex items-center gap-2">
                     <Calendar className="h-4 w-4" />
-                    <strong>Creado:</strong> {new Date(displayPatient.created_at).toLocaleString()}
+                    <strong>Creado:</strong> {formatDateTimeColombia(displayPatient.created_at)}
                   </p>
                 )}
                 {displayPatient?.updated_at && (
                   <p className="flex items-center gap-2">
                     <Calendar className="h-4 w-4" />
-                    <strong>Actualizado:</strong> {new Date(displayPatient.updated_at).toLocaleString()}
+                    <strong>Actualizado:</strong> {formatDateTimeColombia(displayPatient.updated_at)}
                   </p>
                 )}
               </div>

@@ -1,4 +1,5 @@
 import pool from '../db/pool';
+import { formatDateForMySQLUTC, utcDateFromYMDAndUTCTime } from './dateUtils';
 
 export interface DailyAssignmentResult {
   success: boolean;
@@ -86,6 +87,10 @@ export async function tryAssignTodayOrQueue(params: {
     // 4. Si hay disponibilidad HOY, asignar directamente
     if ((availabilities as any[]).length > 0) {
       const availability = (availabilities as any[])[0];
+      const scheduledAtDateUTC = utcDateFromYMDAndUTCTime(today, availability.start_time);
+      const scheduledAtUTC = formatDateForMySQLUTC(scheduledAtDateUTC);
+      const colombiaDate = new Date(scheduledAtDateUTC.getTime() - (5 * 60 * 60 * 1000));
+      const colombiaHHmm = `${String(colombiaDate.getUTCHours()).padStart(2, '0')}:${String(colombiaDate.getUTCMinutes()).padStart(2, '0')}`;
       
       // Crear la cita
       const [appointmentResult] = await pool.query(`
@@ -95,8 +100,8 @@ export async function tryAssignTodayOrQueue(params: {
           status, 
           scheduled_at,
           created_at
-        ) VALUES (?, ?, 'Pendiente', NOW(), NOW())
-      `, [params.patient_id, availability.id]);
+        ) VALUES (?, ?, 'Pendiente', ?, NOW())
+      `, [params.patient_id, availability.id, scheduledAtUTC]);
 
       const appointmentId = (appointmentResult as any).insertId;
 
@@ -111,7 +116,7 @@ export async function tryAssignTodayOrQueue(params: {
         success: true,
         assigned: true,
         appointment_id: appointmentId,
-        message: `Cita asignada para hoy a las ${availability.start_time}`
+        message: `Cita asignada para hoy a las ${colombiaHHmm}`
       };
     }
 
@@ -291,7 +296,7 @@ export async function processWaitingQueue(): Promise<{processed: number, assigne
       try {
         // Buscar disponibilidad para este paciente
         const [availabilities] = await pool.query(`
-          SELECT a.id
+          SELECT a.id, a.start_time
           FROM availabilities a
           LEFT JOIN availability_distribution ad ON ad.availability_id = a.id AND ad.day_date = ?
           WHERE a.date = ?
@@ -310,6 +315,7 @@ export async function processWaitingQueue(): Promise<{processed: number, assigne
 
         if ((availabilities as any[]).length > 0) {
           const availability = (availabilities as any[])[0];
+          const scheduledAtUTC = formatDateForMySQLUTC(utcDateFromYMDAndUTCTime(today, availability.start_time));
           
           // Crear la cita
           const [appointmentResult] = await pool.query(`
@@ -319,8 +325,8 @@ export async function processWaitingQueue(): Promise<{processed: number, assigne
               status, 
               scheduled_at,
               created_at
-            ) VALUES (?, ?, 'Pendiente', NOW(), NOW())
-          `, [queueItem.patient_id, availability.id]);
+            ) VALUES (?, ?, 'Pendiente', ?, NOW())
+          `, [queueItem.patient_id, availability.id, scheduledAtUTC]);
 
           const appointmentId = (appointmentResult as any).insertId;
 

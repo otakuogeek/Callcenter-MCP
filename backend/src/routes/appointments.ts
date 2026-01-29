@@ -2,8 +2,44 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
+import { formatDateForMySQLUTC, utcDateFromYMDAndColombiaTime, utcDateFromYMDAndUTCTime } from '../utils/dateUtils';
 
 const router = Router();
+
+function normalizeScheduledAtToUTCMySQL(input: string): string {
+  const raw = String(input || '').trim();
+  if (!raw) throw new Error('scheduled_at inválido');
+  if (raw.includes('T') && (raw.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(raw))) {
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) throw new Error('scheduled_at inválido');
+    return formatDateForMySQLUTC(d);
+  }
+  if (!raw.includes(' ') && raw.includes('T')) {
+    const parts = raw.split('T');
+    if (parts.length >= 2) return normalizeScheduledAtToUTCMySQL(`${parts[0]} ${parts[1]}`);
+  }
+
+  const datePart = raw.slice(0, 10);
+  const timePartRaw = raw.includes(' ') ? raw.slice(11) : raw.slice(10);
+  const timePart = timePartRaw.replace(/^\s+/, '').slice(0, 8) || '00:00:00';
+  const timeHHmm = timePart.length >= 5 ? timePart.slice(0, 5) : timePart;
+  const utcDate = utcDateFromYMDAndColombiaTime(datePart, timeHHmm);
+  return formatDateForMySQLUTC(utcDate);
+}
+
+/**
+ * 🇨🇴 Función para formatear fecha como string MySQL sin conversión de timezone
+ * Asegura que la fecha se guarde exactamente como se especifica (hora Colombia)
+ */
+function formatDateForMySQL(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
 
 // Cache simple para columna opcional room_id
 let hasRoomColumnCache: boolean | null = null;
@@ -30,7 +66,7 @@ const schema = z.object({
   doctor_id: z.number().int(),
   room_id: z.number().int().optional().nullable(),
   scheduled_at: z.string(),
-  duration_minutes: z.number().int().min(5).max(480).default(30),
+  duration_minutes: z.number().int().min(1).max(480).default(30),
   appointment_type: z.enum(['Presencial','Telemedicina']).default('Presencial'),
   status: z.enum(['Pendiente','Confirmada','Completada','Cancelada']).default('Pendiente'),
   reason: z.string().optional().nullable(),
@@ -38,6 +74,9 @@ const schema = z.object({
   notes: z.string().optional().nullable(),
   cancellation_reason: z.string().optional().nullable(),
   manual: z.boolean().optional().default(false),
+  
+  // CUPS - Código de procedimiento
+  cups_id: z.number().int().optional().nullable(),
   
   // Nuevos campos agregados en la migración
   consultation_reason_detailed: z.string().optional().nullable(),
@@ -91,6 +130,8 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   try {
     const [rows] = await pool.query(
       `SELECT a.*, 
+              TIME_FORMAT(a.scheduled_at, '%H:%i') AS start_time,
+              DATE_FORMAT(a.scheduled_at, '%Y-%m-%d') AS appointment_date,
               p.name AS patient_name, 
               p.document AS patient_document, 
               p.phone AS patient_phone, 
@@ -100,13 +141,19 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
               eps.name AS patient_eps,
               d.name AS doctor_name, 
               s.name AS specialty_name, 
-              l.name AS location_name
+              l.name AS location_name,
+              c.code AS cups_code,
+              c.name AS cups_name,
+              c.description AS cups_description,
+              c.category AS cups_category,
+              c.price AS cups_price
        FROM appointments a
        JOIN patients p ON p.id = a.patient_id
        LEFT JOIN eps eps ON p.insurance_eps_id = eps.id
        JOIN doctors d ON d.id = a.doctor_id
        JOIN specialties s ON s.id = a.specialty_id
        JOIN locations l ON l.id = a.location_id
+       LEFT JOIN cups c ON a.cups_id = c.id
        ${where}
        ORDER BY a.scheduled_at DESC
        LIMIT 200`,
@@ -121,6 +168,144 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /patient-history/:patient_id
+ * Obtiene el historial completo de un paciente:
+ * - Todas las citas (sin límite) con todos los estados
+ * - Todas las entradas de cola de espera
+ * - Incluye created_at y updated_at para auditoría
+ */
+router.get('/patient-history/:patient_id', requireAuth, async (req: Request, res: Response) => {
+  const patientId = Number(req.params.patient_id);
+  const statusFilter = req.query.status as string; // Filtro opcional por status
+
+  if (!patientId || isNaN(patientId)) {
+    return res.status(400).json({ message: 'patient_id inválido' });
+  }
+
+  try {
+    // 1. Obtener todas las citas del paciente
+    let appointmentsQuery = `
+      SELECT 
+        'appointment' AS record_type,
+        a.id,
+        a.scheduled_at,
+        TIME_FORMAT(a.scheduled_at, '%H:%i') AS start_time,
+        DATE_FORMAT(a.scheduled_at, '%Y-%m-%d') AS appointment_date,
+        a.status,
+        a.reason,
+        a.notes,
+        a.priority_level,
+        a.cancellation_reason,
+        a.appointment_type,
+        a.created_at,
+        a.updated_at,
+        d.name AS doctor_name,
+        s.name AS specialty_name,
+        l.name AS location_name,
+        c.code AS cups_code,
+        c.name AS cups_name
+      FROM appointments a
+      JOIN doctors d ON d.id = a.doctor_id
+      JOIN specialties s ON s.id = a.specialty_id
+      JOIN locations l ON l.id = a.location_id
+      LEFT JOIN cups c ON a.cups_id = c.id
+      WHERE a.patient_id = ?
+    `;
+    const appointmentParams: any[] = [patientId];
+
+    if (statusFilter && statusFilter !== 'all') {
+      appointmentsQuery += ' AND a.status = ?';
+      appointmentParams.push(statusFilter);
+    }
+
+    appointmentsQuery += ' ORDER BY a.scheduled_at DESC';
+
+    const [appointments]: any = await pool.query(appointmentsQuery, appointmentParams);
+
+    // 2. Obtener todas las entradas de cola de espera del paciente
+    let waitingListQuery = `
+      SELECT 
+        'waiting_list' AS record_type,
+        wl.id,
+        wl.scheduled_date AS scheduled_at,
+        TIME_FORMAT(wl.scheduled_date, '%H:%i') AS start_time,
+        DATE_FORMAT(wl.scheduled_date, '%Y-%m-%d') AS appointment_date,
+        wl.status,
+        wl.reason,
+        wl.notes,
+        wl.priority_level,
+        wl.call_type,
+        wl.appointment_type,
+        wl.cancelled_reason,
+        wl.requested_by,
+        wl.reassigned_at,
+        wl.reassigned_appointment_id,
+        wl.created_at,
+        wl.updated_at,
+        d.name AS doctor_name,
+        COALESCE(s_direct.name, s_avail.name) AS specialty_name,
+        l.name AS location_name,
+        c.code AS cups_code,
+        c.name AS cups_name
+      FROM appointments_waiting_list wl
+      LEFT JOIN availabilities a ON wl.availability_id = a.id
+      LEFT JOIN specialties s_direct ON wl.specialty_id = s_direct.id
+      LEFT JOIN specialties s_avail ON a.specialty_id = s_avail.id
+      LEFT JOIN doctors d ON a.doctor_id = d.id
+      LEFT JOIN locations l ON a.location_id = l.id
+      LEFT JOIN cups c ON wl.cups_id = c.id
+      WHERE wl.patient_id = ?
+    `;
+    const waitingListParams: any[] = [patientId];
+
+    if (statusFilter && statusFilter !== 'all') {
+      waitingListQuery += ' AND wl.status = ?';
+      waitingListParams.push(statusFilter);
+    }
+
+    waitingListQuery += ' ORDER BY wl.created_at DESC';
+
+    let waitingListRows: any[] = [];
+    try {
+      const [rows]: any = await pool.query(waitingListQuery, waitingListParams);
+      waitingListRows = rows;
+    } catch (e: any) {
+      // Si la tabla no existe, continuar sin error
+      if (e.code !== 'ER_NO_SUCH_TABLE' && e.errno !== 1146) {
+        console.error('Error fetching waiting list:', e);
+      }
+    }
+
+    // 3. Calcular estadísticas de estados
+    const allRecords = [...appointments, ...waitingListRows];
+    const statusCounts: Record<string, number> = {};
+    
+    allRecords.forEach((record: any) => {
+      const status = record.status || 'Sin estado';
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
+
+    // 4. Retornar respuesta estructurada
+    return res.json({
+      success: true,
+      patient_id: patientId,
+      summary: {
+        total_appointments: appointments.length,
+        total_waiting_list: waitingListRows.length,
+        total_records: allRecords.length,
+        status_counts: statusCounts
+      },
+      appointments: appointments,
+      waiting_list: waitingListRows
+    });
+
+  } catch (e: any) {
+    console.error('Error fetching patient history:', e);
+    return res.status(500).json({ message: 'Error al obtener historial del paciente' });
+  }
+});
+
 import { sendAppointmentConfirmationEmail } from '../services/mailer';
 
 router.post('/', requireAuth, async (req: Request, res: Response) => {
@@ -128,6 +313,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
   try {
+    const scheduledAtUTC = normalizeScheduledAtToUTCMySQL(d.scheduled_at);
     // ================= Nueva validación basada en cupos disponibles =================
     
     // 1. Validación: evitar que el mismo paciente tenga múltiples citas el mismo día
@@ -137,7 +323,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
          WHERE patient_id = ? AND status != 'Cancelada'
            AND DATE(scheduled_at) = DATE(?)
          LIMIT 1`,
-        [d.patient_id, d.scheduled_at]
+        [d.patient_id, scheduledAtUTC]
       );
       if (Array.isArray(patientDayRows) && patientDayRows.length) {
         return res.status(409).json({ message: 'El paciente ya tiene una cita agendada para este día.' });
@@ -201,7 +387,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
               AND CONCAT(date,' ', end_time) >= DATE_ADD(?, INTERVAL ? MINUTE)
             ORDER BY start_time
             LIMIT 1`,
-          [d.doctor_id, d.scheduled_at, d.scheduled_at, d.scheduled_at, d.duration_minutes]
+          [d.doctor_id, scheduledAtUTC, scheduledAtUTC, scheduledAtUTC, d.duration_minutes]
         );
         if (Array.isArray(availRows) && availRows.length) {
           availabilityIdToUse = Number(availRows[0].id) || null;
@@ -219,18 +405,22 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       'insurance_company','insurance_policy_number','appointment_source',
       'reminder_sent','reminder_sent_at','preferred_time','symptoms',
       'allergies','medications','emergency_contact_name','emergency_contact_phone',
-      'follow_up_required','follow_up_date','payment_method','copay_amount'
+      'follow_up_required','follow_up_date','payment_method','copay_amount',
+      // CUPS - Código de procedimiento
+      'cups_id'
     ] as string[];
     let vals: any[] = [
       d.patient_id, availabilityIdToUse, d.location_id, d.specialty_id, d.doctor_id,
-      d.scheduled_at, d.duration_minutes, d.appointment_type, d.status, d.reason ?? null,
+      scheduledAtUTC, d.duration_minutes, d.appointment_type, d.status, d.reason ?? null,
       d.insurance_type ?? null, d.notes ?? null, d.cancellation_reason ?? null, (req as any).user?.id ?? null,
       // Valores para nuevos campos
       d.consultation_reason_detailed ?? null, d.additional_notes ?? null, d.priority_level ?? 'Normal',
       d.insurance_company ?? null, d.insurance_policy_number ?? null, d.appointment_source ?? 'Manual',
       d.reminder_sent ?? false, d.reminder_sent_at ?? null, d.preferred_time ?? null, d.symptoms ?? null,
       d.allergies ?? null, d.medications ?? null, d.emergency_contact_name ?? null, d.emergency_contact_phone ?? null,
-      d.follow_up_required ?? false, d.follow_up_date ?? null, d.payment_method ?? null, d.copay_amount ?? null
+      d.follow_up_required ?? false, d.follow_up_date ?? null, d.payment_method ?? null, d.copay_amount ?? null,
+      // CUPS value
+      d.cups_id ?? null
     ];
     if (hasRoom) {
       cols.push('room_id');
@@ -242,7 +432,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       vals
     );
     // @ts-ignore
-  const created = { id: result.insertId as number, ...d, availability_id: availabilityIdToUse } as any;
+  const created = { id: result.insertId as number, ...d, scheduled_at: scheduledAtUTC, availability_id: availabilityIdToUse } as any;
 
     // ================= Facturación automática =================
     // Estrategia: si request incluye service_id lo usamos; si no, intentamos mapear specialty_id -> service con mismo nombre.
@@ -383,19 +573,23 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   const parsed = schema.partial().safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
+  const normalized: any = { ...d };
+  if (typeof normalized.scheduled_at === 'string' && normalized.scheduled_at.trim() !== '') {
+    normalized.scheduled_at = normalizeScheduledAtToUTCMySQL(normalized.scheduled_at);
+  }
   try {
     // Si se modifica doctor_id, scheduled_at, duration_minutes o availability_id, validar cupos
-    if ('doctor_id' in d || 'scheduled_at' in d || 'duration_minutes' in d || 'availability_id' in d) {
+    if ('doctor_id' in normalized || 'scheduled_at' in normalized || 'duration_minutes' in normalized || 'availability_id' in normalized) {
       const [rows] = await pool.query(`SELECT doctor_id, scheduled_at, duration_minutes, patient_id, availability_id${await hasRoomColumn() ? ', room_id' : ''} FROM appointments WHERE id = ? LIMIT 1`, [id]);
       const current = Array.isArray(rows) && rows.length ? (rows as any)[0] : null;
       if (!current) return res.status(404).json({ message: 'Appointment not found' });
       
-      const newPatientId = typeof d.patient_id === 'number' ? d.patient_id : Number(current.patient_id);
-      const newScheduledAt = d.scheduled_at ?? current.scheduled_at;
-      const newAvailabilityId = typeof d.availability_id === 'number' ? d.availability_id : current.availability_id;
+      const newPatientId = typeof normalized.patient_id === 'number' ? normalized.patient_id : Number(current.patient_id);
+      const newScheduledAt = normalized.scheduled_at ?? current.scheduled_at;
+      const newAvailabilityId = typeof normalized.availability_id === 'number' ? normalized.availability_id : current.availability_id;
 
       // 1. Validación: evitar que el mismo paciente tenga múltiples citas el mismo día
-      if (d.scheduled_at || d.patient_id) {
+      if (normalized.scheduled_at || normalized.patient_id) {
         const [patientDayRows] = await pool.query(
           `SELECT id FROM appointments
            WHERE patient_id = ? AND status != 'Cancelada' AND id != ?
@@ -409,11 +603,11 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
       }
 
       // 2. Validación de cupos disponibles (solo si cambia availability_id)
-      if (d.availability_id && d.availability_id !== current.availability_id) {
+      if (normalized.availability_id && normalized.availability_id !== current.availability_id) {
         const [availRows] = await pool.query(
           `SELECT capacity, booked_slots, status FROM availabilities
            WHERE id = ? AND status = 'Activa'`,
-          [d.availability_id]
+          [normalized.availability_id]
         );
         
         if (!Array.isArray(availRows) || availRows.length === 0) {
@@ -428,10 +622,10 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
 
       // 3. Validar sala/consultorio si aplica
       if (await hasRoomColumn()) {
-        const newRoomId = ('room_id' in d) ? (d as any).room_id : (current as any).room_id;
+        const newRoomId = ('room_id' in normalized) ? (normalized as any).room_id : (current as any).room_id;
         const roomIdNum = Number(newRoomId);
         if (newRoomId != null && !Number.isNaN(roomIdNum)) {
-          const newDuration = typeof d.duration_minutes === 'number' ? d.duration_minutes : Number(current.duration_minutes);
+          const newDuration = typeof normalized.duration_minutes === 'number' ? normalized.duration_minutes : Number(current.duration_minutes);
           const [confRowsR] = await pool.query(
             `SELECT id FROM appointments
              WHERE room_id = ? AND status != 'Cancelada' AND id != ?
@@ -449,11 +643,11 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
 
     const fields: string[] = []; const values: any[] = [];
     const allowRoom = await hasRoomColumn();
-    for (const k of Object.keys(d) as (keyof typeof d)[]) {
+    for (const k of Object.keys(normalized) as (keyof typeof normalized)[]) {
       if (k === 'room_id' && !allowRoom) continue;
       fields.push(`${k} = ?`);
       // @ts-ignore
-      values.push(d[k] ?? null);
+      values.push(normalized[k] ?? null);
     }
     if (!fields.length) return res.status(400).json({ message: 'No changes' });
     values.push(id);
@@ -857,6 +1051,28 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
         c.name AS cups_name,
         c.category AS cups_category,
         c.price AS cups_price,
+        -- Información de cita existente en la misma especialidad
+        (SELECT CONCAT(
+          DATE_FORMAT(app_existing.scheduled_at, '%d de %M de %Y'),
+          ' a las ',
+          TIME_FORMAT(app_existing.scheduled_at, '%h:%i %p'),
+          ' con Dr. ',
+          doc_existing.name,
+          ' (',
+          spec_existing.name,
+          ')'
+        )
+        FROM appointments app_existing 
+        INNER JOIN availabilities avail_existing ON app_existing.availability_id = avail_existing.id
+        INNER JOIN doctors doc_existing ON avail_existing.doctor_id = doc_existing.id
+        INNER JOIN specialties spec_existing ON app_existing.specialty_id = spec_existing.id
+        WHERE app_existing.patient_id = p.id 
+          AND app_existing.specialty_id = COALESCE(s_direct.id, s_avail.id)
+          AND app_existing.status IN ('Pendiente', 'Confirmada')
+          AND app_existing.scheduled_at >= NOW()
+        ORDER BY app_existing.scheduled_at ASC
+        LIMIT 1
+        ) AS existing_appointment_info,
         CASE 
           WHEN wl.priority_level = 'Urgente' THEN 1
           WHEN wl.priority_level = 'Alta' THEN 2
@@ -1023,7 +1239,9 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
           cups_code: row.cups_code,
           cups_name: row.cups_name,
           cups_category: row.cups_category,
-          cups_price: row.cups_price
+          cups_price: row.cups_price,
+          // Información de cita existente en la misma especialidad
+          existing_appointment_info: row.existing_appointment_info
         });
       }
     }
@@ -1425,7 +1643,29 @@ router.get('/waiting-list/specialty/:id', requireAuth, async (req: Request, res:
         c.code AS cups_code,
         c.name AS cups_name,
         c.category AS cups_category,
-        c.price AS cups_price
+        c.price AS cups_price,
+        -- Información de cita existente en la misma especialidad
+        (SELECT CONCAT(
+          DATE_FORMAT(app_existing.scheduled_at, '%d de %M de %Y'),
+          ' a las ',
+          TIME_FORMAT(app_existing.scheduled_at, '%h:%i %p'),
+          ' con Dr. ',
+          doc_existing.name,
+          ' (',
+          spec_existing.name,
+          ')'
+        )
+        FROM appointments app_existing 
+        INNER JOIN availabilities avail_existing ON app_existing.availability_id = avail_existing.id
+        INNER JOIN doctors doc_existing ON avail_existing.doctor_id = doc_existing.id
+        INNER JOIN specialties spec_existing ON app_existing.specialty_id = spec_existing.id
+        WHERE app_existing.patient_id = p.id 
+          AND app_existing.specialty_id = COALESCE(s_direct.id, s_avail.id)
+          AND app_existing.status IN ('Pendiente', 'Confirmada')
+          AND app_existing.scheduled_at >= NOW()
+        ORDER BY app_existing.scheduled_at ASC
+        LIMIT 1
+        ) AS existing_appointment_info
       FROM appointments_waiting_list wl
       INNER JOIN patients p ON wl.patient_id = p.id
       LEFT JOIN eps ON p.insurance_eps_id = eps.id
@@ -1471,7 +1711,8 @@ router.get('/waiting-list/specialty/:id', requireAuth, async (req: Request, res:
       cups_code: row.cups_code,
       cups_name: row.cups_name,
       cups_category: row.cups_category,
-      cups_price: row.cups_price
+      cups_price: row.cups_price,
+      existing_appointment_info: row.existing_appointment_info
     }));
 
     return res.json({ success: true, data: { specialty_id: specialtyId, patients, total_waiting: patients.length } });
@@ -1689,7 +1930,7 @@ router.patch('/waiting-list/:id/priority', requireAuth, async (req: Request, res
 
 // POST - Asignar cita desde lista de espera
 router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Response) => {
-  const { waiting_list_id, availability_id, patient_id, reason, priority_level, cups_id } = req.body;
+  const { waiting_list_id, availability_id, patient_id, reason, priority_level, cups_id, selected_time } = req.body;
 
   // Validaciones
   if (!waiting_list_id || !availability_id || !patient_id) {
@@ -1723,10 +1964,11 @@ router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Respo
     // 2. Verificar que la nueva agenda tiene cupos disponibles
     const [newAvailability]: any = await pool.query(
       `SELECT 
-        a.id, a.specialty_id, a.doctor_id, a.location_id, a.date, a.start_time, a.end_time,
+        a.id, a.specialty_id, a.doctor_id, a.location_id, DATE_FORMAT(a.date, '%Y-%m-%d') as date, a.start_time, a.end_time,
         a.capacity, a.booked_slots, (a.capacity - a.booked_slots) AS available_slots, 
         a.status, a.duration_minutes,
         s.name AS specialty_name,
+        s.default_duration_minutes,
         d.name AS doctor_name,
         l.name AS location_name
       FROM availabilities a
@@ -1745,9 +1987,53 @@ router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Respo
     }
 
     const agenda = newAvailability[0];
+    const agendaDate = String(agenda.date).split('T')[0].split(' ')[0];
+    const durationMinutes = agenda.duration_minutes || agenda.default_duration_minutes || 15;
 
-    // 3. Crear la cita en la tabla appointments
-    const scheduledAt = `${agenda.date.toISOString().split('T')[0]} ${agenda.start_time}`;
+    // 3. Determinar la hora de la cita
+    let scheduledAtDateUTC: Date;
+
+    if (selected_time) {
+      scheduledAtDateUTC = utcDateFromYMDAndColombiaTime(agendaDate, selected_time);
+      console.log(`[ASSIGN-FROM-QUEUE] Usando hora seleccionada (Colombia): ${selected_time} -> UTC ${formatDateForMySQLUTC(scheduledAtDateUTC)}`);
+    } else {
+      // Si no se proporcionó, calcular la siguiente hora disponible después de la última cita
+      const [lastAppointment]: any = await pool.query(
+        `SELECT TIME_FORMAT(scheduled_at, '%H:%i') AS last_time,
+                TIME_FORMAT(DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE), '%H:%i') AS next_available
+         FROM appointments
+         WHERE availability_id = ?
+           AND DATE(scheduled_at) = ?
+           AND status NOT IN ('Cancelada', 'No Show')
+         ORDER BY scheduled_at DESC
+         LIMIT 1`,
+        [availability_id, agendaDate]
+      );
+
+      if (lastAppointment && lastAppointment.length > 0 && lastAppointment[0].next_available) {
+        // Hay citas existentes, programar después de la última
+        const nextAvailable = String(lastAppointment[0].next_available);
+        scheduledAtDateUTC = utcDateFromYMDAndUTCTime(agendaDate, nextAvailable);
+        console.log(`[ASSIGN-FROM-QUEUE] Última cita: ${lastAppointment[0].last_time}, siguiente disponible (UTC): ${nextAvailable}`);
+      } else {
+        // No hay citas, usar el inicio de la agenda
+        scheduledAtDateUTC = utcDateFromYMDAndUTCTime(agendaDate, agenda.start_time);
+        console.log(`[ASSIGN-FROM-QUEUE] No hay citas previas, usando inicio de agenda (UTC): ${agenda.start_time}`);
+      }
+    }
+
+    const availabilityStartUTC = utcDateFromYMDAndUTCTime(agendaDate, agenda.start_time);
+    const availabilityEndUTC = utcDateFromYMDAndUTCTime(agendaDate, agenda.end_time);
+    const appointmentEndUTC = new Date(scheduledAtDateUTC.getTime() + durationMinutes * 60 * 1000);
+    if (scheduledAtDateUTC < availabilityStartUTC || appointmentEndUTC > availabilityEndUTC) {
+      return res.status(400).json({
+        success: false,
+        message: `La hora seleccionada está fuera del rango de la agenda (${agenda.start_time} - ${agenda.end_time})`
+      });
+    }
+
+    // 4. Crear la cita en la tabla appointments
+    const scheduledAt = formatDateForMySQLUTC(scheduledAtDateUTC);
     
     const [insertResult]: any = await pool.query(
       `INSERT INTO appointments (
@@ -1776,14 +2062,14 @@ router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Respo
         'Confirmada',
         priority_level || 'Normal',
         reason || 'Asignado desde cola de espera',
-        agenda.duration_minutes || 15,
+        durationMinutes,
         cups_id || null
       ]
     );
 
     const appointmentId = insertResult.insertId;
 
-    // 4. Actualizar cupos de la agenda
+    // 5. Actualizar cupos de la agenda
     await pool.query(
       `UPDATE availabilities 
        SET booked_slots = booked_slots + 1
@@ -1791,13 +2077,15 @@ router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Respo
       [availability_id]
     );
 
-    // 5. Eliminar de la lista de espera
+    // 6. Eliminar de la lista de espera
     await pool.query(
       'DELETE FROM appointments_waiting_list WHERE id = ?',
       [waiting_list_id]
     );
 
-    console.log(`[ASSIGN-FROM-QUEUE] Paciente ${waitingEntry[0].patient_name} asignado desde cola de espera. Cita ID: ${appointmentId}`);
+    const colombiaDate = new Date(scheduledAtDateUTC.getTime() - (5 * 60 * 60 * 1000));
+    const appointmentTimeColombia = `${String(colombiaDate.getUTCHours()).padStart(2, '0')}:${String(colombiaDate.getUTCMinutes()).padStart(2, '0')}`;
+    console.log(`[ASSIGN-FROM-QUEUE] Paciente ${waitingEntry[0].patient_name} asignado desde cola de espera. Cita ID: ${appointmentId} a las ${appointmentTimeColombia}`);
 
     return res.status(201).json({
       success: true,
@@ -1810,6 +2098,7 @@ router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Respo
         location_name: agenda.location_name,
         specialty_name: agenda.specialty_name,
         scheduled_at: scheduledAt,
+        appointment_time: appointmentTimeColombia,
         removed_from_queue: waiting_list_id
       }
     });

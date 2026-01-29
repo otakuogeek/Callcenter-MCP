@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -10,13 +10,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Edit, Trash2, MoreHorizontal } from "lucide-react";
+import { Edit, Trash2, MoreHorizontal, ShieldCheck } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { jwtDecode } from "jwt-decode";
 
 interface User {
   id: number;
@@ -36,8 +37,24 @@ interface UserTableProps {
 }
 
 const UserTable = ({ users, onEditUser, onDeleteUser }: UserTableProps) => {
+  const [currentUserRole, setCurrentUserRole] = useState<string>('');
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const decoded: any = jwtDecode(token);
+        setCurrentUserRole(decoded.role || '');
+      } catch (e) {
+        console.error('Error decoding token:', e);
+      }
+    }
+  }, []);
+
   const getRoleBadgeVariant = (role: string) => {
     switch (role) {
+      case "superadmin":
+        return "destructive";
       case "admin":
         return "destructive";
       case "supervisor":
@@ -53,6 +70,8 @@ const UserTable = ({ users, onEditUser, onDeleteUser }: UserTableProps) => {
 
   const getRoleLabel = (role: string) => {
     switch (role) {
+      case "superadmin":
+        return "Super Admin";
       case "admin":
         return "Administrador";
       case "agent":
@@ -91,12 +110,21 @@ const UserTable = ({ users, onEditUser, onDeleteUser }: UserTableProps) => {
               </TableCell>
             </TableRow>
           ) : (
-            users.map((user) => (
+            users.map((user) => {
+              const isSuperAdmin = user.role === 'superadmin';
+              const canEdit = currentUserRole === 'superadmin' || !isSuperAdmin;
+              
+              return (
               <TableRow key={user.id}>
-                <TableCell className="font-medium">{user.name}</TableCell>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    {user.name}
+                    {isSuperAdmin && <ShieldCheck className="h-4 w-4 text-orange-600" title="Super Administrador" />}
+                  </div>
+                </TableCell>
                 <TableCell>{user.email}</TableCell>
                 <TableCell>
-                  <Badge variant={getRoleBadgeVariant(user.role)}>
+                  <Badge variant={getRoleBadgeVariant(user.role)} className={isSuperAdmin ? "bg-gradient-to-r from-orange-500 to-red-600" : ""}>
                     {getRoleLabel(user.role)}
                   </Badge>
                 </TableCell>
@@ -116,13 +144,17 @@ const UserTable = ({ users, onEditUser, onDeleteUser }: UserTableProps) => {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => onEditUser(user)}>
+                      <DropdownMenuItem 
+                        onClick={() => onEditUser(user)}
+                        disabled={!canEdit}
+                      >
                         <Edit className="mr-2 h-4 w-4" />
                         Editar
                       </DropdownMenuItem>
                       <DropdownMenuItem 
                         onClick={() => onDeleteUser(user.id)}
                         className="text-red-600"
+                        disabled={!canEdit}
                       >
                         <Trash2 className="mr-2 h-4 w-4" />
                         Eliminar
@@ -131,7 +163,8 @@ const UserTable = ({ users, onEditUser, onDeleteUser }: UserTableProps) => {
                   </DropdownMenu>
                 </TableCell>
               </TableRow>
-            ))
+              );
+            })
           )}
         </TableBody>
       </Table>

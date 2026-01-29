@@ -14,6 +14,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { RefreshCw, Search, Filter, Download, Eye, Volume2, FileText } from 'lucide-react';
 import { callsApi, CallData, formatDuration, getPriorityColor, getStatusColor } from '@/services/callsApi';
 import { toast } from 'sonner';
+import { formatDateColombia, formatDateTimeColombia, formatMediumDateTimeColombia } from '@/utils/dateHelpers';
 
 const CallsHistory: React.FC = () => {
   const [calls, setCalls] = useState<CallData[]>([]);
@@ -67,7 +68,7 @@ const CallsHistory: React.FC = () => {
         call.status,
         call.priority,
         call.duration,
-        new Date(call.created_at).toLocaleDateString()
+        formatDateColombia(call.created_at)
       ].join(','))
     ].join('\n');
 
@@ -211,13 +212,7 @@ const CallsHistory: React.FC = () => {
                   </TableCell>
                   <TableCell>{formatDuration(call.duration)}</TableCell>
                   <TableCell>
-                    {new Date(call.created_at).toLocaleDateString('es-ES', {
-                      year: 'numeric',
-                      month: 'short',
-                      day: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit'
-                    })}
+                    {formatMediumDateTimeColombia(call.created_at)}
                   </TableCell>
                   <TableCell>
                     <div className="flex gap-1">
@@ -385,15 +380,15 @@ const CallsHistory: React.FC = () => {
                   <h3 className="font-semibold mb-2">Fechas</h3>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <p><span className="font-medium">Creada:</span> {new Date(selectedCall.created_at).toLocaleString('es-ES')}</p>
-                      <p><span className="font-medium">Actualizada:</span> {new Date(selectedCall.updated_at).toLocaleString('es-ES')}</p>
+                      <p><span className="font-medium">Creada:</span> {formatDateTimeColombia(selectedCall.created_at)}</p>
+                      <p><span className="font-medium">Actualizada:</span> {formatDateTimeColombia(selectedCall.updated_at)}</p>
                     </div>
                     <div>
                       {selectedCall.start_time && (
-                        <p><span className="font-medium">Inicio:</span> {new Date(selectedCall.start_time).toLocaleString('es-ES')}</p>
+                        <p><span className="font-medium">Inicio:</span> {formatDateTimeColombia(selectedCall.start_time)}</p>
                       )}
                       {selectedCall.end_time && (
-                        <p><span className="font-medium">Final:</span> {new Date(selectedCall.end_time).toLocaleString('es-ES')}</p>
+                        <p><span className="font-medium">Final:</span> {formatDateTimeColombia(selectedCall.end_time)}</p>
                       )}
                     </div>
                   </div>

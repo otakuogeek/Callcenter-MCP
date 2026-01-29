@@ -115,9 +115,17 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
     );
     
     if (patients[0].count > 0) {
+      // Obtener lista de EPS disponibles para transferir
+      const [availableEps]: any = await pool.query(
+        'SELECT id, name, code FROM eps WHERE id != ? AND status = "active" ORDER BY name',
+        [id]
+      );
+      
       return res.status(400).json({ 
         message: 'No se puede eliminar la EPS porque tiene pacientes asociados',
-        patients_count: patients[0].count
+        patients_count: patients[0].count,
+        can_transfer: true,
+        available_eps: availableEps
       });
     }
     
@@ -125,6 +133,57 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
     return res.status(204).send();
   } catch (e: any) {
     console.error('Error deleting EPS:', e);
+    return res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Endpoint para transferir pacientes de una EPS a otra
+router.post('/:id/transfer-patients', requireAuth, async (req: Request, res: Response) => {
+  const sourceEpsId = Number(req.params.id);
+  const { targetEpsId, deleteAfterTransfer } = req.body;
+  
+  if (Number.isNaN(sourceEpsId)) return res.status(400).json({ message: 'Invalid source EPS id' });
+  if (!targetEpsId || Number.isNaN(Number(targetEpsId))) {
+    return res.status(400).json({ message: 'Invalid target EPS id' });
+  }
+  
+  try {
+    // Verificar que la EPS destino exista
+    const [targetEps]: any = await pool.query('SELECT id, name FROM eps WHERE id = ?', [targetEpsId]);
+    if (targetEps.length === 0) {
+      return res.status(404).json({ message: 'EPS destino no encontrada' });
+    }
+    
+    // Contar pacientes a transferir
+    const [countResult]: any = await pool.query(
+      'SELECT COUNT(*) as count FROM patients WHERE insurance_eps_id = ?',
+      [sourceEpsId]
+    );
+    const patientsCount = countResult[0].count;
+    
+    if (patientsCount === 0) {
+      return res.status(400).json({ message: 'No hay pacientes para transferir' });
+    }
+    
+    // Transferir pacientes
+    await pool.query(
+      'UPDATE patients SET insurance_eps_id = ? WHERE insurance_eps_id = ?',
+      [targetEpsId, sourceEpsId]
+    );
+    
+    // Eliminar EPS origen si se solicita
+    if (deleteAfterTransfer) {
+      await pool.query('DELETE FROM eps WHERE id = ?', [sourceEpsId]);
+    }
+    
+    return res.json({
+      success: true,
+      message: `${patientsCount} pacientes transferidos exitosamente a ${targetEps[0].name}`,
+      transferred_count: patientsCount,
+      deleted: deleteAfterTransfer || false
+    });
+  } catch (e: any) {
+    console.error('Error transferring patients:', e);
     return res.status(500).json({ message: 'Server error' });
   }
 });

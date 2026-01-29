@@ -1,6 +1,7 @@
 import { elevenLabsService } from '../services/elevenLabsService';
 import pool from '../db/pool';
 import { RowDataPacket } from 'mysql2';
+import { formatFullDateColombia, formatTimeColombia, formatDateTimeColombia, COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 /**
  * Script para enviar llamadas de confirmación automática
@@ -75,24 +76,14 @@ async function sendAppointmentConfirmationCalls() {
       console.log(`\n📋 Procesando cita #${apt.appointment_id}:`);
       console.log(`   Paciente: ${apt.patient_name}`);
       console.log(`   Teléfono: ${apt.patient_phone}`);
-      console.log(`   Fecha: ${new Date(apt.scheduled_at).toLocaleString('es-CO')}`);
+      console.log(`   Fecha: ${formatDateTimeColombia(apt.scheduled_at)}`);
       console.log(`   Doctor: ${apt.doctor_name} - ${apt.specialty_name}`);
       console.log(`   Sede: ${apt.location_name}`);
 
       try {
-        // Formatear fecha y hora
-        const appointmentDate = new Date(apt.scheduled_at);
-        const dateStr = appointmentDate.toLocaleDateString('es-CO', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-        const timeStr = appointmentDate.toLocaleTimeString('es-CO', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true
-        });
+        // Formatear fecha y hora (usando timezone Colombia UTC-5)
+        const dateStr = formatFullDateColombia(apt.scheduled_at);
+        const timeStr = formatTimeColombia(apt.scheduled_at);
 
         // Iniciar llamada
         const result = await elevenLabsService.initiateCall({

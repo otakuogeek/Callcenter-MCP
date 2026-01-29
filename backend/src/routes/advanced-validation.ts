@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
+import { isWithinBusinessHours, isWeekendColombia, getCurrentTimeColombia, COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -317,12 +318,11 @@ async function validateBusinessRules(data: any): Promise<{
   const suggestions = [];
   let scorePenalty = 0;
 
-  // Validar horario comercial
-  const appointmentTime = new Date(data.scheduled_at);
-  const hour = appointmentTime.getHours();
-  const dayOfWeek = appointmentTime.getDay();
+  // Validar horario comercial (usando timezone Colombia UTC-5)
+  const isOutsideBusinessHours = !isWithinBusinessHours(data.scheduled_at, 7, 19);
+  const isWeekend = isWeekendColombia(data.scheduled_at);
 
-  if (hour < 7 || hour > 19) {
+  if (isOutsideBusinessHours) {
     warnings.push({
       type: 'business_hours',
       message: 'Cita fuera del horario comercial estándar (7:00 - 19:00)'
@@ -330,7 +330,7 @@ async function validateBusinessRules(data: any): Promise<{
     scorePenalty += 5;
   }
 
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
+  if (isWeekend) {
     warnings.push({
       type: 'weekend_appointment',
       message: 'Cita programada para fin de semana'
@@ -351,8 +351,9 @@ async function validateBusinessRules(data: any): Promise<{
     scorePenalty += 5;
   }
 
-  // Validar citas de último momento
-  const hoursUntilAppointment = (appointmentTime.getTime() - Date.now()) / (1000 * 60 * 60);
+  // Validar citas de último momento (usando fecha de la cita)
+  const appointmentDate = new Date(data.scheduled_at + 'Z'); // Interpretar como UTC
+  const hoursUntilAppointment = (appointmentDate.getTime() - Date.now()) / (1000 * 60 * 60);
   if (hoursUntilAppointment < 24 && data.priority_level !== 'Urgente') {
     warnings.push({
       type: 'last_minute',

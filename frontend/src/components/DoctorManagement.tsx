@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import { Checkbox } from "@/components/ui/checkbox";
 
-interface Doctor { id: number; name: string; email?: string; phone?: string; license_number: string; active: number | boolean; }
+interface Doctor { id: number; name: string; email?: string; phone?: string; license_number: string; active: number | boolean; role?: 'Doctor' | 'Enfermera'; }
 
 const DoctorManagement = () => {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
@@ -26,7 +26,7 @@ const DoctorManagement = () => {
 
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingDoctor, setEditingDoctor] = useState<Doctor | null>(null);
-  const [formData, setFormData] = useState({ name: "", email: "", phone: "", license_number: "" });
+  const [formData, setFormData] = useState({ name: "", email: "", phone: "", license_number: "", role: "Doctor" as "Doctor" | "Enfermera" });
   const { toast } = useToast();
 
   // Estado para el modal de contraseña
@@ -70,7 +70,7 @@ const DoctorManagement = () => {
         setDoctors(prev => [created, ...prev]);
         toast({ title: "Doctor creado", description: `Se agregó ${name}` });
       }
-      setFormData({ name: "", email: "", phone: "", license_number: "" });
+      setFormData({ name: "", email: "", phone: "", license_number: "", role: "Doctor" });
       setEditingDoctor(null);
       setSelectedSpecialties([]);
       setSelectedLocations([]);
@@ -84,9 +84,10 @@ const DoctorManagement = () => {
     setEditingDoctor(doctor);
     setFormData({
       name: doctor.name,
-      email: doctor.email,
-      phone: doctor.phone,
+      email: doctor.email || "",
+      phone: doctor.phone || "",
       license_number: String((doctor as any).license_number || ""),
+      role: doctor.role || "Doctor",
     });
     // Cargar especialidades del doctor para preseleccionar
     setLoadingSpecs(true);
@@ -221,7 +222,7 @@ const DoctorManagement = () => {
             <DialogTrigger asChild>
               <Button 
                 onClick={() => {
-                  setFormData({ name: "", email: "", phone: "", license_number: "" });
+                  setFormData({ name: "", email: "", phone: "", license_number: "", role: "Doctor" });
                   setEditingDoctor(null);
                   setSelectedSpecialties([]);
                   setSelectedLocations([]);
@@ -252,6 +253,21 @@ const DoctorManagement = () => {
                     onChange={(e) => setFormData({...formData, name: e.target.value})}
                     placeholder="Dr. Juan Pérez"
                   />
+                </div>
+                <div>
+                  <Label htmlFor="role">Rol / Cargo</Label>
+                  <Select
+                    value={formData.role}
+                    onValueChange={(value: "Doctor" | "Enfermera") => setFormData({...formData, role: value})}
+                  >
+                    <SelectTrigger id="role">
+                      <SelectValue placeholder="Selecciona el rol" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Doctor">Doctor</SelectItem>
+                      <SelectItem value="Enfermera">Enfermera</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div>
                   <Label htmlFor="email">Email</Label>
@@ -372,6 +388,9 @@ const DoctorManagement = () => {
                     <h3 className="font-semibold">{doctor.name}</h3>
                     <Badge variant={Number(doctor.active) ? "default" : "secondary"}>
                       {Number(doctor.active) ? "Activo" : "Inactivo"}
+                    </Badge>
+                    <Badge variant={doctor.role === 'Enfermera' ? "destructive" : "default"}>
+                      {doctor.role || 'Doctor'}
                     </Badge>
                     {Array.isArray((doctor as any).specialties) && (doctor as any).specialties.length > 0 ? (
                       <>

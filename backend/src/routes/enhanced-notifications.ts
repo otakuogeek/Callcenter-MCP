@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
+import { formatDateColombia, formatTimeColombia, COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -391,14 +392,11 @@ function generateNotificationContent(
 ): string {
   let content = template.message;
 
-  // Reemplazar variables
+  // Reemplazar variables (usando timezone Colombia UTC-5)
   const replacements = {
     patient_name: appointment.patient_name,
-    appointment_date: new Date(appointment.scheduled_at).toLocaleDateString('es-ES'),
-    appointment_time: new Date(appointment.scheduled_at).toLocaleTimeString('es-ES', {
-      hour: '2-digit',
-      minute: '2-digit'
-    }),
+    appointment_date: formatDateColombia(appointment.scheduled_at),
+    appointment_time: formatTimeColombia(appointment.scheduled_at),
     doctor_name: appointment.doctor_name,
     specialty_name: appointment.specialty_name,
     location_name: appointment.location_name

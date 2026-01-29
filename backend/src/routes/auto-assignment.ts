@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import pool from '../db/pool';
 import { requireAuth } from '../middleware/auth';
+import { COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -13,7 +14,7 @@ const autoAssignmentSchema = z.object({
   preferred_doctor_id: z.number().int().optional(),
   urgency_level: z.enum(['Baja', 'Media', 'Alta', 'Urgente']).default('Media'),
   appointment_type: z.enum(['Presencial', 'Telemedicina']).default('Presencial'),
-  duration_minutes: z.number().int().min(5).max(480).default(30),
+  duration_minutes: z.number().int().min(1).max(480).default(30),
   reason: z.string().optional(),
   insurance_type: z.string().optional(),
   notes: z.string().optional(),

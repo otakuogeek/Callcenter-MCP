@@ -9,6 +9,7 @@ import AddUserModal from "@/components/AddUserModal";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import EditUserModal from "@/components/EditUserModal";
+import { formatDateColombia } from "@/utils/dateHelpers";
 
 interface User { id: number; name: string; email: string; role: string; phone?: string | null; department?: string | null; status: string; created_at?: string }
 
@@ -103,7 +104,7 @@ const UsersTab = () => {
             <UserTable 
               users={filteredUsers.map(u => ({
                 ...u,
-                createdAt: (u as any).created_at ? new Date((u as any).created_at).toLocaleDateString() : '—',
+                createdAt: (u as any).created_at ? formatDateColombia((u as any).created_at) : '—',
                 phone: u.phone || undefined,
                 department: u.department || undefined,
               })) as any}

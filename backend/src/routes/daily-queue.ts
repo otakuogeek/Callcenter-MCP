@@ -8,6 +8,7 @@ import {
   getDailyAssignmentStats,
   processWaitingQueue 
 } from '../utils/dailyAssignment';
+import { formatDateForMySQLUTC, utcDateFromYMDAndUTCTime } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -282,6 +283,10 @@ router.post('/assign', requireAuth, async (req: Request, res: Response) => {
     }
 
     // Crear la cita
+    const availDateStr = typeof avail.date === 'string'
+      ? String(avail.date).split('T')[0].split(' ')[0]
+      : new Date(avail.date).toISOString().slice(0, 10);
+    const scheduledAtUTC = formatDateForMySQLUTC(utcDateFromYMDAndUTCTime(availDateStr, avail.start_time));
     const [appointmentResult] = await pool.query(`
       INSERT INTO appointments (
         patient_id, 
@@ -289,8 +294,8 @@ router.post('/assign', requireAuth, async (req: Request, res: Response) => {
         status, 
         scheduled_at,
         created_at
-      ) VALUES (?, ?, 'Programada', NOW(), NOW())
-    `, [queue.patient_id, data.availability_id]);
+      ) VALUES (?, ?, 'Pendiente', ?, NOW())
+    `, [queue.patient_id, data.availability_id, scheduledAtUTC]);
 
     const appointmentId = (appointmentResult as any).insertId;
 

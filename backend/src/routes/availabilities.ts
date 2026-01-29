@@ -14,6 +14,7 @@ import {
   incrementBookedSlots,
   decrementBookedSlots
 } from '../utils/availabilitySync';
+import { formatDateForMySQLUTC, utcDateFromYMDAndColombiaTime, utcDateFromYMDAndUTCTime } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -26,9 +27,9 @@ const schema = z.object({
   start_time: z.string(),
   end_time: z.string(),
   capacity: z.number().int().min(1).default(1),
-  duration_minutes: z.number().int().min(5).max(240).optional().default(30),
+  duration_minutes: z.number().int().min(1).max(240).optional().default(30),
   booked_slots: z.number().int().min(0).optional(), // Para sincronización automática
-  status: z.enum(['active','cancelled','completed']).default('active'),
+  status: z.enum(['active','cancelled','completed','Activa','Cancelada','Completa']).default('Activa'),
   notes: z.string().optional().nullable(),
   auto_preallocate: z.boolean().optional(),
   preallocation_publish_date: z.string().regex(/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/).optional(),
@@ -42,6 +43,8 @@ const schema = z.object({
 router.get('/', requireAuth, async (req: Request, res: Response) => {
   const date = String(req.query.date || '');
   const specialtyId = req.query.specialty_id ? Number(req.query.specialty_id) : null;
+  const includePast = req.query.include_past === 'true' || req.query.include_past === '1';
+  const includeAllStatus = req.query.include_all_status === 'true' || req.query.include_all_status === '1';
   
   let whereClause = '';
   let params: any[] = [];
@@ -50,6 +53,9 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     if (date) {
       whereClause = 'WHERE a.date = ?';
       params.push(date);
+    } else if (includePast) {
+      // Si se solicita incluir pasadas, no filtrar por fecha
+      whereClause = 'WHERE 1=1';
     } else {
       whereClause = 'WHERE a.date >= CURDATE()';
     }
@@ -60,10 +66,19 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       params.push(specialtyId);
     }
     
-    // Mostrar solo agendas activas (no canceladas, no pausadas)
-    whereClause += ' AND a.status IN ("Activa", "Completa") AND (a.is_paused = 0 OR a.is_paused IS NULL)';
+    // Filtrar por status solo si no se solicita incluir todos los status
+    if (includeAllStatus) {
+      // Mostrar todas las agendas sin importar el status
+      whereClause += ' AND (a.is_paused = 0 OR a.is_paused IS NULL OR a.is_paused = 1)';
+    } else {
+      // Mostrar solo agendas activas (no canceladas, no pausadas)
+      whereClause += ' AND a.status IN ("Activa", "Completa") AND (a.is_paused = 0 OR a.is_paused IS NULL)';
+    }
     
-    console.log('[AVAILABILITIES] Query params:', { date, specialtyId, whereClause, params });
+    console.log('[AVAILABILITIES] Query params:', { date, specialtyId, includePast, includeAllStatus, whereClause, params });
+    
+    // Determinar orden: si include_past, ordenar por cercanía a hoy (desc para ver recientes primero)
+    const orderDirection = includePast ? 'DESC' : 'ASC';
     
     const [rows] = await pool.query(
       `SELECT a.id,
@@ -88,8 +103,8 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
        JOIN specialties s ON s.id = a.specialty_id  
        JOIN locations l ON l.id = a.location_id
        ${whereClause}
-       ORDER BY a.date ASC, a.start_time ASC 
-       LIMIT 200`,
+       ORDER BY a.date ${orderDirection}, a.start_time ASC 
+       LIMIT 500`,
       params
     );
     
@@ -352,8 +367,10 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   
   // Si se está actualizando la fecha, validar que no sea fin de semana
   if (d.date) {
-    const appointmentDate = new Date(d.date + 'T12:00:00');
-    const dayOfWeek = appointmentDate.getDay(); // 0 = Domingo, 6 = Sábado
+    // 🔥 IMPORTANTE: Crear fecha en formato UTC para evitar problemas de zona horaria
+    // La fecha viene como "YYYY-MM-DD" del frontend y debe mantenerse exacta
+    const appointmentDate = new Date(d.date + 'T12:00:00Z'); // Agregar T12:00:00Z para interpretarla en UTC
+    const dayOfWeek = appointmentDate.getUTCDay(); // Usar getUTCDay() en vez de getDay()
     
     if (dayOfWeek === 0 || dayOfWeek === 6) {
       return res.status(400).json({ 
@@ -368,8 +385,26 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     if (d.status === 'cancelled') {
       console.log(`🔄 Cancelando agenda ${id} - Procesando citas asociadas...`);
       
-      // 1. Obtener citas Confirmadas/Pendientes (se moverán a lista de espera)
-      const [activeCitas] = await pool.query(`
+      // 1. Verificar si hay citas Confirmadas - NO se permite cancelar hasta que se cancelen internamente
+      const [confirmedCitas] = await pool.query(`
+        SELECT COUNT(*) as count
+        FROM appointments a
+        WHERE a.availability_id = ? 
+          AND a.status = 'Confirmada'
+      `, [id]) as any;
+
+      const confirmedCount = confirmedCitas[0]?.count || 0;
+      if (confirmedCount > 0) {
+        return res.status(400).json({ 
+          success: false,
+          message: `No se puede cancelar la agenda porque hay ${confirmedCount} cita(s) confirmada(s). Por favor, cancele todas las citas confirmadas primero.`,
+          error: 'confirmed_appointments_exist',
+          confirmedAppointments: confirmedCount
+        });
+      }
+
+      // 2. Obtener citas Pendientes (se moverán a lista de espera y se marcarán como Canceladas)
+      const [pendingCitas] = await pool.query(`
         SELECT 
           a.id,
           a.patient_id,
@@ -378,14 +413,15 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
           a.status
         FROM appointments a
         WHERE a.availability_id = ? 
-          AND a.status IN ('Confirmada', 'Pendiente')
+          AND a.status = 'Pendiente'
       `, [id]) as any;
 
-      // 2. Mover citas activas a la lista de espera con call_type='reagendar'
-      if (Array.isArray(activeCitas) && activeCitas.length > 0) {
-        console.log(`📋 Moviendo ${activeCitas.length} citas activas a lista de espera...`);
+      // 3. Mover citas pendientes a la lista de espera con call_type='reagendar' y marcarlas como Canceladas
+      if (Array.isArray(pendingCitas) && pendingCitas.length > 0) {
+        console.log(`📋 Procesando ${pendingCitas.length} citas pendientes...`);
         
-        for (const apt of activeCitas) {
+        for (const apt of pendingCitas) {
+          // Insertar en lista de espera
           await pool.query(`
             INSERT INTO appointments_waiting_list 
             (patient_id, availability_id, scheduled_date, reason, priority_level, call_type, status)
@@ -396,28 +432,32 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
             apt.scheduled_at,
             apt.reason || 'Reagendamiento por cancelación de agenda'
           ]);
+
+          // Cambiar estado a Cancelada en appointments (NO eliminar)
+          await pool.query(`
+            UPDATE appointments 
+            SET status = 'Cancelada', 
+                updated_at = NOW()
+            WHERE id = ?
+          `, [apt.id]);
         }
 
-        // Eliminar las citas activas de appointments
-        await pool.query(`
-          DELETE FROM appointments 
-          WHERE availability_id = ? AND status IN ('Confirmada', 'Pendiente')
-        `, [id]);
-
-        console.log(`✅ ${activeCitas.length} citas activas movidas a lista de espera y eliminadas de appointments`);
+        console.log(`✅ ${pendingCitas.length} citas pendientes movidas a lista de espera y marcadas como Canceladas`);
       } else {
-        console.log(`ℹ️ No hay citas activas para mover a lista de espera`);
+        console.log(`ℹ️ No hay citas pendientes para procesar`);
       }
 
-      // 3. Eliminar citas canceladas directamente (sin mover a cola)
-      const [cancelledResult] = await pool.query(`
-        DELETE FROM appointments 
-        WHERE availability_id = ? AND status = 'Cancelada'
+      // 4. Las citas ya Canceladas se mantienen en appointments con su estado
+      const [alreadyCancelledCitas] = await pool.query(`
+        SELECT COUNT(*) as count
+        FROM appointments a
+        WHERE a.availability_id = ? 
+          AND a.status = 'Cancelada'
       `, [id]) as any;
 
-      const cancelledCount = cancelledResult?.affectedRows || 0;
-      if (cancelledCount > 0) {
-        console.log(`🗑️ ${cancelledCount} citas canceladas eliminadas directamente`);
+      const alreadyCancelledCount = alreadyCancelledCitas[0]?.count || 0;
+      if (alreadyCancelledCount > 0) {
+        console.log(`ℹ️ ${alreadyCancelledCount} citas ya canceladas se mantienen en appointments`);
       }
     }
 
@@ -440,7 +480,11 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     if (!fields.length) return res.status(400).json({ message: 'No changes' });
     values.push(id);
     
-    console.log(`📝 Actualizando availability ${id} con valores:`, values);
+    console.log(`📝 Actualizando availability ${id}`);
+    console.log(`📅 Fecha recibida del frontend:`, d.date, `(tipo: ${typeof d.date})`);
+    console.log(`📋 Campos a actualizar:`, fields);
+    console.log(`📊 Valores:`, values);
+    
     await pool.query(`UPDATE availabilities SET ${fields.join(', ')} WHERE id = ?`, values);
     return res.json({ id, ...d });
   } catch (error: any) {
@@ -477,7 +521,7 @@ const batchSchema = z.object({
   start_time: z.string(),
   end_time: z.string(),
   capacity: z.number().int().min(1).default(1),
-  slot_duration_minutes: z.number().int().min(15).max(120).default(30),
+  slot_duration_minutes: z.number().int().min(1).max(120).default(30),
   exclude_weekends: z.boolean().default(true),
   exclude_holidays: z.boolean().default(true),
   batch_id: z.string().optional(),
@@ -843,6 +887,123 @@ router.post('/:id/regenerate-distribution', requireAuth, async (req: Request, re
   } catch (error: any) {
     return res.status(400).json({ 
       message: 'Error al regenerar distribución', 
+      error: error.message 
+    });
+  }
+});
+
+// Endpoint para obtener las citas agendadas de una disponibilidad específica
+router.get('/:id/appointments', requireAuth, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid availability id' });
+
+  try {
+    // Obtener información de la disponibilidad
+    const [availabilityRows] = await pool.query<any[]>(`
+      SELECT 
+        a.id,
+        a.date,
+        a.start_time,
+        a.end_time,
+        a.capacity,
+        a.booked_slots,
+        a.status,
+        d.name AS doctor_name,
+        s.name AS specialty_name,
+        l.name AS location_name
+      FROM availabilities a
+      JOIN doctors d ON d.id = a.doctor_id
+      JOIN specialties s ON s.id = a.specialty_id
+      LEFT JOIN locations l ON l.id = a.location_id
+      WHERE a.id = ?
+    `, [id]);
+
+    if (!availabilityRows || availabilityRows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Disponibilidad no encontrada' });
+    }
+
+    const availability = availabilityRows[0];
+
+    // Obtener las citas agendadas para esta disponibilidad
+    const [appointments] = await pool.query<any[]>(`
+      SELECT 
+        ap.id AS appointment_id,
+        ap.scheduled_at,
+        ap.status,
+        ap.reason,
+        ap.duration_minutes,
+        ap.created_at,
+        p.id AS patient_id,
+        p.name AS patient_name,
+        p.document_type,
+        p.document,
+        p.phone
+      FROM appointments ap
+      JOIN patients p ON p.id = ap.patient_id
+      WHERE ap.availability_id = ?
+      ORDER BY ap.scheduled_at ASC
+    `, [id]);
+
+    // Contar por estado
+    const statusCounts = appointments.reduce((acc: any, apt: any) => {
+      acc[apt.status] = (acc[apt.status] || 0) + 1;
+      return acc;
+    }, {});
+
+    const confirmedCount = appointments.filter((a: any) => 
+      !['Cancelada', 'No asistió'].includes(a.status)
+    ).length;
+
+    return res.json({
+      success: true,
+      data: {
+        availability: {
+          id: availability.id,
+          date: availability.date,
+          startTime: availability.start_time,
+          endTime: availability.end_time,
+          capacity: availability.capacity,
+          bookedSlots: availability.booked_slots,
+          status: availability.status,
+          doctorName: availability.doctor_name,
+          specialtyName: availability.specialty_name,
+          locationName: availability.location_name
+        },
+        summary: {
+          totalAppointments: appointments.length,
+          confirmedAppointments: confirmedCount,
+          cancelledAppointments: statusCounts['Cancelada'] || 0,
+          noShowAppointments: statusCounts['No asistió'] || 0,
+          capacity: availability.capacity,
+          availableSlots: Math.max(0, availability.capacity - confirmedCount),
+          occupancyRate: availability.capacity > 0 
+            ? Math.round((confirmedCount / availability.capacity) * 100) 
+            : 0,
+          isOverbooked: confirmedCount > availability.capacity
+        },
+        statusBreakdown: statusCounts,
+        appointments: appointments.map((apt: any) => ({
+          id: apt.appointment_id,
+          scheduledAt: apt.scheduled_at,
+          status: apt.status,
+          reason: apt.reason,
+          durationMinutes: apt.duration_minutes,
+          createdAt: apt.created_at,
+          patient: {
+            id: apt.patient_id,
+            name: apt.patient_name,
+            documentType: apt.document_type,
+            document: apt.document,
+            phone: apt.phone
+          }
+        }))
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching availability appointments:', error);
+    return res.status(500).json({ 
+      success: false,
+      message: 'Error al obtener las citas de la disponibilidad', 
       error: error.message 
     });
   }
@@ -1642,7 +1803,7 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
         av.location_id,
         av.specialty_id,
         av.doctor_id,
-        av.date,
+        DATE_FORMAT(av.date, '%Y-%m-%d') as date,
         av.start_time,
         av.end_time,
         av.capacity,
@@ -1695,9 +1856,9 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
     }
 
     // Calcular hora de inicio base
-    const fechaFormateada = new Date(availability.date).toISOString().split('T')[0];
-    const fechaHoraInicio = `${fechaFormateada}T${availability.start_time}`;
-    let currentTime = new Date(fechaHoraInicio);
+    const fechaFormateada = String(availability.date).split('T')[0].split(' ')[0];
+    const fechaHoraInicio = `${fechaFormateada} ${availability.start_time}`;
+    let currentTime = utcDateFromYMDAndUTCTime(fechaFormateada, availability.start_time);
 
     console.log('🔧 Sincronización de horas iniciada:');
     console.log('  - Availability ID:', availabilityId);
@@ -1716,7 +1877,7 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
       });
     }
 
-    const endTimeDate = new Date(`${fechaFormateada}T${availability.end_time}`);
+    const endTimeDate = utcDateFromYMDAndUTCTime(fechaFormateada, availability.end_time);
     let updatedCount = 0;
     const updates: any[] = [];
 
@@ -1731,7 +1892,7 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
       }
       
       // Formatear la nueva hora para MySQL datetime
-      const newScheduledAt = currentTime.toISOString().slice(0, 19).replace('T', ' ');
+      const newScheduledAt = formatDateForMySQLUTC(currentTime);
       const oldScheduledAt = new Date(apt.scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
       
       console.log(`  📅 Cita ${i + 1}: ${apt.patient_name}`);
@@ -1788,6 +1949,166 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
   } catch (error: any) {
     await connection.rollback();
     console.error('Error sincronizando horas de citas:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al sincronizar horas',
+      error: error.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
+// Endpoint para sincronizar horas de TODAS las agendas activas (hoy y futuras)
+router.post('/sync-all-appointment-times', requireAuth, async (req: Request, res: Response) => {
+  const connection = await pool.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    // Obtener TODAS las availabilities activas de hoy en adelante
+    const today = new Date().toISOString().split('T')[0];
+    
+    const [availabilities] = await connection.query(`
+      SELECT 
+        av.id,
+        av.location_id,
+        av.specialty_id,
+        av.doctor_id,
+        DATE_FORMAT(av.date, '%Y-%m-%d') as date,
+        av.start_time,
+        av.end_time,
+        av.capacity,
+        av.booked_slots,
+        av.duration_minutes,
+        av.break_between_slots,
+        l.name as location_name,
+        s.name as specialty_name,
+        d.name as doctor_name
+      FROM availabilities av
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN doctors d ON av.doctor_id = d.id
+      WHERE DATE(av.date) >= DATE(?)
+        AND av.status = 'Activa'
+      ORDER BY av.date, av.start_time, av.id
+    `, [today]);
+
+    if (!Array.isArray(availabilities) || availabilities.length === 0) {
+      await connection.rollback();
+      return res.json({
+        success: true,
+        message: 'No hay agendas activas para sincronizar',
+        totalAgendas: 0,
+        totalUpdated: 0
+      });
+    }
+
+    console.log(`🔧 Sincronización GLOBAL de horas iniciada`);
+    console.log(`  - Desde fecha: ${today}`);
+    console.log(`  - Total agendas a procesar: ${availabilities.length}`);
+
+    let totalUpdated = 0;
+    let totalAgendas = 0;
+    const agendaResults: any[] = [];
+
+    // Procesar cada availability
+    for (const availability of availabilities as any[]) {
+      // Obtener todas las citas confirmadas y pendientes de esta availability
+      const [appointments] = await connection.query(`
+        SELECT 
+          a.id,
+          a.patient_id,
+          a.scheduled_at,
+          a.duration_minutes,
+          a.status,
+          p.name as patient_name
+        FROM appointments a
+        LEFT JOIN patients p ON a.patient_id = p.id
+        WHERE a.availability_id = ?
+          AND a.status IN ('Pendiente', 'Confirmada')
+        ORDER BY a.scheduled_at, a.id
+      `, [availability.id]);
+
+      if (!Array.isArray(appointments) || appointments.length === 0) {
+        continue; // Saltar agendas sin citas
+      }
+
+      totalAgendas++;
+
+      // Calcular hora de inicio base
+      const fechaFormateada = String(availability.date).split('T')[0].split(' ')[0];
+      const fechaHoraInicio = `${fechaFormateada} ${availability.start_time}`;
+      let currentTime = utcDateFromYMDAndUTCTime(fechaFormateada, availability.start_time);
+
+      if (isNaN(currentTime.getTime())) {
+        console.log(`  ⚠️ Fecha/hora inválida para agenda ${availability.id}: ${fechaHoraInicio}`);
+        continue;
+      }
+
+      const endTimeDate = utcDateFromYMDAndUTCTime(fechaFormateada, availability.end_time);
+      let updatedInAgenda = 0;
+
+      console.log(`  📋 Procesando agenda: ${availability.doctor_name} - ${availability.specialty_name}`);
+      console.log(`     Citas a reorganizar: ${(appointments as any[]).length}`);
+
+      // Reorganizar cada cita secuencialmente
+      for (let i = 0; i < (appointments as any[]).length; i++) {
+        const apt = (appointments as any[])[i];
+        
+        // Verificar si la cita excede el end_time de la availability
+        if (currentTime >= endTimeDate) {
+          console.log(`     ⚠️ Cita ${i + 1} excede el horario de fin`);
+          break;
+        }
+        
+        // Formatear la nueva hora para MySQL datetime
+        const newScheduledAt = formatDateForMySQLUTC(currentTime);
+        
+        // Actualizar la cita
+        await connection.execute(
+          `UPDATE appointments 
+           SET scheduled_at = ? 
+           WHERE id = ?`,
+          [newScheduledAt, apt.id]
+        );
+
+        updatedInAgenda++;
+        totalUpdated++;
+
+        // Calcular siguiente hora: sumar duration_minutes + break_between_slots
+        const totalMinutes = availability.duration_minutes + (availability.break_between_slots || 0);
+        currentTime = new Date(currentTime.getTime() + (totalMinutes * 60 * 1000));
+      }
+
+      agendaResults.push({
+        id: availability.id,
+        doctor: availability.doctor_name,
+        specialty: availability.specialty_name,
+        location: availability.location_name,
+        updated: updatedInAgenda
+      });
+
+      console.log(`     ✅ ${updatedInAgenda} citas sincronizadas`);
+    }
+
+    console.log(`✅ Sincronización GLOBAL completada:`);
+    console.log(`   - Agendas procesadas: ${totalAgendas}`);
+    console.log(`   - Total citas actualizadas: ${totalUpdated}`);
+
+    await connection.commit();
+
+    return res.json({
+      success: true,
+      message: `${totalUpdated} citas sincronizadas en ${totalAgendas} agendas`,
+      totalAgendas,
+      totalUpdated,
+      agendas: agendaResults
+    });
+
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error sincronizando horas globalmente:', error);
     return res.status(500).json({
       success: false,
       message: 'Error al sincronizar horas',
@@ -1864,13 +2185,24 @@ router.get('/:id/available-for-reassignment', requireAuth, async (req: Request, 
       LIMIT 50
     `, [original.specialty_id, availabilityId]);
 
+    // Calcular los time slots disponibles para cada agenda
+    const agendasWithTimeSlots = await Promise.all(
+      (availableRows as any[]).map(async (agenda) => {
+        const availableTimeSlots = await calculateAvailableTimeSlots(agenda);
+        return {
+          ...agenda,
+          available_time_slots: availableTimeSlots
+        };
+      })
+    );
+
     return res.json({
       success: true,
       data: {
         original_availability_id: availabilityId,
         specialty_id: original.specialty_id,
         specialty_name: original.specialty_name,
-        available_agendas: availableRows
+        available_agendas: agendasWithTimeSlots
       }
     });
 
@@ -1895,9 +2227,9 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
   const connection = await pool.getConnection();
   
   try {
-    const { appointment_id, new_availability_id } = req.body;
+    const { appointment_id, new_availability_id, selected_time, transfer_reason } = req.body;
 
-    console.log('[REASSIGN] Inicio de reasignación:', { appointment_id, new_availability_id });
+    console.log('[REASSIGN] Inicio de reasignación:', { appointment_id, new_availability_id, selected_time, transfer_reason });
 
     if (!appointment_id || !new_availability_id) {
       console.log('[REASSIGN] Error: Faltan parámetros requeridos');
@@ -1959,7 +2291,7 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
         av.location_id,
         av.specialty_id,
         av.doctor_id,
-        av.date,
+        DATE_FORMAT(av.date, '%Y-%m-%d') as date,
         av.start_time,
         av.end_time,
         av.capacity,
@@ -2004,38 +2336,51 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
       });
     }
 
-    // Calcular la nueva hora de la cita (primer slot disponible en la nueva agenda)
-    const fechaFormateada = new Date(newAvail.date).toISOString().split('T')[0];
-    const fechaHoraInicio = `${fechaFormateada}T${newAvail.start_time}`;
-    let newScheduledTime = new Date(fechaHoraInicio);
+    // Calcular la nueva hora de la cita
+    const fechaFormateada = String(newAvail.date).split('T')[0].split(' ')[0];
+    let newScheduledAtUTC: string;
 
-    // Obtener las citas ya agendadas en la nueva availability para encontrar el primer slot libre
-    const [existingAppointments] = await connection.query(`
-      SELECT scheduled_at
-      FROM appointments
-      WHERE availability_id = ?
-        AND status IN ('Confirmada', 'Pendiente')
-      ORDER BY scheduled_at ASC
-    `, [new_availability_id]);
-
-    // Calcular el primer slot disponible
-    if (Array.isArray(existingAppointments) && existingAppointments.length > 0) {
-      const durationMinutes = newAvail.duration_minutes || 15;
-      let currentSlot = newScheduledTime;
+    // Si se proporcionó una hora específica, usarla
+    if (selected_time) {
+      console.log('[REASSIGN] Usando hora específica seleccionada (Colombia):', selected_time);
+      const utcDate = utcDateFromYMDAndColombiaTime(fechaFormateada, selected_time);
+      newScheduledAtUTC = formatDateForMySQLUTC(utcDate);
       
-      for (const existingApt of existingAppointments as any[]) {
-        const existingTime = new Date(existingApt.scheduled_at);
+      console.log('[REASSIGN] Hora convertida a UTC:', newScheduledAtUTC);
+    } else {
+      // Si no se proporcionó hora específica, usar start_time que ya está en UTC
+      let newScheduledTime = utcDateFromYMDAndUTCTime(fechaFormateada, newAvail.start_time);
+
+      // Obtener las citas ya agendadas en la nueva availability para encontrar el primer slot libre
+      const [existingAppointments] = await connection.query(`
+        SELECT scheduled_at
+        FROM appointments
+        WHERE availability_id = ?
+          AND status IN ('Confirmada', 'Pendiente')
+        ORDER BY scheduled_at ASC
+      `, [new_availability_id]);
+
+      // Calcular el primer slot disponible
+      if (Array.isArray(existingAppointments) && existingAppointments.length > 0) {
+        const durationMinutes = newAvail.duration_minutes || 15;
+        let currentSlot = newScheduledTime;
         
-        // Si el slot actual está ocupado, avanzar al siguiente
-        if (Math.abs(currentSlot.getTime() - existingTime.getTime()) < 60000) { // Menos de 1 minuto de diferencia
-          currentSlot = new Date(currentSlot.getTime() + (durationMinutes * 60 * 1000));
+        for (const existingApt of existingAppointments as any[]) {
+          const existingTime = new Date(existingApt.scheduled_at);
+          
+          // Si el slot actual está ocupado, avanzar al siguiente
+          if (Math.abs(currentSlot.getTime() - existingTime.getTime()) < 60000) { // Menos de 1 minuto de diferencia
+            currentSlot = new Date(currentSlot.getTime() + (durationMinutes * 60 * 1000));
+          }
         }
+        
+        newScheduledTime = currentSlot;
       }
       
-      newScheduledTime = currentSlot;
+      newScheduledAtUTC = formatDateForMySQLUTC(newScheduledTime);
     }
 
-    const newScheduledAt = newScheduledTime.toISOString().slice(0, 19).replace('T', ' ');
+    console.log('[REASSIGN] Guardando scheduled_at (UTC):', newScheduledAtUTC);
 
     // Actualizar la cita con la nueva availability, doctor, location, specialty y hora
     await connection.execute(
@@ -2052,7 +2397,7 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
         newAvail.doctor_id,
         newAvail.location_id,
         newAvail.specialty_id,
-        newScheduledAt,
+        newScheduledAtUTC,
         newAvail.duration_minutes || appointment.duration_minutes,
         appointment_id
       ]
@@ -2076,6 +2421,11 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
 
     await connection.commit();
 
+    // Calcular hora Colombia para respuesta (restar 5 horas del UTC guardado)
+    const scheduledUTCDate = new Date(newScheduledAtUTC.replace(' ', 'T') + 'Z');
+    const colombiaTime = new Date(scheduledUTCDate.getTime() - (5 * 60 * 60 * 1000));
+    const newTimeForDisplay = colombiaTime.toISOString().slice(11, 16); // HH:mm
+
     return res.json({
       success: true,
       message: `Cita de ${appointment.patient_name} reasignada exitosamente`,
@@ -2087,8 +2437,8 @@ router.post('/reassign-appointment', requireAuth, async (req: Request, res: Resp
         new_doctor: newAvail.doctor_name,
         new_location: newAvail.location_name,
         new_date: fechaFormateada,
-        new_time: newScheduledTime.toISOString().slice(11, 19),
-        new_scheduled_at: newScheduledAt
+        new_time: newTimeForDisplay,
+        new_scheduled_at: newScheduledAtUTC
       }
     });
 
@@ -2617,8 +2967,10 @@ router.post('/:id/toggle-pause', requireAuth, async (req: Request, res: Response
 // Función auxiliar para calcular slots de tiempo disponibles
 async function calculateAvailableTimeSlots(availability: any): Promise<string[]> {
   try {
-    const startTime = availability.start_time; // formato HH:mm:ss
-    const endTime = availability.end_time;     // formato HH:mm:ss
+    // IMPORTANTE: start_time y end_time están almacenados en UTC en la base de datos
+    // Debemos convertirlos a hora Colombia (UTC-5) para que coincidan con las citas convertidas
+    const startTimeUTC = availability.start_time; // formato HH:mm:ss (hora UTC)
+    const endTimeUTC = availability.end_time;     // formato HH:mm:ss (hora UTC)
     const duration = availability.duration_minutes || availability.default_duration_minutes || 15;
     const availabilityId = availability.id;
     const date = availability.date;
@@ -2635,35 +2987,42 @@ async function calculateAvailableTimeSlots(availability: any): Promise<string[]>
       return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
     };
 
-    const startMinutes = parseTimeToMinutes(startTime);
-    const endMinutes = parseTimeToMinutes(endTime);
+    // Convertir de UTC a hora Colombia (restar 5 horas = 300 minutos)
+    const UTC_OFFSET_MINUTES = 5 * 60; // 5 horas = 300 minutos
+    let startMinutes = parseTimeToMinutes(startTimeUTC) - UTC_OFFSET_MINUTES;
+    let endMinutes = parseTimeToMinutes(endTimeUTC) - UTC_OFFSET_MINUTES;
     
-    // Generar todos los slots posibles
+    // Manejar caso donde las horas se vuelven negativas (cruzando medianoche)
+    if (startMinutes < 0) startMinutes += 24 * 60;
+    if (endMinutes < 0) endMinutes += 24 * 60;
+    
+    // Generar todos los slots posibles en hora Colombia
     const allSlots: string[] = [];
     for (let time = startMinutes; time + duration <= endMinutes; time += duration) {
       allSlots.push(formatMinutesToTime(time));
     }
 
     // Consultar citas ya agendadas para esta agenda y fecha
+    // scheduled_at está en UTC, convertir a UTC-5 (Colombia) para comparar
     const [bookedAppointments] = await pool.query(
-      `SELECT TIME_FORMAT(scheduled_at, '%H:%i') AS booked_time 
+      `SELECT TIME_FORMAT(CONVERT_TZ(scheduled_at, '+00:00', '-05:00'), '%H:%i') AS booked_time 
        FROM appointments 
        WHERE availability_id = ? 
-         AND DATE(scheduled_at) = ? 
+         AND DATE(CONVERT_TZ(scheduled_at, '+00:00', '-05:00')) = ? 
          AND status NOT IN ('Cancelada', 'No Show')
        ORDER BY scheduled_at`,
       [availabilityId, date]
     );
 
-    // Crear set de horas ocupadas
+    // Crear set de horas ocupadas (ya en hora local Colombia)
     const bookedTimes = new Set(
       (bookedAppointments as any[]).map(app => app.booked_time)
     );
 
-    // Filtrar slots disponibles
+    // Filtrar slots disponibles (ahora ambos están en hora Colombia)
     const availableSlots = allSlots.filter(slot => !bookedTimes.has(slot));
     
-    console.log(`[CALCULATE-TIME-SLOTS] Agenda ${availabilityId}: ${availableSlots.length}/${allSlots.length} slots disponibles`);
+    console.log(`[CALCULATE-TIME-SLOTS] Agenda ${availabilityId}: UTC(${startTimeUTC}-${endTimeUTC}) -> COL(${formatMinutesToTime(startMinutes)}-${formatMinutesToTime(endMinutes)}). Slots: ${availableSlots.length}/${allSlots.length} disponibles. Ocupados: ${Array.from(bookedTimes).join(', ')}`);
     return availableSlots;
   } catch (error) {
     console.error('[CALCULATE-TIME-SLOTS] Error:', error);

@@ -24,6 +24,9 @@ interface AvailableAgenda {
   location_name: string;
   specialty_name: string;
   doctor_name: string;
+  // Campos adicionales para horarios específicos
+  available_time_slots?: string[];
+  next_available_times?: string[];
 }
 
 interface AssignFromQueueModalProps {
@@ -56,12 +59,18 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [availableAgendas, setAvailableAgendas] = useState<AvailableAgenda[]>([]);
   const [selectedAgendaId, setSelectedAgendaId] = useState<number | null>(null);
+  const [selectedTime, setSelectedTime] = useState<string>('');
+  const [showTimeSelector, setShowTimeSelector] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
     if (isOpen && specialtyId) {
       loadAvailableAgendas();
+      // Resetear selecciones al abrir
+      setSelectedAgendaId(null);
+      setSelectedTime('');
+      setShowTimeSelector(false);
     }
   }, [isOpen, specialtyId]);
 
@@ -96,6 +105,20 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
     }
   };
 
+  const handleSelectAgenda = (agendaId: number) => {
+    setSelectedAgendaId(agendaId);
+    const agenda = availableAgendas.find(a => a.id === agendaId);
+    
+    // Si la agenda tiene horarios específicos disponibles, mostrar selector
+    if (agenda && agenda.available_time_slots && agenda.available_time_slots.length > 0) {
+      setShowTimeSelector(true);
+      setSelectedTime(''); // Resetear hora seleccionada
+    } else {
+      setShowTimeSelector(false);
+      setSelectedTime(''); // No hay horarios específicos
+    }
+  };
+
   const handleAssign = async () => {
     if (!selectedAgendaId) {
       toast({
@@ -109,7 +132,18 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
     const selectedAgenda = availableAgendas.find(a => a.id === selectedAgendaId);
     if (!selectedAgenda) return;
 
-    const confirmMessage = `¿Está seguro de asignar a ${patientName} desde la cola de espera?\n\nAgenda seleccionada:\n• Doctor: ${selectedAgenda.doctor_name}\n• Sede: ${selectedAgenda.location_name}\n• Fecha: ${format(new Date(selectedAgenda.date + 'T12:00:00'), "d 'de' MMMM 'de' yyyy", { locale: es })}\n• Horario: ${selectedAgenda.start_time} - ${selectedAgenda.end_time}\n\nEsto eliminará al paciente de la cola de espera y creará una cita confirmada.`;
+    // Validar que si hay horarios específicos, se haya seleccionado uno
+    if (selectedAgenda.available_time_slots && selectedAgenda.available_time_slots.length > 0 && !selectedTime) {
+      toast({
+        title: "Seleccione un horario",
+        description: "Debe seleccionar un horario específico para esta agenda",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const timeInfo = selectedTime ? `\n• Hora específica: ${selectedTime}` : '';
+    const confirmMessage = `¿Está seguro de asignar a ${patientName} desde la cola de espera?\n\nAgenda seleccionada:\n• Doctor: ${selectedAgenda.doctor_name}\n• Sede: ${selectedAgenda.location_name}\n• Fecha: ${format(new Date(selectedAgenda.date + 'T12:00:00'), "d 'de' MMMM 'de' yyyy", { locale: es })}${timeInfo}\n• Horario: ${selectedAgenda.start_time} - ${selectedAgenda.end_time}\n\nEsto eliminará al paciente de la cola de espera y creará una cita confirmada.`;
 
     if (!confirm(confirmMessage)) {
       return;
@@ -119,24 +153,37 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
 
     try {
       // Crear la cita desde la cola de espera
-      const response = await api.assignFromWaitingList({
+      const requestData: any = {
         waiting_list_id: waitingListId,
         availability_id: selectedAgendaId,
         patient_id: patientId,
         reason: reason || 'Asignado desde cola de espera',
         priority_level: priority,
         cups_id: cupsId
-      });
+      };
+
+      // Agregar hora específica si fue seleccionada
+      if (selectedTime) {
+        requestData.selected_time = selectedTime;
+      }
+
+      const response = await api.assignFromWaitingList(requestData);
 
       if (response.success) {
+        const timeAssigned = selectedTime || selectedAgenda.start_time;
         toast({
           title: "✅ Asignación exitosa",
-          description: `${patientName} ha sido asignado/a exitosamente a la agenda del Dr. ${selectedAgenda.doctor_name}`,
+          description: `${patientName} ha sido asignado/a para el ${format(new Date(selectedAgenda.date + 'T12:00:00'), "d 'de' MMMM", { locale: es })} a las ${timeAssigned} con Dr. ${selectedAgenda.doctor_name}`,
           variant: "default",
         });
 
         onAssignSuccess();
         onClose();
+        
+        // Resetear estados
+        setSelectedAgendaId(null);
+        setSelectedTime('');
+        setShowTimeSelector(false);
       } else {
         toast({
           title: "Error",
@@ -219,7 +266,7 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
                       ? 'border-medical-600 bg-medical-50 ring-2 ring-medical-200'
                       : 'border-gray-200 hover:border-medical-300'
                   }`}
-                  onClick={() => setSelectedAgendaId(agenda.id)}
+                  onClick={() => handleSelectAgenda(agenda.id)}
                 >
                   <div className="flex items-start justify-between">
                     {/* Información principal */}
@@ -251,6 +298,28 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
                           </span>
                         </div>
                       </div>
+
+                      {/* Horarios específicos disponibles */}
+                      {agenda.available_time_slots && agenda.available_time_slots.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-gray-200">
+                          <p className="text-xs text-gray-500 mb-2 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            Horarios específicos disponibles:
+                          </p>
+                          <div className="flex flex-wrap gap-1">
+                            {agenda.available_time_slots.slice(0, 6).map((time, index) => (
+                              <span key={index} className="text-xs px-2 py-1 rounded-md bg-green-100 text-green-700 font-medium">
+                                {time}
+                              </span>
+                            ))}
+                            {agenda.available_time_slots.length > 6 && (
+                              <span className="text-xs px-2 py-1 rounded-md bg-gray-100 text-gray-600">
+                                +{agenda.available_time_slots.length - 6} más
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Cupos disponibles */}
@@ -287,6 +356,41 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
           )}
         </div>
 
+        {/* Selector de hora específica */}
+        {showTimeSelector && selectedAgendaId && availableAgendas.find(a => a.id === selectedAgendaId)?.available_time_slots && availableAgendas.find(a => a.id === selectedAgendaId)!.available_time_slots!.length > 0 && (
+          <div className="border-t pt-4 mt-4 bg-gradient-to-br from-green-50 to-emerald-50 -mx-6 px-6 py-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Clock className="w-5 h-5 text-green-600" />
+              <h4 className="font-semibold text-gray-900">Seleccione la hora específica:</h4>
+            </div>
+            <p className="text-sm text-gray-600 mb-3">
+              Fecha: {safeFormatDate(availableAgendas.find(a => a.id === selectedAgendaId)!.date, "d 'de' MMMM 'de' yyyy", { locale: es })} - Dr. {availableAgendas.find(a => a.id === selectedAgendaId)!.doctor_name}
+            </p>
+            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 max-h-48 overflow-y-auto">
+              {availableAgendas.find(a => a.id === selectedAgendaId)!.available_time_slots!.map((time) => (
+                <button
+                  key={time}
+                  type="button"
+                  className={`p-3 text-center rounded-lg border-2 transition-all duration-200 ${
+                    selectedTime === time
+                      ? 'border-green-500 bg-green-600 text-white shadow-lg'
+                      : 'border-gray-200 bg-white hover:border-green-300 hover:bg-green-50 text-gray-700'
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedTime(time);
+                  }}
+                >
+                  <div className="font-semibold text-sm">{time}</div>
+                  <div className="text-xs mt-1 opacity-80">
+                    {selectedTime === time ? '✓' : 'Disponible'}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Footer con botones */}
         <div className="flex justify-end items-center gap-3 pt-4 border-t mt-4 bg-white">
           <Button variant="outline" onClick={onClose} disabled={assigning}>
@@ -294,7 +398,7 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
           </Button>
           <Button
             onClick={handleAssign}
-            disabled={!selectedAgendaId || assigning || loading}
+            disabled={!selectedAgendaId || assigning || loading || (showTimeSelector && !selectedTime)}
             className="bg-green-600 hover:bg-green-700 text-white"
           >
             {assigning ? (
@@ -305,7 +409,7 @@ const AssignFromQueueModal: React.FC<AssignFromQueueModalProps> = ({
             ) : (
               <>
                 <CheckCircle className="w-4 h-4 mr-2" />
-                Asignar Cita
+                {selectedTime ? `Asignar a las ${selectedTime}` : 'Asignar Cita'}
               </>
             )}
           </Button>

@@ -25,27 +25,38 @@ interface EditAvailabilityModalProps {
   onClose: () => void;
   availability: {
     id: number;
-    doctor_name: string;
-    specialty_name: string;
-    location_name: string;
+    // Campos con snake_case del backend original
+    doctor_name?: string;
+    specialty_name?: string;
+    location_name?: string;
+    start_time?: string;
+    end_time?: string;
+    doctor_id?: number;
+    specialty_id?: number;
+    location_id?: number;
+    // Campos con camelCase del hook Availability
+    doctor?: string;
+    specialty?: string;
+    locationName?: string;
+    startTime?: string;
+    endTime?: string;
+    locationId?: number;
+    // Campos comunes
     date: string;
-    start_time: string;
-    end_time: string;
     capacity: number;
     status: string;
     notes?: string;
-    doctor_id: number;
-    specialty_id: number;
-    location_id: number;
   } | null;
   onSave?: () => void;
+  onUpdate?: (id: number, updates: any) => Promise<void>;
 }
 
 const EditAvailabilityModal = ({ 
   isOpen, 
   onClose, 
   availability, 
-  onSave 
+  onSave,
+  onUpdate 
 }: EditAvailabilityModalProps) => {
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
@@ -61,7 +72,8 @@ const EditAvailabilityModal = ({
     start_time: '',
     end_time: '',
     capacity: 1,
-    status: 'active',
+    duration_minutes: 15,
+    status: 'Activa',
     notes: ''
   });
 
@@ -82,29 +94,66 @@ const EditAvailabilityModal = ({
           return timeStr;
         };
         
+        // Compatibilidad: usar snake_case si existe, sino camelCase
+        const doctorId = availability.doctor_id || 0;
+        const specialtyId = availability.specialty_id || 0;
+        const locationId = availability.location_id || availability.locationId || 0;
+        const startTime = availability.start_time || availability.startTime || '';
+        const endTime = availability.end_time || availability.endTime || '';
+        const durationMinutes = (availability as any).duration_minutes || (availability as any).durationMinutes || 15;
+        
         setFormData({
-          doctor_id: availability.doctor_id || 0,
-          specialty_id: availability.specialty_id || 0,
-          location_id: availability.location_id || 0,
+          doctor_id: doctorId,
+          specialty_id: specialtyId,
+          location_id: locationId,
           date: availability.date || '',
-          start_time: formatTime(availability.start_time || ''),
-          end_time: formatTime(availability.end_time || ''),
+          start_time: formatTime(startTime),
+          end_time: formatTime(endTime),
           capacity: availability.capacity || 1,
+          duration_minutes: durationMinutes,
           status: availability.status || 'active',
           notes: availability.notes || ''
         });
         
         console.log("📝 FormData después del mapeo:", {
-          doctor_id: availability.doctor_id,
-          specialty_id: availability.specialty_id,
-          location_id: availability.location_id,
+          doctor_id: doctorId,
+          specialty_id: specialtyId,
+          location_id: locationId,
           date: availability.date,
-          start_time: formatTime(availability.start_time || ''),
-          end_time: formatTime(availability.end_time || ''),
+          start_time: formatTime(startTime),
+          end_time: formatTime(endTime),
         });
       }
     }
   }, [isOpen, availability]);
+
+  // 🔥 Calcular hora final automáticamente cuando cambian startTime, capacity o durationMinutes
+  useEffect(() => {
+    if (!formData.start_time || !formData.capacity || !formData.duration_minutes) {
+      return;
+    }
+
+    const [hours, minutes] = formData.start_time.split(':').map(Number);
+    if (isNaN(hours) || isNaN(minutes)) return;
+    
+    const startMinutes = hours * 60 + minutes;
+    const totalMinutes = formData.capacity * formData.duration_minutes;
+    const endMinutes = startMinutes + totalMinutes;
+    
+    const endHours = Math.floor(endMinutes / 60);
+    const endMins = endMinutes % 60;
+    
+    // Limitar a 23:59 como máximo
+    const finalHours = Math.min(endHours, 23);
+    const finalMins = endHours >= 24 ? 59 : endMins;
+    
+    const calculatedEndTime = `${String(finalHours).padStart(2, '0')}:${String(finalMins).padStart(2, '0')}`;
+    
+    // Solo actualizar si el endTime calculado es diferente
+    if (calculatedEndTime !== formData.end_time) {
+      setFormData(prev => ({...prev, end_time: calculatedEndTime}));
+    }
+  }, [formData.start_time, formData.capacity, formData.duration_minutes]);
 
   const loadBasicData = async () => {
     try {
@@ -158,11 +207,30 @@ const EditAvailabilityModal = ({
 
     setLoading(true);
     try {
+      // 🔥 NORMALIZACIÓN DE FECHA: Asegurar que la fecha se envía en formato YYYY-MM-DD puro
+      // El input type="date" devuelve YYYY-MM-DD, pero aseguramos que no haya alteraciones
+      let normalizedDate = formData.date;
+      
+      // Si por alguna razón la fecha tiene información adicional, extraer solo YYYY-MM-DD
+      if (normalizedDate && normalizedDate.includes('T')) {
+        normalizedDate = normalizedDate.split('T')[0];
+      }
+      
+      // Si la fecha es un objeto Date (no debería serlo, pero por seguridad)
+      if (normalizedDate && typeof normalizedDate === 'object') {
+        // Convertir a YYYY-MM-DD usando métodos UTC para evitar problemas de zona horaria
+        const dateObj = new Date(normalizedDate);
+        const year = dateObj.getUTCFullYear();
+        const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(dateObj.getUTCDate()).padStart(2, '0');
+        normalizedDate = `${year}-${month}-${day}`;
+      }
+      
       const updateData = {
         doctor_id: Number(formData.doctor_id),
         specialty_id: Number(formData.specialty_id),
         location_id: Number(formData.location_id),
-        date: formData.date,
+        date: normalizedDate, // Fecha normalizada en formato YYYY-MM-DD puro
         start_time: formData.start_time,
         end_time: formData.end_time,
         capacity: Number(formData.capacity),
@@ -170,7 +238,10 @@ const EditAvailabilityModal = ({
         notes: formData.notes || null
       };
 
-      console.log('Updating availability with:', updateData); // Debug
+      console.log('📅 Updating availability - Date type:', typeof normalizedDate);
+      console.log('📅 Updating availability - Date value:', normalizedDate);
+      console.log('📅 Original formData.date:', formData.date);
+      console.log('📝 Updating availability with:', updateData); // Debug
 
       await api.updateAvailability(availability.id, updateData);
 
@@ -210,18 +281,12 @@ const EditAvailabilityModal = ({
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <h4 className="font-semibold text-blue-800 mb-2">Información Actual</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-sm">
-              <div><span className="font-medium">Doctor:</span> {availability.doctor_name || 'No especificado'}</div>
-              <div><span className="font-medium">Especialidad:</span> {availability.specialty_name || 'No especificada'}</div>
-              <div><span className="font-medium">Ubicación:</span> {availability.location_name || 'No especificada'}</div>
+              <div><span className="font-medium">Doctor:</span> {availability.doctor_name || availability.doctor || 'No especificado'}</div>
+              <div><span className="font-medium">Especialidad:</span> {availability.specialty_name || availability.specialty || 'No especificada'}</div>
+              <div><span className="font-medium">Ubicación:</span> {availability.location_name || availability.locationName || 'No especificada'}</div>
               <div><span className="font-medium">Fecha:</span> {availability.date || 'No especificada'}</div>
-              <div><span className="font-medium">Horario:</span> {availability.start_time || 'No especificado'} - {availability.end_time || 'No especificado'}</div>
+              <div><span className="font-medium">Horario:</span> {availability.start_time || availability.startTime || 'No especificado'} - {availability.end_time || availability.endTime || 'No especificado'}</div>
               <div><span className="font-medium">Capacidad:</span> {availability.capacity || 0} pacientes</div>
-            </div>
-            <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs">
-              <strong>Debug Info:</strong>
-              <div>doctor_id: {availability.doctor_id || 'undefined'}</div>
-              <div>specialty_id: {availability.specialty_id || 'undefined'}</div>
-              <div>location_id: {availability.location_id || 'undefined'}</div>
             </div>
           </div>
 
@@ -334,6 +399,20 @@ const EditAvailabilityModal = ({
                 max="100"
                 value={formData.capacity}
                 onChange={(e) => setFormData(prev => ({ ...prev, capacity: Number(e.target.value) }))}
+              />
+            </div>
+
+            {/* Duración por cita */}
+            <div className="space-y-2">
+              <Label htmlFor="duration_minutes">Duración por cita (min)</Label>
+              <Input
+                id="duration_minutes"
+                type="number"
+                min="5"
+                max="120"
+                step="5"
+                value={formData.duration_minutes}
+                onChange={(e) => setFormData(prev => ({ ...prev, duration_minutes: Number(e.target.value) }))}
               />
             </div>
 

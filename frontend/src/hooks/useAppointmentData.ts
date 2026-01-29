@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '@/lib/api';
 import { useErrorHandler } from './useErrorHandler';
+import { convertColombiaTimeToUTC, convertUTCToColombiaTime24 } from '@/utils/dateHelpers';
 
 export interface Location {
   id: number;
@@ -26,12 +27,18 @@ export interface Availability {
   date: string;
   startTime: string;
   endTime: string;
+  startTimeRaw?: string; // 🔥 Hora cruda de BD (UTC-0) sin conversión
+  endTimeRaw?: string; // 🔥 Hora cruda de BD (UTC-0) sin conversión
   capacity: number;
   bookedSlots: number;
   status: 'active' | 'cancelled' | 'completed';
   isPaused?: boolean; // 🔥 NUEVO: Indica si la agenda está pausada
   notes?: string;
   createdAt: string;
+  // IDs adicionales para edición
+  doctor_id?: number;
+  specialty_id?: number;
+  location_id?: number;
 }
 
 export interface AvailabilityForm {
@@ -55,7 +62,7 @@ export interface AvailabilityForm {
 }
 
 export const useAppointmentData = () => {
-  const { handleApiCall, handleError } = useErrorHandler();
+  const { handleApiCall, handleError, handleSuccess } = useErrorHandler();
   const [locations, setLocations] = useState<Location[]>([]);
   const [availabilities, setAvailabilities] = useState<Availability[]>([]);
   const [calendarSummary, setCalendarSummary] = useState<Record<string, { appointments: number; availabilities: number }>>({});
@@ -101,9 +108,8 @@ export const useAppointmentData = () => {
         (specRows || []).forEach((s: any) => sMap.set(Number(s.id), s.name || `Especialidad ${s.id}`));
         setSpecialtyById(sMap);
 
-        // Cargar disponibilidades del día por defecto
-        const today = new Date().toISOString().split('T')[0];
-        await loadAvailabilities(today, dMap, sMap, new Map(locList.map(l => [l.id, l.name])));
+        // No cargar disponibilidades aquí - dejar que el componente las cargue con sus parámetros
+        // Esto permite que el componente controle los filtros de visualización
       } catch {
         setLocations([]);
         setAvailabilities([]);
@@ -120,20 +126,37 @@ export const useAppointmentData = () => {
       specialty: sMap.get(Number(r.specialty_id)) || String(r.specialty_name || r.specialty_id),
       doctor: dMap.get(Number(r.doctor_id)) || String(r.doctor_name || r.doctor_id),
       date: r.date,
-      startTime: r.start_time,
-      endTime: r.end_time,
+      // Convertir horas de UTC-0 (BD) a UTC-5 (Colombia) para visualización
+      startTime: convertUTCToColombiaTime24(r.start_time),
+      endTime: convertUTCToColombiaTime24(r.end_time),
+      // 🔥 Guardar horas crudas de la BD sin ninguna conversión
+      startTimeRaw: r.start_time,
+      endTimeRaw: r.end_time,
       capacity: r.capacity,
       bookedSlots: r.booked_slots ?? 0,
       status: r.status as any, // El backend ya devuelve: "Activa", "Cancelada", "Completa"
       isPaused: Boolean(r.is_paused), // 🔥 NUEVO: Mapear campo is_paused
       notes: r.notes || '',
       createdAt: r.created_at,
+      // IDs adicionales para edición
+      doctor_id: Number(r.doctor_id),
+      specialty_id: Number(r.specialty_id),
+      location_id: Number(r.location_id),
     }));
   }, [doctorById, specialtyById, locationById]);
 
-  const loadAvailabilities = useCallback(async (date?: string, dMap = doctorById, sMap = specialtyById, lMap = locationById) => {
+  const loadAvailabilities = useCallback(async (
+    params?: { 
+      date?: string; 
+      include_past?: boolean; 
+      include_all_status?: boolean 
+    }, 
+    dMap = doctorById, 
+    sMap = specialtyById, 
+    lMap = locationById
+  ) => {
     try {
-      const rows = await api.getAvailabilities(date);
+      const rows = await api.getAvailabilities(params);
       setAvailabilities(mapAvailabilities(rows, dMap, sMap, lMap));
     } catch {
       setAvailabilities([]);
@@ -231,41 +254,73 @@ export const useAppointmentData = () => {
       throw new Error('Ubicación inválida');
     }
     
-    return handleApiCall(
-      async () => {
-        const response = await api.createAvailability({
-          location_id: Number(availabilityData.locationId),
-          specialty_id: Number(availabilityData.specialty),
-          doctor_id: Number(availabilityData.doctor),
-          date: availabilityData.date, // Mantener por compatibilidad
-          dates: availabilityData.dates, // 🔥 NUEVO: Enviar array de fechas
-          start_time: availabilityData.startTime,
-          end_time: availabilityData.endTime,
-          capacity: availabilityData.capacity,
-          duration_minutes: availabilityData.durationMinutes,
-          notes: availabilityData.notes,
-          auto_preallocate: availabilityData.autoPreallocate || false,
-          preallocation_publish_date: availabilityData.preallocationPublishDate || undefined,
-          auto_distribute: availabilityData.autoDistribute || false,
-          distribution_start_date: availabilityData.distributionStartDate || undefined,
-          distribution_end_date: availabilityData.distributionEndDate || undefined,
-          exclude_weekends: availabilityData.excludeWeekends ?? true,
+    try {
+      // Convertir horas de UTC-5 (Colombia) a UTC-0 antes de enviar al backend
+      const startTimeUTC = convertColombiaTimeToUTC(availabilityData.startTime);
+      const endTimeUTC = convertColombiaTimeToUTC(availabilityData.endTime);
+      
+      const response = await api.createAvailability({
+        location_id: Number(availabilityData.locationId),
+        specialty_id: Number(availabilityData.specialty),
+        doctor_id: Number(availabilityData.doctor),
+        date: availabilityData.date, // Mantener por compatibilidad
+        dates: availabilityData.dates, // 🔥 NUEVO: Enviar array de fechas
+        start_time: startTimeUTC,
+        end_time: endTimeUTC,
+        capacity: availabilityData.capacity,
+        duration_minutes: availabilityData.durationMinutes,
+        notes: availabilityData.notes,
+        auto_preallocate: availabilityData.autoPreallocate || false,
+        preallocation_publish_date: availabilityData.preallocationPublishDate || undefined,
+        auto_distribute: availabilityData.autoDistribute || false,
+        distribution_start_date: availabilityData.distributionStartDate || undefined,
+        distribution_end_date: availabilityData.distributionEndDate || undefined,
+        exclude_weekends: availabilityData.excludeWeekends ?? true,
+      });
+      
+      // 🔥 NUEVO: Recargar todas las fechas afectadas
+      const datesToReload = availabilityData.dates && availabilityData.dates.length > 0 
+        ? availabilityData.dates 
+        : [availabilityData.date];
+      
+      for (const dateStr of datesToReload) {
+        await loadAvailabilities({ date: dateStr });
+      }
+      
+      // 🔥 Construir mensaje de éxito con información detallada
+      const totalCreated = response.created_count || (availabilityData.dates?.length || 1);
+      const doctorName = doctorById.get(Number(availabilityData.doctor)) || 'el doctor';
+      const specialtyName = specialtyById.get(Number(availabilityData.specialty)) || 'la especialidad';
+      const locationName = locationById.get(Number(availabilityData.locationId)) || 'la sede';
+      
+      // Formatear fechas y horas
+      const formatDate = (dateStr: string) => {
+        const date = new Date(dateStr + 'T00:00:00');
+        return date.toLocaleDateString('es-CO', { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
         });
-        
-        // 🔥 NUEVO: Recargar todas las fechas afectadas
-        const datesToReload = availabilityData.dates && availabilityData.dates.length > 0 
-          ? availabilityData.dates 
-          : [availabilityData.date];
-        
-        for (const dateStr of datesToReload) {
-          await loadAvailabilities(dateStr);
-        }
-        
-        return response;
-      },
-      "Agenda(s) creada(s) exitosamente", // 🔥 Mensaje plural
-      "No se pudo crear la(s) agenda(s)"
-    );
+      };
+      
+      const dateText = totalCreated === 1 
+        ? `📅 Fecha: ${formatDate(availabilityData.date || availabilityData.dates?.[0] || '')}`
+        : `📅 Fechas: ${totalCreated} días seleccionados`;
+      
+      let successMessage = '';
+      if (totalCreated === 1) {
+        successMessage = `✅ Agenda creada exitosamente\n📋 Doctor: ${doctorName}\n🏥 Especialidad: ${specialtyName}\n📍 Sede: ${locationName}\n${dateText}\n⏰ Horario: ${availabilityData.startTime} - ${availabilityData.endTime}`;
+      } else {
+        successMessage = `✅ ${totalCreated} agendas creadas exitosamente\n📋 Doctor: ${doctorName}\n🏥 Especialidad: ${specialtyName}\n📍 Sede: ${locationName}\n${dateText}\n⏰ Horario: ${availabilityData.startTime} - ${availabilityData.endTime}`;
+      }
+      
+      handleSuccess(successMessage);
+      return response;
+    } catch (error) {
+      handleError(error, "No se pudo crear la(s) agenda(s)");
+      return null;
+    }
   };
 
   const updateAvailabilityStatus = async (id: number, status: 'Activa' | 'Cancelada' | 'Completa') => {
@@ -277,8 +332,20 @@ export const useAppointmentData = () => {
     } as const;
     
     const backendStatus = statusMap[status];
-    await api.updateAvailability(id, { status: backendStatus });
-    setAvailabilities(prev => prev.map(a => a.id === id ? { ...a, status } : a));
+    
+    try {
+      await api.updateAvailability(id, { status: backendStatus });
+      
+      // Actualizar el estado local (mantener la agenda para auditoría)
+      setAvailabilities(prev => prev.map(a => a.id === id ? { ...a, status } : a));
+    } catch (error: any) {
+      // Si el error es por citas confirmadas, lanzar un error descriptivo
+      if (error.response?.data?.error === 'confirmed_appointments_exist') {
+        const confirmedCount = error.response.data.confirmedAppointments || 0;
+        throw new Error(`No se puede cancelar la agenda porque hay ${confirmedCount} cita(s) confirmada(s). Por favor, cancele todas las citas confirmadas primero.`);
+      }
+      throw error;
+    }
   };
 
   const updateAvailability = async (id: number, updates: Partial<Availability>) => {
@@ -294,8 +361,9 @@ export const useAppointmentData = () => {
         // Convertir el objeto de updates al formato que espera la API
         const apiUpdates: any = {};
         if (updates.date) apiUpdates.date = updates.date;
-        if (updates.startTime) apiUpdates.start_time = updates.startTime;
-        if (updates.endTime) apiUpdates.end_time = updates.endTime;
+        // Convertir horas de UTC-5 (Colombia) a UTC-0 antes de enviar al backend
+        if (updates.startTime) apiUpdates.start_time = convertColombiaTimeToUTC(updates.startTime);
+        if (updates.endTime) apiUpdates.end_time = convertColombiaTimeToUTC(updates.endTime);
         if (updates.capacity) apiUpdates.capacity = updates.capacity;
         if (updates.notes !== undefined) apiUpdates.notes = updates.notes;
         if (updates.status) {
@@ -310,7 +378,7 @@ export const useAppointmentData = () => {
         
         // Si se cambió la fecha, recargar las disponibilidades
         if (updates.date) {
-          await loadAvailabilities(updates.date);
+          await loadAvailabilities({ date: updates.date });
         }
       },
       "Agenda actualizada exitosamente",

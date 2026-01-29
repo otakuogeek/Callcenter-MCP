@@ -100,6 +100,45 @@ const CreateAvailabilityModal = ({
     }
   }, [isOpen]);
 
+  // 🔥 NUEVO: Asegurar valores por defecto cuando se abre el modal
+  useEffect(() => {
+    if (isOpen) {
+      // Si capacity o durationMinutes están vacíos, establecer valores por defecto
+      if (!availabilityForm.capacity || availabilityForm.capacity < 1) {
+        setAvailabilityForm(prev => ({ ...prev, capacity: 1 }));
+      }
+      if (!availabilityForm.durationMinutes || availabilityForm.durationMinutes < 1) {
+        setAvailabilityForm(prev => ({ ...prev, durationMinutes: 15 }));
+      }
+    }
+  }, [isOpen]);
+
+  // 🔥 NUEVO: Calcular hora final automáticamente cuando cambian startTime, capacity o durationMinutes
+  useEffect(() => {
+    if (!availabilityForm.startTime || !availabilityForm.capacity || !availabilityForm.durationMinutes) {
+      return;
+    }
+
+    const [hours, minutes] = availabilityForm.startTime.split(':').map(Number);
+    const startMinutes = hours * 60 + minutes;
+    const totalMinutes = availabilityForm.capacity * availabilityForm.durationMinutes;
+    const endMinutes = startMinutes + totalMinutes;
+    
+    const endHours = Math.floor(endMinutes / 60);
+    const endMins = endMinutes % 60;
+    
+    // Limitar a 23:59 como máximo
+    const finalHours = Math.min(endHours, 23);
+    const finalMins = endHours >= 24 ? 59 : endMins;
+    
+    const endTime = `${String(finalHours).padStart(2, '0')}:${String(finalMins).padStart(2, '0')}`;
+    
+    // Solo actualizar si el endTime calculado es diferente
+    if (endTime !== availabilityForm.endTime) {
+      setAvailabilityForm(prev => ({...prev, endTime}));
+    }
+  }, [availabilityForm.startTime, availabilityForm.capacity, availabilityForm.durationMinutes]);
+
   return (
     <EnhancedAnimatedPresenceWrapper>
       <Dialog open={isOpen} onOpenChange={onClose}>
@@ -194,6 +233,8 @@ const CreateAvailabilityModal = ({
               <div className="bg-white rounded-lg p-3 border border-purple-200">
                 <DayPicker
                   mode="multiple"
+                  showOutsideDays
+                  weekStartsOn={1}
                   selected={selectedDates.map(d => new Date(d + 'T12:00:00'))}
                   onSelect={(dates) => {
                     if (!dates) {
@@ -319,8 +360,9 @@ const CreateAvailabilityModal = ({
                 value={availabilityForm.endTime}
                 onChange={(value) => setAvailabilityForm({...availabilityForm, endTime: value})}
                 error={endTimeError}
-                inputProps={{ step: 300, min: availabilityForm.startTime || undefined }}
+                inputProps={{ step: 300, min: availabilityForm.startTime || undefined, readOnly: true }}
                 required
+                className="bg-gray-50"
               />
 
               <AnimatedInputField
@@ -342,9 +384,9 @@ const CreateAvailabilityModal = ({
                 <AnimatedInputField
                   label="Minutos por cita"
                   type="number"
-                  value={availabilityForm.durationMinutes?.toString() || "30"}
-                  onChange={(value) => setAvailabilityForm({...availabilityForm, durationMinutes: Number(value) || 30})}
-                  placeholder="30"
+                  value={availabilityForm.durationMinutes?.toString() || "15"}
+                  onChange={(value) => setAvailabilityForm({...availabilityForm, durationMinutes: Number(value) || 15})}
+                  placeholder="15"
                   inputProps={{ min: 1, step: 1 }}
                   required
                 />

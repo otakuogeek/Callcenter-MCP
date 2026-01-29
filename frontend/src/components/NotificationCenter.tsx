@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import api from '@/lib/api';
+import { formatDateColombia } from '@/utils/dateHelpers';
 
 interface Notification {
   id: number;
@@ -157,11 +158,7 @@ export function NotificationCenter() {
     if (diffInMinutes < 1440) return `Hace ${Math.floor(diffInMinutes / 60)}h`;
     if (diffInMinutes < 10080) return `Hace ${Math.floor(diffInMinutes / 1440)}d`;
     
-    return date.toLocaleDateString('es-ES', {
-      day: '2-digit',
-      month: '2-digit',
-      year: '2-digit'
-    });
+    return formatDateColombia(dateStr);
   };
 
   useEffect(() => {

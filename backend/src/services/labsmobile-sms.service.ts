@@ -1,5 +1,12 @@
 import axios from 'axios';
 import pool from '../db/pool';
+import { 
+  formatDateColombia, 
+  formatTimeColombia, 
+  formatTime24Colombia,
+  parseMySQLDatetime,
+  COLOMBIA_TIMEZONE 
+} from '../utils/dateUtils';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 
 interface SendSMSParams {
@@ -29,7 +36,7 @@ interface SMSLogEntry {
   sender_id: string;
   template_id?: string;
   status: 'pending' | 'success' | 'failed';
-  zadarma_response?: string;
+  api_response?: string;
   messages_sent?: number;
   cost?: number;
   currency?: string;
@@ -60,12 +67,12 @@ class LabsMobileSMSService {
   private formatPhoneNumber(phone: string): string {
     // Eliminar todos los caracteres que no sean dígitos
     let cleaned = phone.replace(/\D/g, '');
-    
+
     // Eliminar el prefijo 0 si está presente
     if (cleaned.startsWith('0')) {
       cleaned = cleaned.substring(1);
     }
-    
+
     // Casos de números colombianos
     if (cleaned.length === 10) {
       // Número colombiano de 10 dígitos (ej: 3105672307)
@@ -78,12 +85,12 @@ class LabsMobileSMSService {
       // Asumir Bogotá (601) por defecto
       return '5716' + cleaned;
     }
-    
+
     // Si ya empieza con +, eliminarlo
     if (phone.startsWith('+')) {
       return phone.substring(1);
     }
-    
+
     // Por defecto, agregar código de Colombia
     return '57' + cleaned;
   }
@@ -120,10 +127,10 @@ class LabsMobileSMSService {
       };
 
       console.log('📤 Enviando request a LabsMobile API...');
-      
+
       // Autenticación con Basic Auth en el header
       const auth = Buffer.from(`${this.username}:${this.token}`).toString('base64');
-      
+
       // Enviar SMS usando axios
       const response = await axios.post(this.apiUrl, payload, {
         headers: {
@@ -150,7 +157,7 @@ class LabsMobileSMSService {
             sender_id: this.sender,
             template_id: template_id,
             status: 'success',
-            zadarma_response: JSON.stringify(response.data),
+            api_response: JSON.stringify(response.data),
             messages_sent: 1,
             cost: response.data.cost ? parseFloat(response.data.cost) : 0,
             currency: 'EUR',
@@ -171,7 +178,7 @@ class LabsMobileSMSService {
       } else {
         // Error de LabsMobile
         const errorMessage = response.data.message || `Error código ${response.data.code}`;
-        
+
         console.error('❌ Error de LabsMobile:', errorMessage);
 
         // Registrar error en base de datos
@@ -183,7 +190,7 @@ class LabsMobileSMSService {
             sender_id: this.sender,
             template_id: template_id,
             status: 'failed',
-            zadarma_response: JSON.stringify(response.data),
+            api_response: JSON.stringify(response.data),
             error_message: errorMessage,
             patient_id: patient_id,
             appointment_id: appointment_id,
@@ -238,7 +245,7 @@ class LabsMobileSMSService {
           sender_id,
           template_id,
           status,
-          zadarma_response,
+          api_response,
           messages_sent,
           cost,
           currency,
@@ -257,7 +264,7 @@ class LabsMobileSMSService {
         entry.sender_id,
         entry.template_id || null,
         entry.status,
-        entry.zadarma_response || null,
+        entry.api_response || null,
         entry.messages_sent || 1,
         entry.cost || 0,
         entry.currency || 'EUR',
@@ -298,34 +305,65 @@ class LabsMobileSMSService {
   }
 
   /**
-   * Formatea una fecha del formato YYYY-MM-DD al formato DD/MM/YYYY
+   * Formatea una fecha para SMS, convirtiendo de UTC-0 a Colombia UTC-5
+   * Utiliza las funciones centralizadas de dateUtils.ts
+   * @param dateString - Fecha en formato MySQL o ISO (UTC-0)
+   * @returns Fecha formateada como DD/MM/YYYY en zona horaria Colombia
    */
   private formatDate(dateString: string): string {
     try {
-      const date = new Date(dateString);
-      const day = String(date.getDate()).padStart(2, '0');
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const year = date.getFullYear();
-      return `${day}/${month}/${year}`;
+      if (!dateString) return '';
+      
+      // Usar la utilidad centralizada que maneja correctamente UTC-0 → UTC-5
+      return formatDateColombia(dateString);
     } catch (error) {
-      console.warn('Error formateando fecha:', dateString);
+      console.warn('Error formateando fecha para SMS:', dateString, error);
       return dateString; // Retornar original si hay error
     }
   }
 
   /**
-   * Formatea una hora del formato HH:mm al formato 12 horas (h:mm AM/PM)
+   * Formatea una hora para SMS, convirtiendo de UTC-0 a Colombia UTC-5
+   * @param dateOrTimeString - Fecha/hora completa de MySQL (UTC-0) o solo hora HH:mm
+   * @returns Hora formateada como h:mm AM/PM en zona horaria Colombia
    */
-  private formatTime(timeString: string): string {
+  private formatTime(dateOrTimeString: string): string {
     try {
-      const [hours, minutes] = timeString.split(':');
-      const hour = parseInt(hours);
-      const ampm = hour >= 12 ? 'PM' : 'AM';
-      const hour12 = hour % 12 || 12; // Convertir 0 a 12
-      return `${hour12}:${minutes} ${ampm}`;
+      if (!dateOrTimeString) return '';
+      
+      // Si es solo una hora (ej: "14:00" o "14:00:00"), crear un datetime para convertir
+      if (/^\d{2}:\d{2}(:\d{2})?$/.test(dateOrTimeString)) {
+        // Hora sola sin fecha - asumir que ya está en la zona horaria correcta
+        // ya que se usa cuando la hora ya fue extraída de la disponibilidad
+        const [hours, minutes] = dateOrTimeString.split(':');
+        const hour = parseInt(hours);
+        const ampm = hour >= 12 ? 'PM' : 'AM';
+        const hour12 = hour % 12 || 12;
+        return `${hour12}:${minutes} ${ampm}`;
+      }
+      
+      // Si es un datetime completo, usar la utilidad centralizada
+      return formatTimeColombia(dateOrTimeString);
     } catch (error) {
-      console.warn('Error formateando hora:', timeString);
-      return timeString; // Retornar original si hay error
+      console.warn('Error formateando hora para SMS:', dateOrTimeString, error);
+      return dateOrTimeString; // Retornar original si hay error
+    }
+  }
+
+  /**
+   * Formatea fecha y hora desde un datetime completo de MySQL (UTC-0) a Colombia (UTC-5)
+   * @param scheduledAt - Datetime de MySQL en formato 'YYYY-MM-DD HH:mm:ss' (UTC-0)
+   * @returns Objeto con fecha y hora formateadas para Colombia
+   */
+  private formatAppointmentDateTime(scheduledAt: string): { date: string; time: string } {
+    try {
+      // Usar las utilidades centralizadas de dateUtils.ts
+      const date = formatDateColombia(scheduledAt); // DD/MM/YYYY
+      const time = formatTimeColombia(scheduledAt); // h:mm a. m./p. m.
+      return { date, time };
+    } catch (error) {
+      console.warn('Error formateando datetime para SMS:', scheduledAt, error);
+      return { date: scheduledAt, time: '' };
     }
   }
 
@@ -342,9 +380,35 @@ class LabsMobileSMSService {
   ): Promise<SMSResult> {
     const formattedDate = this.formatDate(appointmentDate);
     const formattedTime = this.formatTime(appointmentTime);
-    
+
     const message = `Hola ${patientName}, su cita con ${doctorName} está confirmada para el ${formattedDate} a las ${formattedTime} en ${location}. Fundación Biosanar IPS.`;
-    
+
+    return this.sendSMS({
+      number: phone,
+      message
+    });
+  }
+
+  /**
+   * Envía SMS de confirmación de cita usando datetime completo de MySQL (UTC-0)
+   * Esta versión convierte automáticamente a la zona horaria de Colombia (UTC-5)
+   * @param phone - Número de teléfono del paciente
+   * @param patientName - Nombre del paciente
+   * @param scheduledAt - Datetime de MySQL (UTC-0) en formato 'YYYY-MM-DD HH:mm:ss'
+   * @param doctorName - Nombre del doctor
+   * @param location - Sede/ubicación
+   */
+  async sendAppointmentConfirmationFromScheduledAt(
+    phone: string,
+    patientName: string,
+    scheduledAt: string,
+    doctorName: string,
+    location: string
+  ): Promise<SMSResult> {
+    const { date, time } = this.formatAppointmentDateTime(scheduledAt);
+
+    const message = `Hola ${patientName}, su cita con ${doctorName} está confirmada para el ${date} a las ${time} en ${location}. Fundación Biosanar IPS.`;
+
     return this.sendSMS({
       number: phone,
       message
@@ -364,9 +428,30 @@ class LabsMobileSMSService {
   ): Promise<SMSResult> {
     const formattedDate = this.formatDate(appointmentDate);
     const formattedTime = this.formatTime(appointmentTime);
-    
+
     const message = `Recordatorio: ${patientName}, su cita con ${doctorName} es mañana ${formattedDate} a las ${formattedTime} en ${location}. Fundación Biosanar IPS.`;
-    
+
+    return this.sendSMS({
+      number: phone,
+      message
+    });
+  }
+
+  /**
+   * Envía SMS de recordatorio de cita usando datetime completo de MySQL (UTC-0)
+   * Esta versión convierte automáticamente a la zona horaria de Colombia (UTC-5)
+   */
+  async sendAppointmentReminderFromScheduledAt(
+    phone: string,
+    patientName: string,
+    scheduledAt: string,
+    doctorName: string,
+    location: string
+  ): Promise<SMSResult> {
+    const { date, time } = this.formatAppointmentDateTime(scheduledAt);
+
+    const message = `Recordatorio: ${patientName}, su cita con ${doctorName} es mañana ${date} a las ${time} en ${location}. Fundación Biosanar IPS.`;
+
     return this.sendSMS({
       number: phone,
       message
@@ -385,13 +470,37 @@ class LabsMobileSMSService {
   ): Promise<SMSResult> {
     const formattedDate = this.formatDate(appointmentDate);
     const formattedTime = this.formatTime(appointmentTime);
-    
+
     let message = `${patientName}, su cita del ${formattedDate} a las ${formattedTime} ha sido cancelada.`;
     if (reason) {
       message += ` Motivo: ${reason}.`;
     }
     message += ' Para reagendar, comuníquese con Fundación Biosanar IPS.';
-    
+
+    return this.sendSMS({
+      number: phone,
+      message
+    });
+  }
+
+  /**
+   * Envía SMS de cancelación de cita usando datetime completo de MySQL (UTC-0)
+   * Esta versión convierte automáticamente a la zona horaria de Colombia (UTC-5)
+   */
+  async sendAppointmentCancellationFromScheduledAt(
+    phone: string,
+    patientName: string,
+    scheduledAt: string,
+    reason?: string
+  ): Promise<SMSResult> {
+    const { date, time } = this.formatAppointmentDateTime(scheduledAt);
+
+    let message = `${patientName}, su cita del ${date} a las ${time} ha sido cancelada.`;
+    if (reason) {
+      message += ` Motivo: ${reason}.`;
+    }
+    message += ' Para reagendar, comuníquese con Fundación Biosanar IPS.';
+
     return this.sendSMS({
       number: phone,
       message

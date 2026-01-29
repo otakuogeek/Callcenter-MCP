@@ -10,6 +10,7 @@ const schema = z.object({
   description: z.string().optional().nullable(),
   default_duration_minutes: z.number().int().positive().max(480).default(30),
   active: z.boolean().default(true),
+  allows_double_appointment: z.boolean().default(false),
 });
 
 router.get('/', requireAuth, async (_req: Request, res: Response) => {
@@ -29,16 +30,36 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const s = parsed.data;
+  const conn = await pool.getConnection();
   try {
-    const [result] = await pool.query(
-      'INSERT INTO specialties (name, description, default_duration_minutes, active) VALUES (?, ?, ?, ?)',
-      [s.name, s.description ?? null, s.default_duration_minutes, s.active]
+    await conn.beginTransaction();
+    
+    // 1. Crear la especialidad
+    const [result] = await conn.query(
+      'INSERT INTO specialties (name, description, default_duration_minutes, active, allows_double_appointment) VALUES (?, ?, ?, ?, ?)',
+      [s.name, s.description ?? null, s.default_duration_minutes, s.active, s.allows_double_appointment ? 1 : 0]
     );
     // @ts-ignore
-    return res.status(201).json({ id: result.insertId, ...s });
+    const specialtyId = result.insertId as number;
+    
+    // 2. Vincular automáticamente a todas las ubicaciones existentes
+    const [locations] = await conn.query('SELECT id FROM locations');
+    if (Array.isArray(locations) && locations.length > 0) {
+      const values = (locations as any[]).map((loc: any) => [loc.id, specialtyId]);
+      await conn.query(
+        'INSERT INTO location_specialties (location_id, specialty_id) VALUES ? ON DUPLICATE KEY UPDATE location_id=location_id',
+        [values]
+      );
+    }
+    
+    await conn.commit();
+    return res.status(201).json({ id: specialtyId, ...s });
   } catch (e: any) {
+    await conn.rollback();
     if (e?.code === 'ER_DUP_ENTRY') return res.status(409).json({ message: 'Nombre ya existe' });
     return res.status(500).json({ message: 'Server error' });
+  } finally {
+    conn.release();
   }
 });
 

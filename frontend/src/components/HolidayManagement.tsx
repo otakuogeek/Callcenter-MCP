@@ -6,6 +6,7 @@ import { AnimatedForm, AnimatedInputField, AnimatedSelectField, AnimatedTextarea
 import { AnimatedButton } from "@/components/ui/animated-button";
 import { EnhancedAnimatedPresenceWrapper } from "@/components/ui/enhanced-animated-container";
 import { toast } from "sonner";
+import { formatDateColombia } from "@/utils/dateHelpers";
 
 interface Holiday {
   id: number;
@@ -379,7 +380,7 @@ const HolidayManagement = ({ isOpen, onClose }: HolidayManagementProps) => {
                     holidays.map((holiday) => (
                       <tr key={holiday.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 text-sm text-gray-900">
-                          {new Date(holiday.date).toLocaleDateString('es-CO')}
+                          {formatDateColombia(holiday.date)}
                         </td>
                         <td className="px-4 py-3 text-sm text-gray-900">
                           {holiday.name}

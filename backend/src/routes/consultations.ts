@@ -27,7 +27,8 @@ router.get('/elevenlabs', requireAuth, async (req: Request, res: Response) => {
       page = '1',
       page_size = '20',
       search,
-      date_filter
+      date_filter,
+      transcript_search
     } = req.query;
 
     const pageNum = parseInt(page as string);
@@ -87,12 +88,23 @@ router.get('/elevenlabs', requireAuth, async (req: Request, res: Response) => {
 
     // PASO 2: Obtener el resto desde la base de datos local (solo como fallback)
     console.log('[Consultations] Fetching from database...');
-    const { calls: dbCalls, total: dbTotal } = await ElevenLabsSync.getCallsFromDB(
-      pageNum,
-      pageSizeNum,
-      search as string,
-      date_filter as string
-    );
+    let dbCalls: any[] = [];
+    let dbTotal = 0;
+    let dbError: string | null = null;
+    try {
+      const dbResult = await ElevenLabsSync.getCallsFromDB(
+        pageNum,
+        pageSizeNum,
+        search as string,
+        date_filter as string,
+        transcript_search as string
+      );
+      dbCalls = dbResult.calls;
+      dbTotal = dbResult.total;
+    } catch (dbErr: any) {
+      dbError = dbErr?.message || 'Error consultando base de datos';
+      console.error('[Consultations] Error fetching from database:', dbError);
+    }
 
     // PASO 3: Combinar resultados (evitar duplicados)
     const latestCallIds = new Set(latestCalls.map((c: any) => c.conversation_id));
@@ -164,6 +176,7 @@ router.get('/elevenlabs', requireAuth, async (req: Request, res: Response) => {
       agent_id: ELEVENLABS_AGENT_ID,
       data: allCalls,
       stats,
+      warnings: dbError ? [{ source: 'database', message: dbError }] : [],
       pagination: {
         page: pageNum,
         page_size: pageSizeNum,
@@ -184,16 +197,34 @@ router.get('/elevenlabs', requireAuth, async (req: Request, res: Response) => {
 
 // Obtener detalles de una conversación específica
 router.get('/elevenlabs/:conversation_id', requireAuth, async (req: Request, res: Response) => {
-  try {
-    if (!ELEVENLABS_API_KEY) {
-      return res.status(500).json({ 
-        success: false, 
-        message: 'API key de ElevenLabs no configurada' 
+  const { conversation_id } = req.params;
+
+  // Si no hay API key, intentar fallback a DB
+  if (!ELEVENLABS_API_KEY) {
+    try {
+      const dbCall = await ElevenLabsSync.getCallFromDBByConversationId(conversation_id);
+      if (dbCall) {
+        return res.json({
+          success: true,
+          data: dbCall,
+          source: 'database'
+        });
+      }
+      return res.status(404).json({
+        success: false,
+        message: 'Conversación no encontrada'
+      });
+    } catch (dbError: any) {
+      console.error('Error consultando DB:', dbError.message);
+      return res.status(500).json({
+        success: false,
+        message: 'Error consultando base de datos',
+        error: dbError.message
       });
     }
+  }
 
-    const { conversation_id } = req.params;
-
+  try {
     // Llamar a la API de ElevenLabs para obtener detalles
     const response = await axios.get(
       `https://api.elevenlabs.io/v1/convai/conversations/${conversation_id}`,
@@ -226,16 +257,37 @@ router.get('/elevenlabs/:conversation_id', requireAuth, async (req: Request, res
 
     return res.json({
       success: true,
-      data: conversationDetails
+      data: conversationDetails,
+      source: 'api'
     });
+  } catch (apiError: any) {
+    console.error('Error obteniendo conversación desde API:', apiError.response?.data || apiError.message);
 
-  } catch (error: any) {
-    console.error('Error obteniendo conversación:', error.response?.data || error.message);
-    return res.status(500).json({ 
-      success: false, 
-      message: 'Error al obtener conversación',
-      error: error.response?.data?.detail || error.message 
-    });
+    // Fallback a base de datos
+    try {
+      const dbCall = await ElevenLabsSync.getCallFromDBByConversationId(conversation_id);
+      if (dbCall) {
+        return res.json({
+          success: true,
+          data: dbCall,
+          source: 'database',
+          warning: apiError.response?.data?.detail || apiError.message
+        });
+      }
+
+      return res.status(404).json({
+        success: false,
+        message: 'Conversación no encontrada',
+        error: apiError.response?.data?.detail || apiError.message
+      });
+    } catch (dbError: any) {
+      console.error('Error consultando DB en fallback:', dbError.message);
+      return res.status(404).json({
+        success: false,
+        message: 'Conversación no encontrada',
+        error: apiError.response?.data?.detail || apiError.message
+      });
+    }
   }
 });
 

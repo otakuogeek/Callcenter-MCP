@@ -27,6 +27,7 @@ import {
   Zap
 } from 'lucide-react';
 import { EnhancedStaggerContainer, EnhancedStaggerChild } from '@/components/ui/enhanced-animated-container';
+import { formatDateTimeColombia } from '@/utils/dateHelpers';
 
 interface Conflict {
   id: string;
@@ -501,10 +502,10 @@ const AgendaConflictManager = () => {
                           <p className="text-muted-foreground mb-3">{conflict.description}</p>
 
                           <div className="text-sm text-muted-foreground">
-                            Detectado: {new Date(conflict.detected_at).toLocaleString()}
+                            Detectado: {formatDateTimeColombia(conflict.detected_at)}
                             {conflict.resolved_at && (
                               <span className="ml-4">
-                                Resuelto: {new Date(conflict.resolved_at).toLocaleString()}
+                                Resuelto: {formatDateTimeColombia(conflict.resolved_at)}
                               </span>
                             )}
                           </div>

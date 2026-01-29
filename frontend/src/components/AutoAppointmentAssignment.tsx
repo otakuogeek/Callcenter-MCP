@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import api from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { formatDateColombia } from "@/utils/dateHelpers";
 
 interface AutoAssignmentRequest {
   patient_id: string;
@@ -486,7 +487,7 @@ const AutoAppointmentAssignment = () => {
                           <Calendar className="w-5 h-5 text-blue-600" />
                           <div>
                             <p className="font-medium">
-                              {new Date(assignmentResult.assigned_slot.date).toLocaleDateString('es-ES')}
+                              {formatDateColombia(assignmentResult.assigned_slot.date)}
                             </p>
                             <p className="text-sm text-gray-600">
                               {assignmentResult.assigned_slot.start_time} - {assignmentResult.assigned_slot.end_time}
@@ -565,7 +566,7 @@ const AutoAppointmentAssignment = () => {
                                   </div>
                                   <div>
                                     <p className="font-medium">
-                                      {new Date(alt.date).toLocaleDateString('es-ES')}
+                                      {formatDateColombia(alt.date)}
                                     </p>
                                     <p className="text-gray-600">Fecha</p>
                                   </div>

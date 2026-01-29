@@ -8,6 +8,7 @@ import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { Patient, PatientFilters, PDFExportOptions } from '@/types/patient';
 import { calculateAge } from '@/types/patient';
+import { convertUTCToColombiaTime } from '@/utils/dateHelpers';
 
 // Configuración de la marca
 const BRAND_CONFIG = {
@@ -644,6 +645,12 @@ interface DailyAgendaAppointment {
   status: string;
   reason?: string;
   age?: number;
+  cups_id?: number;
+  cups_code?: string;
+  cups_name?: string;
+  cups_description?: string;
+  cups_category?: string;
+  cups_price?: number;
 }
 
 interface DailyAgendaData {
@@ -673,8 +680,12 @@ export const generateDailyAgendaPDF = (agendaData: DailyAgendaData[]) => {
   const pageWidth = doc.internal.pageSize.getWidth();
   
   agendaData.forEach((agenda, agendaIndex) => {
-    // Verificar si necesitamos una nueva página
-    if (yPosition > pageHeight - 100) {
+    // Calcular espacio necesario aproximado para esta agenda
+    // Header (18) + Info profesional (24-32) + Título tabla (20) + Min 3 filas (estimado 60mm)
+    const minSpaceNeeded = 120;
+    
+    // Verificar si necesitamos una nueva página ANTES de empezar la agenda
+    if (yPosition > pageHeight - minSpaceNeeded) {
       doc.addPage();
       addHeader(doc, 'CITAS MÉDICAS AGENDA');
       yPosition = 45;
@@ -753,14 +764,20 @@ export const generateDailyAgendaPDF = (agendaData: DailyAgendaData[]) => {
       .filter((apt) => apt.status === 'Confirmada') // FILTRAR SOLO CONFIRMADAS
       .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime())
       .map((apt) => {
-        // Extraer la hora directamente del string sin conversión de zona horaria
+        // Extraer la hora del string y convertir de UTC a UTC-5 (Colombia)
         // Format: "2025-10-21 09:00:00" o "2025-10-21T09:00:00"
         const scheduledStr = String(apt.scheduled_at);
         const timeMatch = scheduledStr.match(/(\d{2}):(\d{2}):(\d{2})/);
-        const time = timeMatch ? `${timeMatch[1]}:${timeMatch[2]}:${timeMatch[3]}` : scheduledStr.slice(11, 19);
+        const utcTime = timeMatch ? `${timeMatch[1]}:${timeMatch[2]}:${timeMatch[3]}` : scheduledStr.slice(11, 19);
+        // Convertir la hora de UTC (base de datos) a UTC-5 (Colombia)
+        const time = convertUTCToColombiaTime(utcTime);
         
         const phone1 = apt.patient_phone || '';
-        const phone2 = apt.patient_email?.includes('@') ? '' : apt.patient_email || '';
+        
+        // Formatear información del CUPS
+        const cupsInfo = apt.cups_code 
+          ? `${apt.cups_code}\n${apt.cups_name || ''}`
+          : '';
         
         return [
           time,
@@ -769,44 +786,45 @@ export const generateDailyAgendaPDF = (agendaData: DailyAgendaData[]) => {
           apt.patient_document || '',
           apt.patient_eps || 'N/A',
           phone1,
-          phone2 || '0', // Mostrar 0 si no hay segundo teléfono
+          cupsInfo, // Columna CUPS
         ];
       });
     
     // Generar tabla con estilo profesional
     autoTable(doc, {
       startY: yPosition,
-      head: [['HORA', 'PACIENTE', 'EDAD', 'IDENTIFICACIÓN', 'EPS', 'TELÉFONO', 'TELÉFONO']],
+      head: [['HORA', 'PACIENTE', 'EDAD', 'IDENTIFICACIÓN', 'EPS', 'TELÉFONO', 'CUPS']],
       body: tableData,
       theme: 'grid',
       headStyles: {
         fillColor: [45, 123, 201],
         textColor: [255, 255, 255],
-        fontSize: 10,
+        fontSize: 9,
         fontStyle: 'bold',
         halign: 'center',
         lineWidth: 0.5,
         lineColor: [0, 0, 0],
       },
       bodyStyles: {
-        fontSize: 9,
-        cellPadding: 4,
+        fontSize: 8,
+        cellPadding: 3,
         lineWidth: 0.3,
         lineColor: [0, 0, 0],
       },
       columnStyles: {
-        0: { cellWidth: 22, halign: 'center', fontStyle: 'bold' }, // Hora
-        1: { cellWidth: 70, halign: 'left' }, // Paciente
-        2: { cellWidth: 15, halign: 'center' }, // Edad
-        3: { cellWidth: 30, halign: 'center' }, // Identificación
-        4: { cellWidth: 40, halign: 'left' }, // EPS
-        5: { cellWidth: 30, halign: 'center' }, // Teléfono 1
-        6: { cellWidth: 30, halign: 'center' }, // Teléfono 2
+        0: { cellWidth: 18, halign: 'center', fontStyle: 'bold' }, // Hora
+        1: { cellWidth: 60, halign: 'left' }, // Paciente (más ancho)
+        2: { cellWidth: 12, halign: 'center' }, // Edad
+        3: { cellWidth: 28, halign: 'center' }, // Identificación
+        4: { cellWidth: 35, halign: 'left' }, // EPS (más ancho)
+        5: { cellWidth: 30, halign: 'center' }, // Teléfono
+        6: { cellWidth: 50, halign: 'left', fontSize: 7 }, // CUPS
       },
-      margin: { left: 14, right: 14 },
+      margin: { left: 14, right: 14, bottom: 25 }, // Margen inferior para no pisar el footer
       alternateRowStyles: {
         fillColor: [245, 245, 245],
       },
+      showHead: 'everyPage', // Repetir encabezado en cada página
       didDrawPage: (data) => {
         yPosition = data.cursor!.y;
       },

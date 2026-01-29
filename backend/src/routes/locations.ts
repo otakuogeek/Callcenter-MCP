@@ -129,7 +129,8 @@ router.get('/:id/specialties', requireAuth, async (req: Request, res: Response) 
       [id]
     );
     return res.json(rows);
-  } catch {
+  } catch (error) {
+    console.error('Error fetching location specialties:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -166,7 +167,8 @@ router.put('/:id/specialties', requireAuth, async (req: Request, res: Response) 
       conn.release();
     }
     return res.json({ location_id: id, specialty_ids: ids });
-  } catch {
+  } catch (error) {
+    console.error('Error updating location specialties:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -191,7 +193,8 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     );
     // @ts-ignore
     return res.status(201).json({ id: result.insertId, ...d });
-  } catch {
+  } catch (error) {
+    console.error('Error creating location:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -217,7 +220,8 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
     values.push(id);
     await pool.query(`UPDATE locations SET ${fields.join(', ')} WHERE id = ?`, values);
     return res.json({ id, ...d });
-  } catch {
+  } catch (error) {
+    console.error('Error updating location:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -227,7 +231,8 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     await pool.query('DELETE FROM locations WHERE id = ?', [id]);
     return res.status(204).send();
-  } catch {
+  } catch (error) {
+    console.error('Error deleting location:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });

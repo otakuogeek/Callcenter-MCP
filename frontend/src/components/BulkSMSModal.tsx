@@ -10,6 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -75,8 +76,16 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
   const [loadingEPS, setLoadingEPS] = useState(false);
 
   const smsMessage = 'Le informamos que hay citas disponibles para [Nombre de Especialidad]. Agende su cita en: https://biosanarcall.site/users';
+  const [customMessage, setCustomMessage] = useState<string>(smsMessage);
 
-  // Cargar conteo de pacientes elegibles
+  // Inicializar mensaje SOLO cuando se abre el modal (no cuando cambia especialidad)
+  useEffect(() => {
+    if (isOpen) {
+      setCustomMessage(smsMessage); // Solo al abrir el modal
+    }
+  }, [isOpen]);
+
+  // Cargar conteo de pacientes elegibles cuando cambia la especialidad
   useEffect(() => {
     if (isOpen) {
       loadEligibleCount();
@@ -94,9 +103,9 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
           'Content-Type': 'application/json'
         }
       });
-      
+
       const data = await response.json();
-      
+
       if (data.success) {
         setEligibleCount(data.data);
       } else {
@@ -124,9 +133,9 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
           'Content-Type': 'application/json'
         }
       });
-      
+
       const data = await response.json();
-      
+
       if (data.success) {
         setAvailableEPS(data.data);
       } else {
@@ -216,6 +225,11 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
           payload.excluded_eps_ids = Array.from(excludedEPS);
         }
 
+        // Siempre enviar el mensaje personalizado (editado o no)
+        if (customMessage && customMessage.trim()) {
+          payload.custom_message = customMessage.trim();
+        }
+
         console.log(`📤 Enviando lote ${batchNumber}:`, payload);
 
         const response = await fetch(`${import.meta.env.VITE_API_URL || 'https://biosanarcall.site/api'}/sms/send-bulk-waiting-list`, {
@@ -249,7 +263,7 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
           currentFromPosition = data.data.batch_info.next_from_position;
           currentToPosition = data.data.batch_info.next_to_position;
           batchNumber++;
-          
+
           // Pausa breve entre lotes para no saturar el servidor
           await new Promise(resolve => setTimeout(resolve, 1000));
         } else {
@@ -267,7 +281,7 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
       };
 
       setSendResult(finalResult);
-      
+
       toast({
         title: "✅ Envío Completado",
         description: `Total: ${totalSent} SMS enviados exitosamente de ${allResults.length} intentos`,
@@ -298,6 +312,7 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
       setToPosition(50);
       setExcludedEPS(new Set());
       setAvailableEPS([]);
+      setCustomMessage(smsMessage); // Resetear al mensaje por defecto
       onClose();
     }
   };
@@ -428,7 +443,7 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
               </div>
               <p className="text-xs text-blue-700 mt-2">
                 Se enviarán SMS desde la posición {fromPosition} hasta la {toPosition} de la lista de espera
-                {selectedSpecialty !== "all" && eligibleCount && 
+                {selectedSpecialty !== "all" && eligibleCount &&
                   ` para ${eligibleCount.by_specialty.find(s => s.id.toString() === selectedSpecialty)?.name || 'la especialidad seleccionada'}`
                 }.
               </p>
@@ -453,13 +468,12 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
                 <CardContent>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto">
                     {availableEPS.map((eps) => (
-                      <div 
-                        key={eps.id} 
-                        className={`flex items-center gap-3 p-3 rounded-lg border transition-all ${
-                          excludedEPS.has(eps.id) 
-                            ? 'bg-red-50 border-red-300' 
-                            : 'bg-white border-gray-200 hover:border-blue-300'
-                        }`}
+                      <div
+                        key={eps.id}
+                        className={`flex items-center gap-3 p-3 rounded-lg border transition-all ${excludedEPS.has(eps.id)
+                          ? 'bg-red-50 border-red-300'
+                          : 'bg-white border-gray-200 hover:border-blue-300'
+                          }`}
                       >
                         <Checkbox
                           id={`eps-${eps.id}`}
@@ -471,12 +485,11 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
                           className="flex-1 cursor-pointer"
                         >
                           <div className="flex items-center justify-between">
-                            <span className={`text-sm font-medium ${
-                              excludedEPS.has(eps.id) ? 'text-red-700 line-through' : 'text-gray-700'
-                            }`}>
+                            <span className={`text-sm font-medium ${excludedEPS.has(eps.id) ? 'text-red-700 line-through' : 'text-gray-700'
+                              }`}>
                               {eps.name}
                             </span>
-                            <Badge 
+                            <Badge
                               variant={excludedEPS.has(eps.id) ? "destructive" : "outline"}
                               className="ml-2"
                             >
@@ -498,19 +511,47 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
               </Card>
             )}
 
-            {/* Preview del mensaje */}
+            {/* Mensaje SMS editable directamente */}
             <div className="space-y-2">
-              <Label>Vista Previa del Mensaje</Label>
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm">
-                <p className="text-gray-700">
-                  {smsMessage.replace('[Nombre de Especialidad]', selectedSpecialty !== "all" 
+              <div className="flex items-center justify-between">
+                <Label htmlFor="customMessage">Mensaje SMS</Label>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setCustomMessage(smsMessage);
+                  }}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                >
+                  Restaurar mensaje original
+                </Button>
+              </div>
+              
+              <Textarea
+                id="customMessage"
+                value={customMessage}
+                onChange={(e) => setCustomMessage(e.target.value)}
+                placeholder="Escriba el mensaje SMS personalizado..."
+                className="min-h-[100px] text-sm"
+              />
+              
+              {/* Vista previa con reemplazo de variables */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <p className="text-xs font-medium text-blue-900 mb-1">
+                  <MessageSquare className="h-3 w-3 inline mr-1" />
+                  Vista Previa del Mensaje:
+                </p>
+                <p className="text-sm text-blue-700">
+                  {customMessage.replace('[Nombre de Especialidad]', selectedSpecialty !== "all"
                     ? eligibleCount?.by_specialty.find(s => s.id.toString() === selectedSpecialty)?.name || '[Nombre de Especialidad]'
                     : '[Nombre de Especialidad]'
                   )}
                 </p>
               </div>
+              
               <p className="text-xs text-gray-500">
-                El texto "[Nombre de Especialidad]" se reemplazará con la especialidad de cada paciente
+                💡 El texto "[Nombre de Especialidad]" se reemplazará automáticamente con la especialidad de cada paciente
               </p>
             </div>
           </>
@@ -552,9 +593,8 @@ const BulkSMSModal = ({ isOpen, onClose, onSuccess }: BulkSMSModalProps) => {
               {sendResult.results.map((result, index) => (
                 <div
                   key={index}
-                  className={`flex items-center justify-between p-3 border-b last:border-b-0 ${
-                    result.status === 'success' ? 'bg-green-50' : 'bg-red-50'
-                  }`}
+                  className={`flex items-center justify-between p-3 border-b last:border-b-0 ${result.status === 'success' ? 'bg-green-50' : 'bg-red-50'
+                    }`}
                 >
                   <div className="flex-1">
                     <p className="text-sm font-medium">{result.patient_name}</p>

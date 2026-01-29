@@ -359,14 +359,6 @@ const SmartAppointmentModal = ({
                       
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 text-amber-600" />
-                          <div>
-                            <p className="text-sm font-medium">Posición en Cola</p>
-                            <p className="text-sm text-muted-foreground">#{result.queueEntry.position}</p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
                           <Clock className="w-4 h-4 text-amber-600" />
                           <div>
                             <p className="text-sm font-medium">Tiempo Estimado</p>

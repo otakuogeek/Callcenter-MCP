@@ -32,6 +32,7 @@ import {
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { useToast } from "@/hooks/use-toast";
+import { formatDateTimeColombia } from "@/utils/dateHelpers";
 import {
   Select,
   SelectContent,
@@ -732,7 +733,7 @@ const SMS = () => {
                       {filteredLogs.map((sms) => (
                         <TableRow key={sms.id} className="hover:bg-gray-50">
                           <TableCell className="whitespace-nowrap">
-                            {format(new Date(sms.sent_at), "dd/MM/yyyy HH:mm", { locale: es })}
+                            {formatDateTimeColombia(sms.sent_at)}
                           </TableCell>
                           <TableCell>
                             {sms.recipient_name || <span className="text-gray-400">-</span>}
@@ -886,7 +887,7 @@ const SMS = () => {
                 <div className="space-y-2">
                   <Label className="text-sm font-medium text-gray-600">Fecha de envío</Label>
                   <p className="text-sm">
-                    {format(new Date(selectedMessage.sent_at), "dd/MM/yyyy HH:mm", { locale: es })}
+                    {formatDateTimeColombia(selectedMessage.sent_at)}
                   </p>
                 </div>
                 <div className="space-y-2">

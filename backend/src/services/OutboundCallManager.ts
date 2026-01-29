@@ -72,8 +72,8 @@ export interface CampaignStats {
 export class OutboundCallManager {
   private db: mysql.Connection;
   private redis: Redis;
-  private zadarmaApiKey: string;
-  private zadarmaSecret: string;
+  private elevenLabsApiKey: string;
+  private elevenLabsAgentId: string;
   private callerIdInternational: string;
   private maxConcurrentCalls: number;
   private timezone: string;
@@ -84,8 +84,8 @@ export class OutboundCallManager {
   constructor(config: {
     db: mysql.Connection;
     redis: Redis;
-    zadarmaApiKey: string;
-    zadarmaSecret: string;
+    elevenLabsApiKey: string;
+    elevenLabsAgentId: string;
     callerIdInternational: string;
     maxConcurrentCalls?: number;
     timezone?: string;
@@ -95,8 +95,8 @@ export class OutboundCallManager {
   }) {
     this.db = config.db;
     this.redis = config.redis;
-    this.zadarmaApiKey = config.zadarmaApiKey;
-    this.zadarmaSecret = config.zadarmaSecret;
+    this.elevenLabsApiKey = config.elevenLabsApiKey;
+    this.elevenLabsAgentId = config.elevenLabsAgentId;
     this.callerIdInternational = config.callerIdInternational;
     this.maxConcurrentCalls = config.maxConcurrentCalls || 5;
     this.timezone = config.timezone || 'America/Bogota';
@@ -294,8 +294,8 @@ export class OutboundCallManager {
       // Preparar script personalizado
       const script = this.personalizeScript(call.script_template, call.variables || {});
 
-      // Hacer la llamada a través de Zadarma
-      const callResult = await this.makeZadarmaCall(call.phone_number, script);
+      // Hacer la llamada a través de ElevenLabs
+      const callResult = await this.makeOutboundCall(call.phone_number, script);
 
       if (callResult.success) {
         await this.updateCallStatus(call.id, 'completed', {
@@ -316,39 +316,33 @@ export class OutboundCallManager {
     }
   }
 
-  private async makeZadarmaCall(phoneNumber: string, script: string): Promise<any> {
+  private async makeOutboundCall(phoneNumber: string, script: string): Promise<any> {
     try {
-      // Simular llamada a Zadarma API
-      // En implementación real, usar la API de Zadarma para iniciar llamada
-      
-      const response = await axios.post('https://api.zadarma.com/v1/request/callback/', {
-        from: this.callerIdInternational,
+      // Usar ElevenLabs API para llamadas salientes
+      const response = await axios.post('https://api.elevenlabs.io/v1/convai/conversation/phone', {
+        agent_id: this.elevenLabsAgentId,
         to: phoneNumber,
-        predicted: true,
-        caller_id: this.callerIdInternational
+        from: this.callerIdInternational
       }, {
         headers: {
-          'Authorization': `Bearer ${this.zadarmaApiKey}`,
+          'xi-api-key': this.elevenLabsApiKey,
           'Content-Type': 'application/json'
         }
       });
 
-      // Simular procesamiento de la llamada y respuesta del paciente
-      // En implementación real, esto se manejaría a través de webhooks de Zadarma
-      
       return {
         success: true,
-        duration: Math.floor(Math.random() * 120) + 30, // 30-150 segundos
+        conversationId: response.data.conversation_id,
+        duration: 0, // Se actualizará via webhook
         response: { 
           answered: true, 
-          user_input: '1', // simulación
-          satisfaction_score: 4 
+          status: response.data.status
         },
-        result_type: 'confirmed'
+        result_type: 'initiated'
       };
 
     } catch (error) {
-      console.error('Zadarma API error:', error);
+      console.error('ElevenLabs API error:', error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error'

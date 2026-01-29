@@ -1,5 +1,4 @@
-
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,7 +10,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { jwtDecode } from "jwt-decode";
 
 interface AddUserModalProps {
   isOpen: boolean;
@@ -28,7 +29,20 @@ const AddUserModal = ({ isOpen, onClose, onUserAdded }: AddUserModalProps) => {
     role: "agent",
     password: "",
   });
+  const [currentUserRole, setCurrentUserRole] = useState<string>('');
   const { toast } = useToast();
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const decoded: any = jwtDecode(token);
+        setCurrentUserRole(decoded.role || '');
+      } catch (e) {
+        console.error('Error decoding token:', e);
+      }
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,6 +125,27 @@ const AddUserModal = ({ isOpen, onClose, onUserAdded }: AddUserModalProps) => {
               onChange={(e) => setFormData({ ...formData, department: e.target.value })}
               placeholder="call-center"
             />
+          </div>
+          <div>
+            <Label htmlFor="role">Rol *</Label>
+            <Select value={formData.role} onValueChange={(value) => setFormData({ ...formData, role: value })}>
+              <SelectTrigger>
+                <SelectValue placeholder="Seleccione un rol" />
+              </SelectTrigger>
+              <SelectContent>
+                {currentUserRole === 'superadmin' && (
+                  <SelectItem value="superadmin">Super Admin</SelectItem>
+                )}
+                <SelectItem value="admin">Administrador</SelectItem>
+                <SelectItem value="supervisor">Supervisor</SelectItem>
+                <SelectItem value="agent">Agente</SelectItem>
+                <SelectItem value="doctor">Doctor</SelectItem>
+                <SelectItem value="reception">Recepción</SelectItem>
+              </SelectContent>
+            </Select>
+            {formData.role === 'superadmin' && (
+              <p className="text-xs text-orange-600 mt-1">⚠️ Este rol tiene acceso total al sistema</p>
+            )}
           </div>
           <div>
             <Label htmlFor="password">Contraseña *</Label>

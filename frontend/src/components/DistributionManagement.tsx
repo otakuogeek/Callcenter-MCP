@@ -7,10 +7,55 @@ import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { useDistribution } from '@/hooks/useDistribution';
-import { Edit, Save, X, Users, Calendar, Clock, MapPin, Stethoscope } from 'lucide-react';
+import { Edit, Save, X, Users, Calendar, Clock, MapPin, Stethoscope, ChevronDown, ChevronUp, Loader2, Eye, AlertTriangle, Phone } from 'lucide-react';
 import { safeFormatDate } from '@/utils/dateHelpers';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 import { es } from 'date-fns/locale';
+import api from '@/lib/api';
+import { useToast } from '@/hooks/use-toast';
+
+interface AppointmentDetail {
+  id: number;
+  scheduledAt: string;
+  status: string;
+  reason: string;
+  durationMinutes: number;
+  createdAt: string;
+  patient: {
+    id: number;
+    name: string;
+    documentType: string;
+    document: string;
+    phone: string;
+  };
+}
+
+interface AvailabilityDetail {
+  availability: {
+    id: number;
+    date: string;
+    startTime: string;
+    endTime: string;
+    capacity: number;
+    bookedSlots: number;
+    status: string;
+    doctorName: string;
+    specialtyName: string;
+    locationName: string;
+  };
+  summary: {
+    totalAppointments: number;
+    confirmedAppointments: number;
+    cancelledAppointments: number;
+    noShowAppointments: number;
+    capacity: number;
+    availableSlots: number;
+    occupancyRate: number;
+    isOverbooked: boolean;
+  };
+  statusBreakdown: Record<string, number>;
+  appointments: AppointmentDetail[];
+}
 
 interface DistributionManagementProps {
   distributions: Array<{
@@ -34,9 +79,64 @@ const DistributionManagement: React.FC<DistributionManagementProps> = ({
   onDistributionUpdate 
 }) => {
   const { updateAssignedSlots, loading } = useDistribution();
+  const { toast } = useToast();
   const [editingId, setEditingId] = useState<number | null>(null);
   const [newAssigned, setNewAssigned] = useState<number>(0);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  
+  // Estado para ver detalles de citas
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState<number | null>(null);
+  const [detailsCache, setDetailsCache] = useState<Record<number, AvailabilityDetail>>({});
+
+  const loadAppointmentDetails = async (availabilityId: number) => {
+    // Si ya está expandido, cerrar
+    if (expandedId === availabilityId) {
+      setExpandedId(null);
+      return;
+    }
+    
+    // Si ya tenemos los datos en cache, solo expandir
+    if (detailsCache[availabilityId]) {
+      setExpandedId(availabilityId);
+      return;
+    }
+    
+    try {
+      setLoadingDetails(availabilityId);
+      const response = await api.getAvailabilityAppointments(availabilityId);
+      
+      if (response.success) {
+        setDetailsCache(prev => ({
+          ...prev,
+          [availabilityId]: response.data
+        }));
+        setExpandedId(availabilityId);
+      } else {
+        throw new Error('Error al cargar detalles');
+      }
+    } catch (error: any) {
+      console.error('Error loading appointment details:', error);
+      toast({
+        title: "Error",
+        description: "No se pudieron cargar los detalles de las citas",
+        variant: "destructive"
+      });
+    } finally {
+      setLoadingDetails(null);
+    }
+  };
+
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case 'Confirmada': return 'default';
+      case 'Completada': return 'secondary';
+      case 'Cancelada': return 'destructive';
+      case 'No asistió': return 'outline';
+      case 'Pendiente': return 'secondary';
+      default: return 'outline';
+    }
+  };
 
   const handleEditClick = (distribution: any) => {
     setEditingId(distribution.availability_id);
@@ -248,10 +348,118 @@ const DistributionManagement: React.FC<DistributionManagementProps> = ({
                     </Badge>
                   </div>
                   <Progress 
-                    value={utilizationRate} 
+                    value={Math.min(utilizationRate, 100)} 
                     className="h-2"
                   />
                 </div>
+
+                {/* Botón para ver detalles de citas */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full mt-2"
+                  onClick={() => loadAppointmentDetails(distribution.availability_id)}
+                  disabled={loadingDetails === distribution.availability_id}
+                >
+                  {loadingDetails === distribution.availability_id ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : expandedId === distribution.availability_id ? (
+                    <ChevronUp className="h-4 w-4 mr-2" />
+                  ) : (
+                    <Eye className="h-4 w-4 mr-2" />
+                  )}
+                  {expandedId === distribution.availability_id ? 'Ocultar citas' : 'Ver citas agendadas'}
+                </Button>
+
+                {/* Panel expandible con detalles de citas */}
+                {expandedId === distribution.availability_id && detailsCache[distribution.availability_id] && (
+                  <div className="mt-4 pt-4 border-t bg-gray-50 -mx-6 px-6 pb-2">
+                    {(() => {
+                      const details = detailsCache[distribution.availability_id];
+                      return (
+                        <>
+                          {/* Resumen de ocupación */}
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                            <div className="bg-white p-2 rounded border text-center">
+                              <div className="text-xs text-gray-500">Confirmadas</div>
+                              <div className="text-lg font-bold text-green-600">{details.summary.confirmedAppointments}</div>
+                            </div>
+                            <div className="bg-white p-2 rounded border text-center">
+                              <div className="text-xs text-gray-500">Canceladas</div>
+                              <div className="text-lg font-bold text-red-500">{details.summary.cancelledAppointments}</div>
+                            </div>
+                            <div className="bg-white p-2 rounded border text-center">
+                              <div className="text-xs text-gray-500">Disponibles</div>
+                              <div className="text-lg font-bold text-blue-600">{details.summary.availableSlots}</div>
+                            </div>
+                            <div className="bg-white p-2 rounded border text-center">
+                              <div className="text-xs text-gray-500">Ocupación</div>
+                              <div className={`text-lg font-bold ${details.summary.isOverbooked ? 'text-amber-600' : 'text-gray-700'}`}>
+                                {details.summary.occupancyRate}%
+                              </div>
+                            </div>
+                          </div>
+
+                          {details.summary.isOverbooked && (
+                            <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded flex items-center gap-2">
+                              <AlertTriangle className="h-4 w-4 text-amber-500" />
+                              <span className="text-sm text-amber-700">
+                                Sobregiro: {details.summary.confirmedAppointments - details.summary.capacity} citas extra
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Lista de citas */}
+                          <div className="text-sm font-medium text-gray-700 mb-2">
+                            Citas agendadas ({details.appointments.length}):
+                          </div>
+                          
+                          {details.appointments.length === 0 ? (
+                            <div className="text-center py-4 text-gray-500 text-sm">
+                              No hay citas agendadas para esta disponibilidad
+                            </div>
+                          ) : (
+                            <div className="max-h-64 overflow-y-auto space-y-2">
+                              {details.appointments.map((apt) => (
+                                <div 
+                                  key={apt.id} 
+                                  className={`p-3 rounded border ${
+                                    apt.status === 'Cancelada' || apt.status === 'No asistió' 
+                                      ? 'bg-gray-50 opacity-60' 
+                                      : 'bg-white'
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1">
+                                      <div className="font-medium text-sm">{apt.patient.name}</div>
+                                      <div className="text-xs text-gray-500 flex items-center gap-2 mt-1">
+                                        <span>{apt.patient.documentType}: {apt.patient.document}</span>
+                                        {apt.patient.phone && (
+                                          <span className="flex items-center gap-1">
+                                            <Phone className="h-3 w-3" />
+                                            {apt.patient.phone}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="text-xs text-gray-500 mt-1">
+                                        <Clock className="h-3 w-3 inline mr-1" />
+                                        {format(parseISO(apt.scheduledAt), 'HH:mm', { locale: es })}
+                                        {apt.reason && ` - ${apt.reason}`}
+                                      </div>
+                                    </div>
+                                    <Badge variant={getStatusBadgeVariant(apt.status)} className="text-xs">
+                                      {apt.status}
+                                    </Badge>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
               </CardContent>
             </Card>
           );

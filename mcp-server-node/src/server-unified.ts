@@ -2,9 +2,314 @@ import express from 'express';
 import cors from 'cors';
 import mysql from 'mysql2/promise';
 import dotenv from 'dotenv';
+import https from 'https';
+import { getNowInTimeZone, convertDbToLocalTime, formatAppointmentForPatient, convertTimeFromUTC, convertTimeFromUTCtoAMPM, formatTimeRangeFromUTC } from './utils/timezone';
+import { addMinutesToTime, minutesToTime, timeToMinutes } from './utils/time';
 
 // Cargar variables de entorno
 dotenv.config();
+
+// ===================================================================
+// CONFIGURACIÓN DE ESPECIALIDADES (antes hardcodeada en el código)
+// Modifique estos valores si los IDs de especialidades cambian en la BD
+// ===================================================================
+const SPECIALTY_CONFIG = {
+  // Especialidades que permiten agendar en cualquier día (no requieren coincidir fecha exacta)
+  FLEXIBLE_SCHEDULING: [1, 5], // 1 = Medicina General, 5 = Odontología
+
+  // Especialidades que soportan cita doble (2 cupos consecutivos)
+  DOUBLE_APPOINTMENT_ENABLED: [5], // 5 = Odontología
+
+  // IDs de referencia (para documentación)
+  IDS: {
+    MEDICINA_GENERAL: 1,
+    ODONTOLOGIA: 5
+  }
+};
+
+// ===================================================================
+// SERVICIO DE SMS LABSMOBILE (Para confirmación de citas desde MCP)
+// ===================================================================
+interface SMSResult {
+  success: boolean;
+  error?: string;
+  message_id?: string;
+}
+
+/**
+ * Formatea un número telefónico al formato internacional para LabsMobile
+ */
+function formatPhoneNumber(phone: string): string {
+  // Eliminar todos los caracteres que no sean dígitos
+  let cleaned = phone.replace(/\D/g, '');
+
+  // Eliminar el prefijo 0 si está presente
+  if (cleaned.startsWith('0')) {
+    cleaned = cleaned.substring(1);
+  }
+
+  // Casos de números colombianos
+  if (cleaned.length === 10) {
+    return '57' + cleaned;
+  } else if (cleaned.startsWith('57') && cleaned.length === 12) {
+    return cleaned;
+  } else if (cleaned.length === 7) {
+    return '5716' + cleaned;
+  }
+
+  if (phone.startsWith('+')) {
+    return phone.substring(1);
+  }
+
+  return '57' + cleaned;
+}
+
+/**
+ * Envía un SMS usando LabsMobile API
+ */
+async function sendSMSLabsMobile(phone: string, message: string): Promise<SMSResult> {
+  return new Promise((resolve) => {
+    try {
+      const username = process.env.LABSMOBILE_USERNAME || 'contacto@biosanarcall.site';
+      const apiKey = process.env.LABSMOBILE_API_KEY || 'Eq7Pcy8mxuQBiVenKqAXwdyiCAmeDER8';
+      const sender = process.env.LABSMOBILE_SENDER || 'Biosanar';
+
+      const formattedPhone = formatPhoneNumber(phone);
+
+      const payload = JSON.stringify({
+        recipient: [{ msisdn: formattedPhone }],
+        message: message,
+        tpoa: sender
+      });
+
+      const auth = Buffer.from(`${username}:${apiKey}`).toString('base64');
+
+      const options = {
+        hostname: 'api.labsmobile.com',
+        port: 443,
+        path: '/json/send',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+          'Authorization': `Basic ${auth}`,
+          'Cache-Control': 'no-cache'
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          try {
+            const response = JSON.parse(data);
+            if (response.code === '0' || response.code === 0) {
+              console.log(`✅ [MCP-SMS] SMS enviado exitosamente a ${formattedPhone}`);
+              resolve({ success: true, message_id: response.subid });
+            } else {
+              console.warn(`⚠️ [MCP-SMS] Error de LabsMobile: ${response.message || response.code}`);
+              resolve({ success: false, error: response.message || `Error código ${response.code}` });
+            }
+          } catch (parseError) {
+            console.error('❌ [MCP-SMS] Error parseando respuesta:', parseError);
+            resolve({ success: false, error: 'Error parseando respuesta de LabsMobile' });
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.error('❌ [MCP-SMS] Error de red:', error.message);
+        resolve({ success: false, error: error.message });
+      });
+
+      req.setTimeout(30000, () => {
+        req.destroy();
+        resolve({ success: false, error: 'Timeout enviando SMS' });
+      });
+
+      req.write(payload);
+      req.end();
+
+    } catch (error: any) {
+      console.error('❌ [MCP-SMS] Error:', error.message);
+      resolve({ success: false, error: error.message });
+    }
+  });
+}
+
+/**
+ * Envía SMS de confirmación de cita
+ */
+async function sendAppointmentConfirmationSMS(
+  phone: string,
+  patientName: string,
+  fechaLocal: string,
+  horaLocal: string,
+  doctorName: string,
+  specialtyName: string,
+  locationName: string,
+  appointmentId: number,
+  isDoubleAppointment: boolean = false,
+  segundaHoraLocal?: string | null
+): Promise<void> {
+  try {
+    // Obtener solo el primer nombre del paciente
+    const firstName = patientName.split(' ')[0];
+
+    // Construir mensaje SMS (sin emojis para compatibilidad)
+    let smsMessage = `Hola ${firstName}! Tu cita ha sido CONFIRMADA.\n\n`;
+    smsMessage += `Fecha: ${fechaLocal}\n`;
+    smsMessage += `Hora: ${horaLocal}\n`;
+    smsMessage += `Especialidad: ${specialtyName}\n`;
+    smsMessage += `Doctor(a): ${doctorName}\n`;
+    smsMessage += `Sede: ${locationName}\n`;
+    smsMessage += `Cita #${appointmentId}\n\n`;
+
+    if (isDoubleAppointment && segundaHoraLocal) {
+      smsMessage += `CITA DOBLE: Tambien tienes cita a las ${segundaHoraLocal}\n\n`;
+    }
+
+    smsMessage += `Recuerda llegar 15 min antes.\nFundacion Biosanar IPS`;
+
+    // Enviar SMS de forma asíncrona (no bloquear la respuesta)
+    sendSMSLabsMobile(phone, smsMessage).then(result => {
+      if (result.success) {
+        console.log(`📱 [MCP] SMS de confirmación enviado a ${phone} para cita #${appointmentId}`);
+      } else {
+        console.warn(`📱 [MCP] No se pudo enviar SMS a ${phone}: ${result.error}`);
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ [MCP] Error preparando SMS de confirmación:', error.message);
+  }
+}
+
+/**
+ * Envía SMS de notificación de lista de espera
+ */
+async function sendWaitingListSMS(
+  phone: string,
+  patientName: string,
+  specialtyName: string,
+  queuePosition: number,
+  totalWaiting: number,
+  priorityLevel: string,
+  waitingListId: number,
+  cupsName?: string | null
+): Promise<void> {
+  try {
+    // Obtener solo el primer nombre del paciente
+    const firstName = patientName.split(' ')[0];
+
+    // Construir mensaje SMS para lista de espera
+    let smsMessage = `Hola ${firstName}! Has sido agregado a la LISTA DE ESPERA.\n\n`;
+    smsMessage += `Especialidad: ${specialtyName}\n`;
+
+    if (cupsName) {
+      smsMessage += `Procedimiento: ${cupsName}\n`;
+    }
+
+    smsMessage += `Prioridad: ${priorityLevel}\n`;
+    smsMessage += `Solicitud #${waitingListId}\n\n`;
+    smsMessage += `Te notificaremos cuando haya disponibilidad.\n`;
+    smsMessage += `Una operadora se comunicara contigo.\n\n`;
+    smsMessage += `Fundacion Biosanar IPS`;
+
+    // Enviar SMS de forma asíncrona (no bloquear la respuesta)
+    sendSMSLabsMobile(phone, smsMessage).then(result => {
+      if (result.success) {
+        console.log(`📱 [MCP] SMS de lista de espera enviado a ${phone} para solicitud #${waitingListId}`);
+      } else {
+        console.warn(`📱 [MCP] No se pudo enviar SMS a ${phone}: ${result.error}`);
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ [MCP] Error preparando SMS de lista de espera:', error.message);
+  }
+}
+
+/**
+ * Envía SMS de cancelación de cita
+ */
+async function sendCancellationSMS(
+  phone: string,
+  patientName: string,
+  fechaLocal: string,
+  horaLocal: string,
+  specialtyName: string,
+  appointmentId: number,
+  cancellationReason: string
+): Promise<void> {
+  try {
+    // Obtener solo el primer nombre del paciente
+    const firstName = patientName.split(' ')[0];
+
+    // Construir mensaje SMS de cancelación
+    let smsMessage = `Hola ${firstName}! Tu cita ha sido CANCELADA.\n\n`;
+    smsMessage += `Cita #${appointmentId}\n`;
+    smsMessage += `Fecha: ${fechaLocal}\n`;
+    smsMessage += `Hora: ${horaLocal}\n`;
+    smsMessage += `Especialidad: ${specialtyName}\n`;
+    smsMessage += `Motivo: ${cancellationReason}\n\n`;
+    smsMessage += `Para agendar una nueva cita, comunicate con nosotros.\n\n`;
+    smsMessage += `Fundacion Biosanar IPS`;
+
+    // Enviar SMS de forma asíncrona (no bloquear la respuesta)
+    sendSMSLabsMobile(phone, smsMessage).then(result => {
+      if (result.success) {
+        console.log(`📱 [MCP] SMS de cancelación enviado a ${phone} para cita #${appointmentId}`);
+      } else {
+        console.warn(`📱 [MCP] No se pudo enviar SMS a ${phone}: ${result.error}`);
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ [MCP] Error preparando SMS de cancelación:', error.message);
+  }
+}
+
+/**
+ * Envía SMS de reagendamiento desde lista de espera
+ */
+async function sendReassignmentSMS(
+  phone: string,
+  patientName: string,
+  fechaLocal: string,
+  horaLocal: string,
+  doctorName: string,
+  specialtyName: string,
+  locationName: string,
+  appointmentId: number
+): Promise<void> {
+  try {
+    // Obtener solo el primer nombre del paciente
+    const firstName = patientName.split(' ')[0];
+
+    // Construir mensaje SMS de reagendamiento
+    let smsMessage = `Hola ${firstName}! BUENAS NOTICIAS! Hemos agendado tu cita.\n\n`;
+    smsMessage += `Fecha: ${fechaLocal}\n`;
+    smsMessage += `Hora: ${horaLocal}\n`;
+    smsMessage += `Especialidad: ${specialtyName}\n`;
+    smsMessage += `Doctor(a): ${doctorName}\n`;
+    smsMessage += `Sede: ${locationName}\n`;
+    smsMessage += `Cita #${appointmentId}\n\n`;
+    smsMessage += `Recuerda llegar 15 min antes.\nFundacion Biosanar IPS`;
+
+    // Enviar SMS de forma asíncrona (no bloquear la respuesta)
+    sendSMSLabsMobile(phone, smsMessage).then(result => {
+      if (result.success) {
+        console.log(`📱 [MCP] SMS de reagendamiento enviado a ${phone} para cita #${appointmentId}`);
+      } else {
+        console.warn(`📱 [MCP] No se pudo enviar SMS a ${phone}: ${result.error}`);
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ [MCP] Error preparando SMS de reagendamiento:', error.message);
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 8977;
@@ -35,6 +340,9 @@ let pool: mysql.Pool;
 
 // Crear pool de conexiones
 try {
+  // La BD almacena en UTC-0, configurar mysql2 para leer en UTC
+  // La conversión a hora Colombia (UTC-5) se hace después con convertDbToLocalTime
+  const dbTimezone = process.env.DB_TIMEZONE || '+00:00';
   pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     port: Number(process.env.DB_PORT) || 3306,
@@ -42,12 +350,12 @@ try {
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME || 'biosanar',
     charset: 'utf8mb4',
-    timezone: '+00:00',
+    timezone: dbTimezone,
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
   });
-  console.log('✓ Configuración de pool MySQL completada');
+  console.log('✓ Configuración de pool MySQL completada (timezone: ' + dbTimezone + ')');
 } catch (error) {
   console.error('✗ Error configurando pool MySQL:', error);
   process.exit(1);
@@ -157,21 +465,21 @@ const UNIFIED_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        document: { 
-          type: 'string', 
-          description: 'Cédula o documento de identidad del paciente (OBLIGATORIO)' 
+        document: {
+          type: 'string',
+          description: 'Cédula o documento de identidad del paciente (OBLIGATORIO)'
         },
-        name: { 
-          type: 'string', 
-          description: 'Nombre completo del paciente (OBLIGATORIO)' 
+        name: {
+          type: 'string',
+          description: 'Nombre completo del paciente (OBLIGATORIO)'
         },
-        phone: { 
-          type: 'string', 
-          description: 'Número de teléfono principal (OBLIGATORIO)' 
+        phone: {
+          type: 'string',
+          description: 'Número de teléfono principal (OBLIGATORIO)'
         },
-        phone_alt: { 
-          type: 'string', 
-          description: 'Número de teléfono alternativo/secundario (OPCIONAL)' 
+        phone_alt: {
+          type: 'string',
+          description: 'Número de teléfono alternativo/secundario (OPCIONAL)'
         },
         birth_date: {
           type: 'string',
@@ -187,13 +495,13 @@ const UNIFIED_TOOLS = [
           type: 'number',
           description: 'ID de la zona geográfica (OBLIGATORIO). Use listZones para consultar zonas disponibles'
         },
-        insurance_eps_id: { 
-          type: 'number', 
-          description: 'ID de la EPS (OBLIGATORIO). Use listActiveEPS para consultar EPS disponibles' 
+        insurance_eps_id: {
+          type: 'number',
+          description: 'ID de la EPS (OBLIGATORIO). Use listActiveEPS para consultar EPS disponibles'
         },
-        notes: { 
-          type: 'string', 
-          description: 'Notas adicionales opcionales sobre el paciente' 
+        notes: {
+          type: 'string',
+          description: 'Notas adicionales opcionales sobre el paciente'
         }
       },
       required: ['document', 'name', 'phone', 'birth_date', 'gender', 'zone_id', 'insurance_eps_id']
@@ -212,6 +520,10 @@ const UNIFIED_TOOLS = [
         specialty_id: {
           type: 'number',
           description: 'ID de la especialidad médica (opcional, filtra por especialidad)'
+        },
+        specialty_name: {
+          type: 'string',
+          description: 'NOMBRE de la especialidad médica (opcional, se convierte automáticamente a specialty_id). Ej: "Odontología", "Medicina General", "Psicología". Soporta búsqueda parcial e insensible a acentos.'
         },
         location_id: {
           type: 'number',
@@ -250,8 +562,32 @@ const UNIFIED_TOOLS = [
     }
   },
   {
+    name: 'getAvailableTimeSlots',
+    description: 'Obtiene los horarios ESPECÍFICOS disponibles (ej: 9:15 AM, 9:45 AM, 10:00 AM) para una fecha, especialidad y sede específicas. Calcula los slots de tiempo basándose en la duración de la consulta, las citas ya agendadas y el horario de atención. Permite al paciente elegir una hora EXACTA de preferencia para su cita. USAR DESPUÉS de getAvailableAppointments para mostrar opciones de horario detalladas.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        availability_id: {
+          type: 'number',
+          description: 'ID de la disponibilidad específica (obtenido de getAvailableAppointments)'
+        },
+        day_date: {
+          type: 'string',
+          description: 'Fecha específica para consultar horarios en formato YYYY-MM-DD',
+          pattern: '^\\d{4}-\\d{2}-\\d{2}$'
+        },
+        limit: {
+          type: 'number',
+          description: 'Número máximo de horarios a retornar (default: 10)',
+          default: 10
+        }
+      },
+      required: ['availability_id', 'day_date']
+    }
+  },
+  {
     name: 'scheduleAppointment',
-    description: 'Asigna una cita médica al paciente. Actualiza la disponibilidad y crea el registro de la cita. IMPORTANTE: Medicina General (ID 1) y Odontología (ID 5) permiten agendar en CUALQUIER DÍA mientras exista disponibilidad. Otras especialidades requieren que la fecha coincida exactamente con la availability.',
+    description: 'Asigna una cita médica al paciente. CITAS DOBLES EN ODONTOLOGÍA: Si el motivo contiene "cita doble", "doble cita" o "2 cupos", se reservan automáticamente 2 cupos consecutivos. Si no hay espacio suficiente, se sugiere otro día. Un paciente puede tener múltiples citas activas en DIFERENTES especialidades, pero solo 1 cita activa por especialidad. Si ya tiene una cita en la misma especialidad, se cancela automáticamente. Medicina General (ID 1) y Odontología (ID 5) permiten agendar en CUALQUIER DÍA mientras exista disponibilidad. Otras especialidades requieren que la fecha coincida exactamente con la availability.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -265,8 +601,7 @@ const UNIFIED_TOOLS = [
         },
         scheduled_date: {
           type: 'string',
-          description: 'Fecha y hora de la cita en formato YYYY-MM-DD HH:MM:SS. Para Medicina General y Odontología puede ser cualquier día futuro. Para otras especialidades debe coincidir con la fecha de la availability.',
-          pattern: '^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$'
+          description: 'OPCIONAL. Fecha de la cita en formato YYYY-MM-DD. Si no se proporciona, se usa automáticamente la fecha de la availability. La hora se calcula automáticamente basándose en las citas ya agendadas.',
         },
         appointment_type: {
           type: 'string',
@@ -289,7 +624,7 @@ const UNIFIED_TOOLS = [
           default: 'Normal'
         }
       },
-      required: ['patient_id', 'availability_id', 'scheduled_date', 'reason']
+      required: ['patient_id', 'availability_id', 'reason']
     }
   },
   {
@@ -788,6 +1123,29 @@ const UNIFIED_TOOLS = [
       },
       required: ['document']
     }
+  },
+  {
+    name: 'cancelarCitasVencidas',
+    description: 'Cancela automáticamente las citas vencidas (fecha anterior a la fecha actual) de un paciente específico que NO estén en estado "Cancelada". El paciente debe estar autenticado y proporcionar su documento de identidad. Esta herramienta debe ejecutarse con la fecha actual obtenida desde {{system__time}} de ElevenLabs. Cambia el estado de las citas vencidas (Pendiente, Confirmada, Completada) a "Cancelada" solo para el paciente identificado.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: {
+          type: 'string',
+          description: 'Número de documento de identidad del paciente (OBLIGATORIO). Solo se cancelarán las citas vencidas de este paciente específico.'
+        },
+        current_date: {
+          type: 'string',
+          description: 'Fecha y hora actual en formato ISO 8601 (YYYY-MM-DDTHH:mm:ss) obtenida desde {{system__time}} de ElevenLabs. Ejemplo: "2025-11-21T15:30:00"'
+        },
+        dry_run: {
+          type: 'boolean',
+          description: 'Si es true, solo muestra qué citas se cancelarían sin hacer cambios reales (útil para pruebas). Default: false',
+          default: false
+        }
+      },
+      required: ['document', 'current_date']
+    }
   }
 ];
 
@@ -799,95 +1157,103 @@ async function executeToolCall(name: string, args: any): Promise<any> {
     if (name === 'listActiveEPS') {
       return await listActiveEPS();
     }
-    
+
     if (name === 'listZones') {
       return await listZones();
     }
-    
+
     if (name === 'getEPSServices') {
       return await getEPSServices(args.eps_id);
     }
-    
+
     if (name === 'searchPatient') {
       return await searchPatient(args);
     }
-    
+
     if (name === 'registerPatientSimple') {
       return await registerPatientSimple(args);
     }
-    
+
     if (name === 'getAvailableAppointments') {
       return await getAvailableAppointments(args);
     }
-    
+
     if (name === 'checkAvailabilityQuota') {
       return await checkAvailabilityQuota(args);
     }
-    
+
+    if (name === 'getAvailableTimeSlots') {
+      return await getAvailableTimeSlots(args);
+    }
+
     if (name === 'scheduleAppointment') {
       return await scheduleAppointment(args);
     }
-    
+
     if (name === 'addToWaitingList') {
       return await addToWaitingList(args);
     }
-    
+
     if (name === 'getPatientAppointments') {
       return await getPatientAppointments(args);
     }
-    
+
     if (name === 'getWaitingListAppointments') {
       return await getWaitingListAppointments(args);
     }
-    
+
     if (name === 'searchSpecialties') {
       return await searchSpecialties(args);
     }
-    
+
     if (name === 'searchCups') {
       return await searchCups(args);
     }
-    
+
     if (name === 'searchCupsByName') {
       return await searchCupsByName(args);
     }
-    
+
     if (name === 'reassignWaitingListAppointments') {
       return await reassignWaitingListAppointments(args);
     }
-    
+
     if (name === 'registerPregnancy') {
       return await registerPregnancy(args);
     }
-    
+
     if (name === 'getActivePregnancies') {
       return await getActivePregnancies(args);
     }
-    
+
     if (name === 'updatePregnancyStatus') {
       return await updatePregnancyStatus(args);
     }
-    
+
     if (name === 'registerPrenatalControl') {
       return await registerPrenatalControl(args);
     }
-    
+
     if (name === 'cancelAppointment') {
       return await cancelAppointment(args);
     }
-    
+
     if (name === 'syncAvailabilityQuotas') {
       return await syncAvailabilityQuotas(args);
     }
-    
+
     if (name === 'auditAvailabilityQuotas') {
       return await auditAvailabilityQuotas(args);
     }
-    
+
     if (name === 'actualizarPhone') {
       return await actualizarPhone(args);
     }
-    
+
+    if (name === 'cancelarCitasVencidas') {
+      return await cancelarCitasVencidas(args);
+    }
+
     throw new Error(`Herramienta no implementada: ${name}`);
   } catch (error: any) {
     console.error(`Error ejecutando ${name}:`, error);
@@ -900,7 +1266,7 @@ async function executeToolCall(name: string, args: any): Promise<any> {
 // ===================================================================
 async function listActiveEPS(): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const [rows] = await connection.execute(`
       SELECT 
@@ -916,7 +1282,7 @@ async function listActiveEPS(): Promise<any> {
       WHERE status = 'active'
       ORDER BY name ASC
     `);
-    
+
     const epsList = (rows as any[]).map(eps => ({
       id: eps.id,
       name: eps.name,
@@ -926,10 +1292,10 @@ async function listActiveEPS(): Promise<any> {
       notes: eps.notes || '',
       created_at: eps.created_at
     }));
-    
+
     // Crear lista de presentación amigable (sin IDs)
     const displayList = epsList.map(eps => eps.name).join(', ');
-    
+
     return {
       success: true,
       count: epsList.length,
@@ -939,7 +1305,7 @@ async function listActiveEPS(): Promise<any> {
       usage_note: 'Use el campo "id" como insurance_eps_id para registrar pacientes con registerPatientSimple (opcional)',
       presentation_note: 'Al mencionar las EPS al paciente, use el campo "display_list" para una presentación más natural sin IDs'
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando EPS:', error);
     return {
@@ -957,7 +1323,7 @@ async function listActiveEPS(): Promise<any> {
 // ===================================================================
 async function listZones(): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const [rows] = await connection.execute(`
       SELECT 
@@ -968,17 +1334,17 @@ async function listZones(): Promise<any> {
       FROM zones 
       ORDER BY name ASC
     `);
-    
+
     const zonesList = (rows as any[]).map(zone => ({
       id: zone.id,
       name: zone.name,
       description: zone.description || '',
       created_at: zone.created_at
     }));
-    
+
     // Crear lista de presentación amigable (sin IDs)
     const displayList = zonesList.map(zone => zone.name).join(' o ');
-    
+
     return {
       success: true,
       count: zonesList.length,
@@ -988,7 +1354,7 @@ async function listZones(): Promise<any> {
       usage_note: 'Use el campo "id" como zone_id para registrar pacientes con registerPatientSimple (OBLIGATORIO)',
       presentation_note: 'Al mencionar las zonas al paciente, use el campo "display_list" para una presentación más natural sin IDs'
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando zonas:', error);
     return {
@@ -1006,7 +1372,7 @@ async function listZones(): Promise<any> {
 // ===================================================================
 async function getEPSServices(eps_id: number): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     // Validar que eps_id sea proporcionado
     if (!eps_id) {
@@ -1136,7 +1502,7 @@ async function getEPSServices(eps_id: number): Promise<any> {
       usage_note: 'Los servicios listados son los únicos autorizados para esta EPS. Solo puede agendar citas en estas especialidades y sedes.',
       presentation_note: 'Al informar al paciente, use summary.specialties_display para mencionar las especialidades disponibles'
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando servicios de EPS:', error);
     return {
@@ -1154,10 +1520,20 @@ async function getEPSServices(eps_id: number): Promise<any> {
 // ===================================================================
 async function searchPatient(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { document, name, phone, patient_id } = args;
-    
+    let { document, name, phone, patient_id } = args;
+
+    // NORMALIZACIÓN DE DOCUMENTO: Eliminar cualquier carácter que no sea dígito
+    // Ejemplos: "17-265.900" -> "17265900", "1.104.072.487" -> "1104072487"
+    if (document) {
+      const originalDocument = document;
+      document = document.replace(/[^0-9]/g, '');
+      if (originalDocument !== document) {
+        console.log(`[searchPatient] Documento normalizado: "${originalDocument}" -> "${document}"`);
+      }
+    }
+
     // Validar que al menos un criterio de búsqueda fue proporcionado
     if (!document && !name && !phone && !patient_id) {
       return {
@@ -1171,7 +1547,7 @@ async function searchPatient(args: any): Promise<any> {
         }
       };
     }
-    
+
     let query = `
       SELECT 
         p.id,
@@ -1199,35 +1575,35 @@ async function searchPatient(args: any): Promise<any> {
       LEFT JOIN municipalities m ON p.municipality_id = m.id
       WHERE p.status = 'Activo'
     `;
-    
+
     const params: any[] = [];
-    
+
     // Construir query dinámicamente según los criterios proporcionados
     if (patient_id) {
       query += ' AND p.id = ?';
       params.push(patient_id);
     }
-    
+
     if (document) {
       query += ' AND p.document = ?';
       params.push(document);
     }
-    
+
     if (name) {
       query += ' AND p.name LIKE ?';
       params.push(`%${name}%`);
     }
-    
+
     if (phone) {
       query += ' AND p.phone LIKE ?';
       params.push(`%${phone}%`);
     }
-    
+
     query += ' ORDER BY p.created_at DESC LIMIT 20';
-    
+
     const [rows] = await connection.execute(query, params);
     const patients = rows as any[];
-    
+
     if (patients.length === 0) {
       return {
         success: true,
@@ -1243,7 +1619,7 @@ async function searchPatient(args: any): Promise<any> {
         note: 'Solo se muestran pacientes con estado ACTIVO'
       };
     }
-    
+
     // Formatear resultados con edad calculada
     const patientsFormatted = patients.map(patient => {
       let age = null;
@@ -1256,7 +1632,7 @@ async function searchPatient(args: any): Promise<any> {
           age--;
         }
       }
-      
+
       return {
         id: patient.id,
         document: patient.document,
@@ -1284,7 +1660,7 @@ async function searchPatient(args: any): Promise<any> {
         created_at: patient.created_at
       };
     });
-    
+
     return {
       success: true,
       found: true,
@@ -1298,7 +1674,7 @@ async function searchPatient(args: any): Promise<any> {
         patient_id: patient_id || null
       }
     };
-    
+
   } catch (error: any) {
     console.error('Error buscando paciente:', error);
     return {
@@ -1316,14 +1692,27 @@ async function searchPatient(args: any): Promise<any> {
 // ===================================================================
 async function registerPatientSimple(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
+    // NORMALIZACIÓN DE DOCUMENTO: Eliminar caracteres no numéricos
+    if (args.document) {
+      args.document = args.document.replace(/[^0-9]/g, '');
+    }
+
+    // NORMALIZACIÓN DE TELÉFONO: Eliminar caracteres no numéricos
+    if (args.phone) {
+      args.phone = args.phone.replace(/[^0-9]/g, '');
+    }
+    if (args.phone_alt) {
+      args.phone_alt = args.phone_alt.replace(/[^0-9]/g, '');
+    }
+
     // 1. Validar campos obligatorios
     const requiredFields = ['document', 'name', 'phone', 'birth_date', 'gender', 'zone_id', 'insurance_eps_id'];
     const missingFields = requiredFields.filter(field => !args[field]);
-    
+
     if (missingFields.length > 0) {
       await connection.rollback();
       return {
@@ -1341,7 +1730,7 @@ async function registerPatientSimple(args: any): Promise<any> {
         }
       };
     }
-    
+
     // 2. Validar formato de fecha de nacimiento
     const birthDateRegex = /^\d{4}-\d{2}-\d{2}$/;
     if (!birthDateRegex.test(args.birth_date)) {
@@ -1353,7 +1742,7 @@ async function registerPatientSimple(args: any): Promise<any> {
         example: '1990-05-15'
       };
     }
-    
+
     // 3. Validar género
     const validGenders = ['Masculino', 'Femenino', 'Otro', 'No especificado'];
     if (!validGenders.includes(args.gender)) {
@@ -1365,7 +1754,7 @@ async function registerPatientSimple(args: any): Promise<any> {
         received: args.gender
       };
     }
-    
+
     // 4. Validar duplicados
     const [duplicates] = await connection.execute(`
       SELECT id, document, name, phone, status
@@ -1373,7 +1762,7 @@ async function registerPatientSimple(args: any): Promise<any> {
       WHERE document = ? AND status = 'Activo'
       LIMIT 1
     `, [args.document]);
-    
+
     if ((duplicates as any[]).length > 0) {
       const duplicate = (duplicates as any[])[0];
       await connection.rollback();
@@ -1389,12 +1778,12 @@ async function registerPatientSimple(args: any): Promise<any> {
         suggestion: 'Ya existe un paciente activo con este documento'
       };
     }
-    
+
     // 5. Verificar que la EPS existe y está activa
     const [epsCheck] = await connection.execute(`
       SELECT id, name, code FROM eps WHERE id = ? AND status = 'active'
     `, [args.insurance_eps_id]);
-    
+
     if ((epsCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -1404,12 +1793,12 @@ async function registerPatientSimple(args: any): Promise<any> {
         suggestion: 'Use la herramienta listActiveEPS para consultar las EPS disponibles'
       };
     }
-    
+
     // 6. Verificar que la zona existe
     const [zoneCheck] = await connection.execute(`
       SELECT id, name FROM zones WHERE id = ?
     `, [args.zone_id]);
-    
+
     if ((zoneCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -1419,7 +1808,7 @@ async function registerPatientSimple(args: any): Promise<any> {
         suggestion: 'Use la herramienta listZones para consultar las zonas disponibles'
       };
     }
-    
+
     // 7. Insertar paciente con todos los datos obligatorios
     const [result] = await connection.execute(`
       INSERT INTO patients (
@@ -1437,10 +1826,10 @@ async function registerPatientSimple(args: any): Promise<any> {
       args.insurance_eps_id,
       args.notes || null
     ]);
-    
+
     const patient_id = (result as any).insertId;
     await connection.commit();
-    
+
     // 8. Obtener datos completos del paciente creado
     const [patientData] = await connection.execute(`
       SELECT 
@@ -1453,9 +1842,9 @@ async function registerPatientSimple(args: any): Promise<any> {
       LEFT JOIN zones z ON p.zone_id = z.id
       WHERE p.id = ?
     `, [patient_id]);
-    
+
     const patient = (patientData as any[])[0];
-    
+
     // Calcular edad
     const birthDate = new Date(patient.birth_date);
     const today = new Date();
@@ -1464,7 +1853,7 @@ async function registerPatientSimple(args: any): Promise<any> {
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
       age--;
     }
-    
+
     return {
       success: true,
       message: 'Paciente registrado exitosamente',
@@ -1490,18 +1879,18 @@ async function registerPatientSimple(args: any): Promise<any> {
         created_at: patient.created_at
       }
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error registrando paciente:', error);
-    
+
     if (error.code === 'ER_DUP_ENTRY') {
       return {
         success: false,
         error: 'Documento duplicado'
       };
     }
-    
+
     return {
       success: false,
       error: error.message
@@ -1516,15 +1905,83 @@ async function registerPatientSimple(args: any): Promise<any> {
 // ===================================================================
 async function getAvailableAppointments(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { doctor_id, specialty_id, location_id, limit = 50 } = args;
-    
+    let { doctor_id, specialty_id, location_id, limit = 50, specialty_name } = args;
+
+    // SOPORTE PARA specialty_name: Convertir nombre a ID automáticamente
+    if (specialty_name && !specialty_id) {
+      const normalizedName = specialty_name.toLowerCase().trim()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // Remover acentos
+
+      // Buscar especialidad por nombre (búsqueda parcial, case insensitive)
+      const [specialtyRows] = await connection.execute(`
+        SELECT id, name FROM specialties 
+        WHERE active = 1 
+          AND (
+            LOWER(name) LIKE ? 
+            OR LOWER(REPLACE(name, 'í', 'i')) LIKE ?
+            OR LOWER(REPLACE(name, 'ó', 'o')) LIKE ?
+            OR LOWER(REPLACE(REPLACE(name, 'í', 'i'), 'ó', 'o')) LIKE ?
+          )
+        ORDER BY 
+          CASE WHEN LOWER(name) = ? THEN 0 ELSE 1 END,
+          name
+        LIMIT 1
+      `, [
+        `%${normalizedName}%`,
+        `%${normalizedName}%`,
+        `%${normalizedName}%`,
+        `%${normalizedName}%`,
+        normalizedName
+      ]);
+
+      if ((specialtyRows as any[]).length > 0) {
+        specialty_id = (specialtyRows as any[])[0].id;
+        console.log(`[getAvailableAppointments] Convertido specialty_name="${specialty_name}" a specialty_id=${specialty_id}`);
+      } else {
+        // Intentar búsqueda más flexible con SOUNDEX o similitud
+        const [fuzzyRows] = await connection.execute(`
+          SELECT id, name FROM specialties 
+          WHERE active = 1
+          ORDER BY name
+        `);
+
+        // Encontrar la mejor coincidencia
+        const specialties = fuzzyRows as any[];
+        const bestMatch = specialties.find(s => {
+          const sName = s.name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+          return sName.includes(normalizedName) || normalizedName.includes(sName);
+        });
+
+        if (bestMatch) {
+          specialty_id = bestMatch.id;
+          console.log(`[getAvailableAppointments] Convertido (fuzzy) specialty_name="${specialty_name}" a specialty_id=${specialty_id} (${bestMatch.name})`);
+        } else {
+          return {
+            success: false,
+            error: `No se encontró la especialidad "${specialty_name}"`,
+            available_specialties: specialties.map(s => s.name),
+            suggestion: 'Usa una de las especialidades listadas o usa searchSpecialties para buscar'
+          };
+        }
+      }
+    }
+
+    // REGLA E: Obtener fecha y hora actual para filtrar correctamente
+    // No solo filtramos por fecha >= hoy, sino también por hora si es hoy
+    const now = getNowInTimeZone();
+    const currentDate = now.date; // YYYY-MM-DD (America/Bogota)
+    const currentTime = now.time; // HH:MM:SS (America/Bogota)
+
     // Query base que obtiene availabilities activas
+    // FILTRO CRÍTICO: 
+    // - Si la fecha es FUTURA (> hoy): incluir siempre
+    // - Si la fecha es HOY: solo incluir si end_time > hora actual
     let query = `
       SELECT 
         a.id as availability_id,
-        a.date as appointment_date,
+        DATE_FORMAT(a.date, '%Y-%m-%d') as appointment_date,
         a.start_time,
         a.end_time,
         a.duration_minutes,
@@ -1554,27 +2011,31 @@ async function getAvailableAppointments(args: any): Promise<any> {
       INNER JOIN doctors d ON a.doctor_id = d.id
       INNER JOIN specialties s ON a.specialty_id = s.id
       INNER JOIN locations l ON a.location_id = l.id
-      WHERE a.date >= CURDATE()
-        AND a.status = 'Activa'
+      WHERE a.status = 'Activa'
+        AND (
+          a.date > ?
+          OR (a.date = ? AND a.end_time > ?)
+        )
     `;
-    
-    const params: any[] = [];
-    
+
+    // SECURITY FIX: Use parameterized queries to prevent SQL injection
+    const params: any[] = [currentDate, currentDate, currentTime];
+
     if (doctor_id) {
       query += ' AND a.doctor_id = ?';
       params.push(doctor_id);
     }
-    
+
     if (specialty_id) {
       query += ' AND a.specialty_id = ?';
       params.push(specialty_id);
     }
-    
+
     if (location_id) {
       query += ' AND a.location_id = ?';
       params.push(location_id);
     }
-    
+
     query += ` 
       GROUP BY a.id, a.date, a.start_time, a.end_time, a.duration_minutes, a.capacity, a.status,
                d.id, d.name, d.email, d.phone,
@@ -1584,10 +2045,10 @@ async function getAvailableAppointments(args: any): Promise<any> {
       LIMIT ?
     `;
     params.push(limit);
-    
+
     const [rows] = await connection.execute(query, params);
     const appointments = rows as any[];
-    
+
     if (appointments.length === 0) {
       return {
         success: true,
@@ -1597,17 +2058,17 @@ async function getAvailableAppointments(args: any): Promise<any> {
         available_appointments: []
       };
     }
-    
+
     // ===================================================================
     // AGRUPACIÓN POR ESPECIALIDAD + SEDE
     // ===================================================================
-    
+
     const groupedBySpecialtyLocation: any = {};
-    
+
     appointments.forEach(apt => {
       // Clave: especialidad + sede
       const groupKey = `specialty${apt.specialty_id}_location${apt.location_id}`;
-      
+
       if (!groupedBySpecialtyLocation[groupKey]) {
         groupedBySpecialtyLocation[groupKey] = {
           specialty: {
@@ -1622,29 +2083,25 @@ async function getAvailableAppointments(args: any): Promise<any> {
           },
           doctors: [],
           availabilities: [],
-          total_slots_available: 0,
-          total_waiting_list: 0,
           earliest_date: apt.appointment_date,
           has_direct_availability: false
         };
       }
-      
+
       // Agregar availability
       groupedBySpecialtyLocation[groupKey].availabilities.push({
         availability_id: apt.availability_id,
         appointment_date: apt.appointment_date,
-        time_range: `${apt.start_time.slice(0,5)} - ${apt.end_time.slice(0,5)}`,
-        start_time: apt.start_time.slice(0,5),
-        end_time: apt.end_time.slice(0,5),
+        time_range: formatTimeRangeFromUTC(apt.start_time, apt.end_time),
+        start_time: convertTimeFromUTCtoAMPM(apt.start_time),
+        end_time: convertTimeFromUTCtoAMPM(apt.end_time),
         duration_minutes: apt.duration_minutes,
         doctor: {
           id: apt.doctor_id,
           name: apt.doctor_name
-        },
-        slots_available: apt.slots_available,
-        waiting_list_count: apt.waiting_list_count || 0
+        }
       });
-      
+
       // Agregar doctor (sin duplicar)
       const doctorExists = groupedBySpecialtyLocation[groupKey].doctors.some(
         (d: any) => d.id === apt.doctor_id
@@ -1657,54 +2114,49 @@ async function getAvailableAppointments(args: any): Promise<any> {
           phone: apt.doctor_phone
         });
       }
-      
-      groupedBySpecialtyLocation[groupKey].total_slots_available += apt.slots_available;
-      groupedBySpecialtyLocation[groupKey].total_waiting_list += (apt.waiting_list_count || 0);
-      
+
       if (apt.slots_available > 0) {
         groupedBySpecialtyLocation[groupKey].has_direct_availability = true;
       }
-      
+
       // Actualizar fecha más temprana
       if (apt.appointment_date < groupedBySpecialtyLocation[groupKey].earliest_date) {
         groupedBySpecialtyLocation[groupKey].earliest_date = apt.appointment_date;
       }
     });
-    
+
     // Convertir a array y ordenar
     const specialtiesArray = Object.values(groupedBySpecialtyLocation).map((group: any) => {
       // Ordenar availabilities por fecha y hora
       group.availabilities.sort((a: any, b: any) => {
         if (a.appointment_date !== b.appointment_date) {
-          return a.appointment_date.getTime() - b.appointment_date.getTime();
+          return String(a.appointment_date).localeCompare(String(b.appointment_date));
         }
         return a.start_time.localeCompare(b.start_time);
       });
-      
+
       // Formatear earliest_date
-      group.earliest_date = group.earliest_date.toISOString().split('T')[0];
-      
+      group.earliest_date = String(group.earliest_date);
+
       return group;
     });
-    
+
     // Ordenar por especialidad
-    specialtiesArray.sort((a: any, b: any) => 
+    specialtiesArray.sort((a: any, b: any) =>
       a.specialty.name.localeCompare(b.specialty.name)
     );
-    
+
     // Extraer lista única de especialidades
     const uniqueSpecialties = Array.from(
       new Set(specialtiesArray.map((g: any) => g.specialty.name))
     ).sort();
-    
+
     // Formato plano para compatibilidad
     const formattedAppointments = appointments.map(apt => ({
       availability_id: apt.availability_id,
-      appointment_date: apt.appointment_date,
-      time_range: `${apt.start_time.slice(0,5)} - ${apt.end_time.slice(0,5)}`,
+      appointment_date: String(apt.appointment_date),
+      time_range: formatTimeRangeFromUTC(apt.start_time, apt.end_time),
       duration_minutes: apt.duration_minutes,
-      slots_available: apt.slots_available,
-      waiting_list_count: apt.waiting_list_count || 0,
       doctor_id: apt.doctor_id,
       doctor_name: apt.doctor_name,
       specialty_id: apt.specialty_id,
@@ -1712,7 +2164,7 @@ async function getAvailableAppointments(args: any): Promise<any> {
       location_id: apt.location_id,
       location_name: apt.location_name
     }));
-    
+
     return {
       success: true,
       message: `Se encontraron ${uniqueSpecialties.length} especialidades con agendas disponibles`,
@@ -1728,7 +2180,7 @@ async function getAvailableAppointments(args: any): Promise<any> {
         usage: 'Use specialty_id + location_id para verificar cupos con checkAvailabilityQuota'
       }
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando citas disponibles:', error);
     return {
@@ -1747,17 +2199,17 @@ async function getAvailableAppointments(args: any): Promise<any> {
 // ===================================================================
 async function checkAvailabilityQuota(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const { specialty_id, location_id, day_date } = args;
-    
+
     if (!specialty_id || !location_id) {
       return {
         success: false,
         error: 'specialty_id y location_id son requeridos'
       };
     }
-    
+
     // 1. Obtener información de la especialidad y sede
     const [specialtyInfo] = await connection.execute(`
       SELECT 
@@ -1771,16 +2223,16 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
       CROSS JOIN locations l
       WHERE s.id = ? AND l.id = ?
     `, [specialty_id, location_id]);
-    
+
     if ((specialtyInfo as any[]).length === 0) {
       return {
         success: false,
         error: 'Especialidad o sede no encontrada'
       };
     }
-    
+
     const info = (specialtyInfo as any[])[0];
-    
+
     // 2. Obtener TODAS las availabilities de esta especialidad en esta sede
     let availQuery = `
       SELECT 
@@ -1799,19 +2251,19 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
         AND a.location_id = ? 
         AND a.status = 'Activa'
     `;
-    
+
     const queryParams: any[] = [specialty_id, location_id];
-    
+
     if (day_date) {
       availQuery += ' AND a.date >= ?';
       queryParams.push(day_date);
     }
-    
+
     availQuery += ' ORDER BY a.date ASC, a.start_time ASC';
-    
+
     const [availabilities] = await connection.execute(availQuery, queryParams);
     const availArray = availabilities as any[];
-    
+
     if (availArray.length === 0) {
       return {
         success: false,
@@ -1821,10 +2273,10 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
         suggestion: 'Intente con otra sede o consulte las especialidades disponibles'
       };
     }
-    
+
     // 3. Para cada availability, obtener su distribución de cupos
     const availabilityIds = availArray.map(a => a.availability_id);
-    
+
     let distQuery = `
       SELECT 
         availability_id,
@@ -1835,35 +2287,35 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
       FROM availability_distribution
       WHERE availability_id IN (${availabilityIds.map(() => '?').join(',')})
     `;
-    
+
     const distParams = [...availabilityIds];
-    
+
     if (day_date) {
       distQuery += ' AND day_date >= ?';
       distParams.push(day_date);
     }
-    
+
     const [distributions] = await connection.execute(distQuery, distParams);
     const distArray = distributions as any[];
-    
+
     // 4. Calcular totales agregados por especialidad+sede
     let totalQuota = 0;
     let totalAssigned = 0;
     let totalAvailable = 0;
-    
+
     const distributionsByAvailability: any = {};
-    
+
     distArray.forEach((dist: any) => {
       totalQuota += dist.quota;
       totalAssigned += dist.assigned;
       totalAvailable += dist.slots_available;
-      
+
       if (!distributionsByAvailability[dist.availability_id]) {
         distributionsByAvailability[dist.availability_id] = [];
       }
       distributionsByAvailability[dist.availability_id].push(dist);
     });
-    
+
     // 5. Contar lista de espera para esta especialidad+sede
     const [waitingList] = await connection.execute(`
       SELECT COUNT(*) as waiting_count
@@ -1873,23 +2325,23 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
         AND a.location_id = ? 
         AND wl.status = 'pending'
     `, [specialty_id, location_id]);
-    
+
     const waitingCount = (waitingList as any[])[0].waiting_count;
-    
+
     // 6. Obtener doctores únicos
     const uniqueDoctors = Array.from(new Set(availArray.map(a => a.doctor_name)));
-    
+
     // 7. Construir información detallada de availabilities con cupos
     const availabilitiesWithQuota = availArray.map(avail => {
       const dists = distributionsByAvailability[avail.availability_id] || [];
       const availQuota = dists.reduce((sum: number, d: any) => sum + d.quota, 0);
       const availAssigned = dists.reduce((sum: number, d: any) => sum + d.assigned, 0);
       const availAvailable = availQuota - availAssigned;
-      
+
       return {
         availability_id: avail.availability_id,
         appointment_date: avail.appointment_date,
-        time_range: `${avail.start_time.slice(0, 5)} - ${avail.end_time.slice(0, 5)}`,
+        time_range: formatTimeRangeFromUTC(avail.start_time, avail.end_time),
         doctor: {
           id: avail.doctor_id,
           name: avail.doctor_name
@@ -1900,14 +2352,14 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
         has_availability: availAvailable > 0
       };
     });
-    
+
     // 8. Determinar si puede agendar directamente o debe ir a lista de espera
     const canScheduleDirect = totalAvailable > 0;
     const hasAnyAvailability = availabilitiesWithQuota.some(a => a.has_availability);
-    
+
     // 9. Seleccionar primera availability con cupos (para recomendación)
     const recommendedAvailability = availabilitiesWithQuota.find(a => a.has_availability);
-    
+
     return {
       success: true,
       specialty: {
@@ -1934,8 +2386,8 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
         can_schedule_direct: canScheduleDirect,
         should_use_waiting_list: !canScheduleDirect,
         suggested_availability_id: recommendedAvailability?.availability_id || availabilitiesWithQuota[0]?.availability_id,
-        action: canScheduleDirect 
-          ? 'Proceder con scheduleAppointment (sin priority_level)' 
+        action: canScheduleDirect
+          ? 'Proceder con scheduleAppointment (sin priority_level)'
           : 'Proceder con scheduleAppointment (incluir priority_level: "Normal")',
         message: canScheduleDirect
           ? `Puede agendar cita directa.`
@@ -1947,7 +2399,7 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
         usage: 'Use suggested_availability_id para agendar con scheduleAppointment'
       }
     };
-    
+
   } catch (error: any) {
     console.error('Error verificando cupos disponibles:', error);
     return {
@@ -1961,30 +2413,206 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
 }
 
 // ===================================================================
+// FUNCIÓN: OBTENER HORARIOS ESPECÍFICOS DISPONIBLES
+// ===================================================================
+async function getAvailableTimeSlots(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+
+  try {
+    const { availability_id, day_date, limit = 10 } = args;
+
+    if (!availability_id || !day_date) {
+      return {
+        success: false,
+        error: 'availability_id y day_date son requeridos'
+      };
+    }
+
+    // 1. Obtener información de la availability
+    const [availInfo] = await connection.execute(`
+      SELECT 
+        a.id,
+        a.date,
+        a.start_time,
+        a.end_time,
+        a.duration_minutes,
+        a.capacity,
+        d.id as doctor_id,
+        d.name as doctor_name,
+        s.id as specialty_id,
+        s.name as specialty_name,
+        l.id as location_id,
+        l.name as location_name
+      FROM availabilities a
+      INNER JOIN doctors d ON a.doctor_id = d.id
+      INNER JOIN specialties s ON a.specialty_id = s.id
+      INNER JOIN locations l ON a.location_id = l.id
+      WHERE a.id = ? AND a.status = 'Activa'
+    `, [availability_id]);
+
+    if ((availInfo as any[]).length === 0) {
+      return {
+        success: false,
+        error: 'Availability no encontrada o inactiva'
+      };
+    }
+
+    const availability = (availInfo as any[])[0];
+
+    // 2. Obtener todas las citas ya agendadas para este día y availability
+    const [bookedAppointments] = await connection.execute(`
+      SELECT 
+        TIME(scheduled_at) as appointment_time,
+        duration_minutes
+      FROM appointments
+      WHERE availability_id = ?
+        AND DATE(scheduled_at) = ?
+        AND status IN ('Pendiente', 'Confirmada')
+      ORDER BY scheduled_at ASC
+    `, [availability_id, day_date]);
+
+    const bookedSlots = bookedAppointments as any[];
+
+    // 3. Calcular slots de tiempo disponibles
+    const startTime = String(availability.start_time);
+    const endTime = String(availability.end_time);
+    const durationMinutes = Number(availability.duration_minutes);
+
+    const timeSlots: any[] = [];
+    let currentTime = timeToMinutes(startTime);
+    const endMinutes = timeToMinutes(endTime);
+
+    // FIX: Get current time to filter out past slots if querying for today
+    const now = getNowInTimeZone();
+    const isToday = day_date === now.date;
+    const currentTimeMinutes = isToday ? timeToMinutes(now.time) : 0;
+
+    // Crear slots cada <duration_minutes> desde start_time hasta end_time
+    while (currentTime + durationMinutes <= endMinutes) {
+      const slotTime = minutesToTime(currentTime);
+      const slotEndTime = minutesToTime(currentTime + durationMinutes);
+
+      // FIX: Skip slots that have already passed if this is for today
+      if (isToday && (currentTime + durationMinutes) <= currentTimeMinutes) {
+        currentTime += durationMinutes;
+        continue;
+      }
+
+      // Verificar si este slot está ocupado
+      const isBooked = bookedSlots.some((booked: any) => {
+        const bookedStart = String(booked.appointment_time);
+        return bookedStart === slotTime;
+      });
+
+      if (!isBooked) {
+        timeSlots.push({
+          time: slotTime,
+          time_formatted: convertTimeFromUTCtoAMPM(slotTime),
+          end_time: slotEndTime,
+          end_time_formatted: convertTimeFromUTCtoAMPM(slotEndTime),
+          duration_minutes: durationMinutes,
+          status: 'available',
+          scheduled_datetime: `${day_date} ${slotTime}`
+        });
+      }
+
+      // Si ya tenemos suficientes slots, parar
+      if (timeSlots.length >= limit) {
+        break;
+      }
+
+      currentTime += durationMinutes;
+    }
+
+    // 4. Verificar cupos disponibles para esta fecha
+    const [quotaCheck] = await connection.execute(`
+      SELECT 
+        quota,
+        assigned,
+        (quota - assigned) as slots_available
+      FROM availability_distribution
+      WHERE availability_id = ?
+      ORDER BY (quota - assigned) DESC
+      LIMIT 1
+    `, [availability_id]);
+
+    const quotaInfo = (quotaCheck as any[]).length > 0 ? (quotaCheck as any[])[0] : null;
+    const hasQuota = quotaInfo && quotaInfo.slots_available > 0;
+
+    return {
+      success: true,
+      message: timeSlots.length > 0
+        ? `Se encontraron ${timeSlots.length} horarios disponibles para ${day_date}`
+        : `No hay horarios disponibles para ${day_date}`,
+      date: day_date,
+      availability_id: availability_id,
+      doctor: {
+        id: availability.doctor_id,
+        name: availability.doctor_name
+      },
+      specialty: {
+        id: availability.specialty_id,
+        name: availability.specialty_name
+      },
+      location: {
+        id: availability.location_id,
+        name: availability.location_name
+      },
+      time_range: formatTimeRangeFromUTC(startTime, endTime),
+      duration_per_slot: durationMinutes,
+      quota_info: quotaInfo ? {
+        total_quota: quotaInfo.quota,
+        assigned: quotaInfo.assigned,
+        available: quotaInfo.slots_available,
+        has_quota: hasQuota
+      } : null,
+      available_time_slots: timeSlots,
+      total_slots_found: timeSlots.length,
+      booked_slots_count: bookedSlots.length,
+      usage_instructions: {
+        step_1: 'El paciente puede elegir uno de los horarios disponibles',
+        step_2: 'Usar el campo scheduled_datetime del slot elegido para llamar a scheduleAppointment',
+        step_3: 'Ejemplo: scheduleAppointment({ patient_id, availability_id, scheduled_date: "2026-01-21 09:15:00", reason })'
+      }
+    };
+
+  } catch (error: any) {
+    console.error('Error obteniendo horarios disponibles:', error);
+    return {
+      success: false,
+      error: 'Error al obtener horarios disponibles',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
 // FUNCIÓN: AGENDAR CITA
 // ===================================================================
 async function scheduleAppointment(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
-    const { 
-      patient_id, 
-      availability_id, 
-      scheduled_date,
+
+    const {
+      patient_id,
+      availability_id,
+      scheduled_date: providedScheduledDate,
       appointment_type = 'Presencial',
       reason,
       notes,
       priority_level = 'Normal'
     } = args;
-    
-    // 1. Validar que el paciente existe
+
+    // 1. Validar que el paciente existe y obtener su teléfono
     const [patientCheck] = await connection.execute(
-      'SELECT id, name, document FROM patients WHERE id = ? AND status = "Activo"',
+      'SELECT id, name, document, phone, phone_alt FROM patients WHERE id = ? AND status = "Activo"',
       [patient_id]
     );
-    
+
     if ((patientCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -1992,13 +2620,13 @@ async function scheduleAppointment(args: any): Promise<any> {
         error: 'Paciente no encontrado o inactivo'
       };
     }
-    
+
     const patient = (patientCheck as any[])[0];
-    
+
     // 2. Obtener información de disponibilidad
     const [availCheck] = await connection.execute(`
       SELECT 
-        a.id, a.date, a.start_time, a.end_time, a.duration_minutes,
+        a.id, DATE_FORMAT(a.date, '%Y-%m-%d') as date, a.start_time, a.end_time, a.duration_minutes,
         a.location_id, a.specialty_id, a.doctor_id,
         d.name as doctor_name,
         s.name as specialty_name,
@@ -2009,7 +2637,7 @@ async function scheduleAppointment(args: any): Promise<any> {
       INNER JOIN locations l ON a.location_id = l.id
       WHERE a.id = ? AND a.status = 'Activa'
     `, [availability_id]);
-    
+
     if ((availCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -2017,20 +2645,35 @@ async function scheduleAppointment(args: any): Promise<any> {
         error: 'Disponibilidad no encontrada o inactiva'
       };
     }
-    
+
     const availability = (availCheck as any[])[0];
-    
+
+    // 2.5 DERIVAR scheduled_date si no se proporciona
+    // Si no viene scheduled_date, usar la fecha de la availability
+    let scheduled_date: string;
+    if (providedScheduledDate) {
+      // Si viene con hora (YYYY-MM-DD HH:MM:SS), usarla. Si solo fecha (YYYY-MM-DD), agregar la hora de inicio
+      if (providedScheduledDate.includes(':')) {
+        scheduled_date = providedScheduledDate;
+      } else {
+        // Solo tiene fecha, agregar hora de inicio de la availability
+        scheduled_date = `${providedScheduledDate} ${availability.start_time}`;
+      }
+    } else {
+      // No se proporcionó, derivar de la availability
+      scheduled_date = `${String(availability.date)} ${availability.start_time}`;
+    }
+
     // 3. Extraer día de scheduled_date para verificar distribución
     const requestedDate = scheduled_date.split(' ')[0]; // "2025-10-15"
-    
-    // 4. ESPECIALIDADES FLEXIBLES: Medicina General (ID 1) y Odontología (ID 5)
+
+    // 4. ESPECIALIDADES FLEXIBLES: Usar configuración centralizada
     // Permiten agendar en cualquier día mientras exista disponibilidad
-    const flexibleSpecialties = [1, 5]; // 1 = Medicina General, 5 = Odontología
-    const isFlexibleSpecialty = flexibleSpecialties.includes(availability.specialty_id);
-    
+    const isFlexibleSpecialty = SPECIALTY_CONFIG.FLEXIBLE_SCHEDULING.includes(availability.specialty_id);
+
     // 4.1 Para especialidades NO flexibles, verificar coincidencia de fecha
     if (!isFlexibleSpecialty) {
-      const availabilityDate = availability.date.toISOString().split('T')[0];
+      const availabilityDate = String(availability.date);
       if (requestedDate !== availabilityDate) {
         await connection.rollback();
         return {
@@ -2040,14 +2683,11 @@ async function scheduleAppointment(args: any): Promise<any> {
         };
       }
     }
-    
+
     // 4.2 Para especialidades flexibles, solo verificar que la fecha no sea pasada
     if (isFlexibleSpecialty) {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const requestedDateObj = new Date(requestedDate);
-      
-      if (requestedDateObj < today) {
+      const todayYmd = getNowInTimeZone().date;
+      if (requestedDate < todayYmd) {
         await connection.rollback();
         return {
           success: false,
@@ -2056,69 +2696,179 @@ async function scheduleAppointment(args: any): Promise<any> {
         };
       }
     }
-    
-    // 4.5. CALCULAR PRÓXIMA HORA DISPONIBLE
-    // Buscar la última cita agendada para esta availability en esta fecha
-    const [lastAppointment] = await connection.execute(`
-      SELECT 
-        scheduled_at,
-        duration_minutes,
-        DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) as end_time
-      FROM appointments
-      WHERE availability_id = ?
-        AND DATE(scheduled_at) = ?
-        AND status IN ('Pendiente', 'Confirmada')
-      ORDER BY scheduled_at DESC
-      LIMIT 1
-    `, [availability_id, requestedDate]);
-    
+
+    // 4.5. VALIDAR O CALCULAR HORA DE LA CITA
+    // Si el usuario especificó una hora, RESPETAR esa hora (verificando disponibilidad)
+    // Si no especificó hora, calcular automáticamente el siguiente slot disponible
+
+    const requestedTime = scheduled_date.includes(':') ? scheduled_date.split(' ')[1] : null;
     let calculatedDateTime: string;
-    
-    if ((lastAppointment as any[]).length > 0) {
-      // Si hay citas previas, calcular siguiente hora disponible
-      const lastAppt = (lastAppointment as any[])[0];
-      const lastEndTime = new Date(lastAppt.end_time);
-      
-      // La nueva cita empieza justo cuando termina la anterior
-      calculatedDateTime = lastEndTime.toISOString().slice(0, 19).replace('T', ' ');
-      
-      // Verificar que no exceda el end_time de la availability
-      const availEndTime = `${requestedDate} ${availability.end_time}`;
-      const availEnd = new Date(availEndTime);
-      const newEnd = new Date(lastEndTime);
-      newEnd.setMinutes(newEnd.getMinutes() + availability.duration_minutes);
-      
-      if (newEnd > availEnd) {
+
+    if (requestedTime) {
+      // USUARIO ESPECIFICÓ UNA HORA - Verificar que no esté ocupada
+      const [conflictingAppointment] = await connection.execute(`
+        SELECT id, scheduled_at, duration_minutes
+        FROM appointments
+        WHERE availability_id = ?
+          AND DATE(scheduled_at) = ?
+          AND status IN ('Pendiente', 'Confirmada')
+          AND (
+            -- Verificar solapamiento: la nueva cita empieza durante una existente
+            (TIME(scheduled_at) <= ? AND TIME(DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE)) > ?)
+            OR
+            -- La nueva cita contiene el inicio de una existente
+            (TIME(scheduled_at) >= ? AND TIME(scheduled_at) < ADDTIME(?, SEC_TO_TIME(? * 60)))
+          )
+      `, [
+        availability_id,
+        requestedDate,
+        requestedTime, requestedTime,
+        requestedTime, requestedTime, availability.duration_minutes
+      ]);
+
+      if ((conflictingAppointment as any[]).length > 0) {
+        // La hora seleccionada está ocupada - buscar siguiente slot disponible para informar
+        const [nextAvailable] = await connection.execute(`
+          SELECT 
+            TIME(DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE)) as next_available_time
+          FROM appointments
+          WHERE availability_id = ?
+            AND DATE(scheduled_at) = ?
+            AND status IN ('Pendiente', 'Confirmada')
+          ORDER BY scheduled_at DESC
+          LIMIT 1
+        `, [availability_id, requestedDate]);
+
+        const nextSlot = (nextAvailable as any[])[0]?.next_available_time || availability.start_time;
+
         await connection.rollback();
         return {
           success: false,
-          error: 'No hay espacio en este horario. La nueva cita excedería el horario de cierre',
+          error: `La hora ${requestedTime} no está disponible para esta fecha`,
           details: {
-            last_appointment_ends_at: lastEndTime.toISOString().slice(0, 19).replace('T', ' '),
-            availability_ends_at: availEndTime,
-            requested_duration: availability.duration_minutes
+            requested_time: requestedTime,
+            next_available_slot: nextSlot
           },
-          suggestion: 'Esta availability está llena. Intente con otra fecha u hora'
+          suggestion: `El horario ${requestedTime} ya está ocupado. El próximo horario disponible es ${nextSlot}`
         };
       }
+
+      // Verificar que la hora está dentro del rango de la availability
+      const requestedMinutes = timeToMinutes(requestedTime);
+      const startMinutes = timeToMinutes(String(availability.start_time));
+      const endMinutes = timeToMinutes(String(availability.end_time));
+
+      if (requestedMinutes < startMinutes || requestedMinutes + Number(availability.duration_minutes) > endMinutes) {
+        await connection.rollback();
+        return {
+          success: false,
+          error: `La hora ${requestedTime} está fuera del horario de atención`,
+          details: {
+            availability_start: availability.start_time,
+            availability_end: availability.end_time,
+            requested_time: requestedTime
+          },
+          suggestion: `El horario de atención es de ${availability.start_time} a ${availability.end_time}`
+        };
+      }
+
+      // La hora está disponible - usar exactamente la hora solicitada
+      calculatedDateTime = `${requestedDate} ${requestedTime}`;
+
     } else {
-      // Si no hay citas previas, usar el start_time de la availability
-      calculatedDateTime = `${requestedDate} ${availability.start_time}`;
+      // NO SE ESPECIFICÓ HORA - Calcular automáticamente el siguiente slot
+      const [lastAppointment] = await connection.execute(`
+        SELECT 
+          TIME(DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE)) as end_time,
+          duration_minutes
+        FROM appointments
+        WHERE availability_id = ?
+          AND DATE(scheduled_at) = ?
+          AND status IN ('Pendiente', 'Confirmada')
+        ORDER BY scheduled_at DESC
+        LIMIT 1
+      `, [availability_id, requestedDate]);
+
+      if ((lastAppointment as any[]).length > 0) {
+        const lastAppt = (lastAppointment as any[])[0];
+        const lastEndTime = String(lastAppt.end_time);
+        calculatedDateTime = `${requestedDate} ${lastEndTime}`;
+
+        // Verificar que no exceda el end_time de la availability
+        const availEndMinutes = timeToMinutes(String(availability.end_time));
+        const newEndMinutes = timeToMinutes(lastEndTime) + Number(availability.duration_minutes);
+
+        if (newEndMinutes > availEndMinutes) {
+          await connection.rollback();
+          return {
+            success: false,
+            error: 'No hay espacio en este horario. La nueva cita excedería el horario de cierre',
+            details: {
+              last_appointment_ends_at: `${requestedDate} ${lastEndTime}`,
+              availability_ends_at: `${requestedDate} ${String(availability.end_time)}`,
+              requested_duration: availability.duration_minutes
+            },
+            suggestion: 'Esta availability está llena. Intente con otra fecha u hora'
+          };
+        }
+      } else {
+        calculatedDateTime = `${requestedDate} ${availability.start_time}`;
+      }
     }
-    
+
     const scheduledDateTime = calculatedDateTime;
     const appointmentDate = requestedDate;
-    
+
+    // 4.6. DETECTAR CITA DOBLE: Usar configuración centralizada
+    // Si el motivo contiene "cita doble", "doble cita" o "2 cupos", se requieren 2 cupos consecutivos
+    const isDoubleAppointment = SPECIALTY_CONFIG.DOUBLE_APPOINTMENT_ENABLED.includes(availability.specialty_id) &&
+      /cita\s+doble|doble\s+cita|2\s+cupos|dos\s+cupos/i.test(reason);
+
+    let secondAppointmentTime = null;
+
+    if (isDoubleAppointment) {
+      // Calcular hora de segunda cita (inmediatamente después de la primera)
+      const firstTime = scheduledDateTime.split(' ')[1] || String(availability.start_time);
+      const firstEndTime = addMinutesToTime(firstTime, Number(availability.duration_minutes));
+
+      // Verificar que la segunda cita no exceda el horario de cierre
+      const availEndMinutes = timeToMinutes(String(availability.end_time));
+      const secondEndMinutes = timeToMinutes(firstEndTime) + Number(availability.duration_minutes);
+
+      if (secondEndMinutes > availEndMinutes) {
+        await connection.rollback();
+        return {
+          success: false,
+          error: 'No se puede agendar cita doble. No hay espacio suficiente en este horario',
+          details: {
+            first_appointment_ends_at: `${requestedDate} ${firstEndTime}`,
+            second_appointment_would_end_at: `${requestedDate} ${minutesToTime(secondEndMinutes)}`,
+            availability_ends_at: `${requestedDate} ${String(availability.end_time)}`,
+            duration_per_appointment: availability.duration_minutes
+          },
+          suggestion: 'La cita doble requiere 2 cupos consecutivos. Intente con otro horario o día que tenga más espacio disponible.',
+          alternative_dates_info: 'Consulte getAvailableAppointments para ver días con más disponibilidad'
+        };
+      }
+
+      secondAppointmentTime = `${requestedDate} ${firstEndTime}`;
+    }
+
     // 5. Verificar cupo disponible en availability_distribution
     // Buscar por availability_id (puede haber múltiples day_date para la misma availability)
+    const requiredQuota = isDoubleAppointment ? 2 : 1;
+
+    // RACE CONDITION FIX: Use SELECT FOR UPDATE to lock the row during transaction
+    // This prevents two concurrent requests from reserving the same slot
     const [distCheck] = await connection.execute(`
       SELECT id, day_date, quota, assigned, (quota - assigned) as available
       FROM availability_distribution
       WHERE availability_id = ?
       ORDER BY (quota - assigned) DESC
       LIMIT 1
+      FOR UPDATE
     `, [availability_id]);
-    
+
     if ((distCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -2127,13 +2877,72 @@ async function scheduleAppointment(args: any): Promise<any> {
         suggestion: 'Contacte al administrador para crear la distribución de cupos'
       };
     }
-    
+
     const distribution = (distCheck as any[])[0];
-    
-    // **NUEVA LÓGICA**: Si no hay cupos, guardar en lista de espera
-    if (distribution.available <= 0) {
-      // Insertar en appointments_waiting_list en lugar de rechazar
-      // La fecha programada puede ser flexible, se asignará cuando haya cupo
+
+    // **NUEVA LÓGICA**: Si no hay cupos suficientes, guardar en lista de espera
+    if (distribution.available < requiredQuota) {
+      const quotaMessage = isDoubleAppointment
+        ? `cita doble (requiere ${requiredQuota} cupos consecutivos)`
+        : 'cita';
+
+      // VERIFICAR si el paciente YA está en lista de espera para esta ESPECIALIDAD
+      const [existingWaitingList] = await connection.execute(`
+        SELECT 
+          wl.id,
+          wl.created_at,
+          wl.priority_level,
+          wl.reason,
+          (SELECT COUNT(*) + 1 
+           FROM appointments_waiting_list wl2
+           INNER JOIN availabilities a2 ON wl2.availability_id = a2.id
+           WHERE a2.specialty_id = ?
+             AND wl2.status = 'pending'
+             AND wl2.id != wl.id
+             AND (
+               (wl2.priority_level = 'Urgente' AND wl.priority_level != 'Urgente')
+               OR (wl2.priority_level = 'Alta' AND wl.priority_level NOT IN ('Urgente', 'Alta'))
+               OR (wl2.priority_level = 'Normal' AND wl.priority_level = 'Baja')
+               OR (wl2.priority_level = wl.priority_level AND wl2.created_at < wl.created_at)
+             )
+          ) as queue_position
+        FROM appointments_waiting_list wl
+        INNER JOIN availabilities a ON wl.availability_id = a.id
+        WHERE wl.patient_id = ?
+          AND a.specialty_id = ?
+          AND wl.status = 'pending'
+        LIMIT 1
+      `, [availability.specialty_id, patient_id, availability.specialty_id]);
+
+      // Si ya está en lista de espera, informar y NO agregar nuevamente
+      if ((existingWaitingList as any[]).length > 0) {
+        const existingEntry = (existingWaitingList as any[])[0];
+        await connection.rollback();
+        return {
+          success: false,
+          already_in_waiting_list: true,
+          message: `Ya se encuentra en la lista de espera para ${availability.specialty_name}. No es posible agregar una segunda solicitud para la misma especialidad.`,
+          waiting_list_info: {
+            waiting_list_id: existingEntry.id,
+            queue_position: existingEntry.queue_position,
+            priority_level: existingEntry.priority_level,
+            reason: existingEntry.reason,
+            created_at: existingEntry.created_at
+          },
+          patient: {
+            id: patient.id,
+            name: patient.name,
+            document: patient.document
+          },
+          specialty: {
+            id: availability.specialty_id,
+            name: availability.specialty_name
+          },
+          suggestion: 'Si desea cambiar la prioridad o el motivo de su solicitud, contacte a una operadora.'
+        };
+      }
+
+      // Si NO está en lista de espera, insertar normalmente
       const [waitingInsert] = await connection.execute(`
         INSERT INTO appointments_waiting_list (
           patient_id,
@@ -2156,9 +2965,9 @@ async function scheduleAppointment(args: any): Promise<any> {
         notes || null,
         priority_level
       ]);
-      
+
       const waiting_list_id = (waitingInsert as any).insertId;
-      
+
       // Contar cuántas personas están esperando para esta ESPECIALIDAD (no solo esta availability)
       const [countResult] = await connection.execute(`
         SELECT COUNT(*) as total_waiting
@@ -2167,9 +2976,9 @@ async function scheduleAppointment(args: any): Promise<any> {
         WHERE a.specialty_id = ? 
           AND wl.status = 'pending'
       `, [availability.specialty_id]);
-      
+
       const totalWaiting = (countResult as any[])[0].total_waiting;
-      
+
       // Calcular posición en la cola según prioridad
       const [queueResult] = await connection.execute(`
         SELECT COUNT(*) + 1 as queue_position
@@ -2184,18 +2993,39 @@ async function scheduleAppointment(args: any): Promise<any> {
             OR (wl.priority_level = ? AND wl.created_at < NOW())
           )
       `, [availability.specialty_id, priority_level, priority_level, priority_level, priority_level]);
-      
+
       const queuePosition = (queueResult as any[])[0].queue_position;
-      
+
       await connection.commit();
-      
+
+      // 🔔 ENVIAR SMS DE NOTIFICACIÓN DE LISTA DE ESPERA
+      const patientPhone = patient.phone || patient.phone_alt;
+      if (patientPhone) {
+        sendWaitingListSMS(
+          patientPhone,
+          patient.name,
+          availability.specialty_name,
+          queuePosition,
+          totalWaiting,
+          priority_level,
+          waiting_list_id,
+          null
+        );
+      } else {
+        console.log(`📱 [MCP] No se envió SMS de lista de espera: Paciente ${patient.name} sin teléfono registrado`);
+      }
+
       return {
         success: true,
         waiting_list: true,
-        message: 'No hay cupos disponibles. Ha sido agregado a la lista de espera prioritaria',
+        message: isDoubleAppointment
+          ? `No hay 2 cupos consecutivos disponibles para cita doble. Ha sido agregado a la lista de espera prioritaria`
+          : 'No hay cupos disponibles. Ha sido agregado a la lista de espera prioritaria',
         waiting_list_id: waiting_list_id,
         queue_position: queuePosition,
         total_waiting_specialty: totalWaiting,
+        double_appointment: isDoubleAppointment,
+        required_quota: requiredQuota,
         patient: {
           id: patient.id,
           name: patient.name,
@@ -2218,10 +3048,10 @@ async function scheduleAppointment(args: any): Promise<any> {
         next_steps: 'Una de nuestras operadoras se comunicará con usted tan pronto tengamos una cita disponible para confirmarle la fecha y hora.'
       };
     }
-    
-    // 6. NUEVA LÓGICA: Verificar si el paciente tiene cita activa
-    // Un paciente solo puede tener 1 cita activa (Pendiente o Confirmada)
-    // Si tiene una o más, se cancelan automáticamente TODAS para registrar la nueva
+
+    // 6. NUEVA LÓGICA: Verificar si el paciente tiene cita activa EN LA MISMA ESPECIALIDAD
+    // Un paciente puede tener múltiples citas activas pero NO en la misma especialidad
+    // Si tiene una cita activa en la misma especialidad, se cancela automáticamente
     const [activeAppointments] = await connection.execute(`
       SELECT 
         a.id,
@@ -2236,23 +3066,24 @@ async function scheduleAppointment(args: any): Promise<any> {
       INNER JOIN doctors d ON a.doctor_id = d.id
       INNER JOIN locations l ON a.location_id = l.id
       WHERE a.patient_id = ? 
+        AND a.specialty_id = ?
         AND a.status IN ('Pendiente', 'Confirmada')
       ORDER BY a.scheduled_at
-    `, [patient_id]);
-    
+    `, [patient_id, availability.specialty_id]);
+
     let cancelledAppointments: any[] = [];
-    
+
     if ((activeAppointments as any[]).length > 0) {
-      // Tiene citas activas - cancelarlas TODAS automáticamente
+      // Tiene cita(s) activa(s) EN LA MISMA ESPECIALIDAD - cancelarlas automáticamente
       for (const oldAppointment of (activeAppointments as any[])) {
-        // Cancelar cada cita anterior
+        // Cancelar cada cita anterior de la misma especialidad
         await connection.execute(`
           UPDATE appointments
           SET status = 'Cancelada',
-              notes = CONCAT(IFNULL(notes, ''), ' | CANCELADA AUTOMÁTICAMENTE: Paciente solicitó nueva cita. Reagendado a ', ?)
+              notes = CONCAT(IFNULL(notes, ''), ' | CANCELADA AUTOMÁTICAMENTE: Paciente solicitó nueva cita en ', ?, '. Reagendado a ', ?)
           WHERE id = ?
-        `, [scheduledDateTime, oldAppointment.id]);
-        
+        `, [availability.specialty_name, scheduledDateTime, oldAppointment.id]);
+
         // Liberar el cupo de la availability anterior SOLO si hay cupos assigned > 0
         await connection.execute(`
           UPDATE availability_distribution ad
@@ -2262,7 +3093,7 @@ async function scheduleAppointment(args: any): Promise<any> {
             AND DATE(ad.day_date) = DATE(?)
             AND ad.assigned > 0
         `, [oldAppointment.availability_id, oldAppointment.scheduled_at]);
-        
+
         cancelledAppointments.push({
           id: oldAppointment.id,
           scheduled_at: oldAppointment.scheduled_at,
@@ -2272,8 +3103,9 @@ async function scheduleAppointment(args: any): Promise<any> {
         });
       }
     }
-    
-    // 7. Insertar la cita en appointments
+
+    // 7. Insertar la(s) cita(s) en appointments
+    // Si es cita doble, insertar 2 registros consecutivos
     const [insertResult] = await connection.execute(`
       INSERT INTO appointments (
         patient_id,
@@ -2297,30 +3129,101 @@ async function scheduleAppointment(args: any): Promise<any> {
       availability.location_id,
       availability.specialty_id,
       availability.doctor_id,
-      scheduledDateTime, // Fecha y hora completa de la cita
+      scheduledDateTime, // Fecha y hora completa de la primera cita
       availability.duration_minutes,
       appointment_type,
-      reason,
+      reason + (isDoubleAppointment ? ' - CITA DOBLE (1/2)' : ''),
       notes || null,
       priority_level
     ]);
-    
+
     const appointment_id = (insertResult as any).insertId;
-    
-    // 8. Actualizar availability_distribution (incrementar assigned)
+    let second_appointment_id = null;
+
+    // Si es cita doble, insertar segunda cita consecutiva
+    if (isDoubleAppointment && secondAppointmentTime) {
+      const [insertResult2] = await connection.execute(`
+        INSERT INTO appointments (
+          patient_id,
+          availability_id,
+          location_id,
+          specialty_id,
+          doctor_id,
+          scheduled_at,
+          duration_minutes,
+          appointment_type,
+          status,
+          reason,
+          notes,
+          priority_level,
+          appointment_source,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?, ?, 'Sistema_Inteligente', NOW())
+      `, [
+        patient_id,
+        availability_id,
+        availability.location_id,
+        availability.specialty_id,
+        availability.doctor_id,
+        secondAppointmentTime, // Hora de la segunda cita
+        availability.duration_minutes,
+        appointment_type,
+        reason + ' - CITA DOBLE (2/2)',
+        notes || null,
+        priority_level
+      ]);
+
+      second_appointment_id = (insertResult2 as any).insertId;
+    }
+
+    // 8. Actualizar availability_distribution (incrementar assigned por número de cupos usados)
     await connection.execute(`
       UPDATE availability_distribution
-      SET assigned = assigned + 1
+      SET assigned = assigned + ?
       WHERE id = ?
-    `, [distribution.id]);
-    
+    `, [requiredQuota, distribution.id]);
+
     await connection.commit();
-    
+
+    // Convertir hora a zona horaria local para mostrar al paciente
+    const localTime = convertDbToLocalTime(scheduledDateTime);
+    const appointmentReadable = formatAppointmentForPatient(scheduledDateTime);
+    const secondLocalTime = secondAppointmentTime ? convertDbToLocalTime(secondAppointmentTime) : null;
+
+    // 🔔 ENVIAR SMS DE CONFIRMACIÓN AL PACIENTE
+    const patientPhone = patient.phone || patient.phone_alt;
+    if (patientPhone) {
+      sendAppointmentConfirmationSMS(
+        patientPhone,
+        patient.name,
+        localTime.dateFormatted,
+        localTime.timeFormatted,
+        availability.doctor_name,
+        availability.specialty_name,
+        availability.location_name,
+        appointment_id,
+        isDoubleAppointment,
+        secondLocalTime?.timeFormatted
+      );
+    } else {
+      console.log(`📱 [MCP] No se envió SMS: Paciente ${patient.name} sin teléfono registrado`);
+    }
+
     // 9. Retornar confirmación con información clara
     return {
       success: true,
-      message: 'Cita agendada exitosamente',
+      message: isDoubleAppointment
+        ? 'Cita doble agendada exitosamente - 2 cupos consecutivos reservados'
+        : 'Cita agendada exitosamente',
       appointment_id: appointment_id,
+      second_appointment_id: second_appointment_id,
+      double_appointment: isDoubleAppointment,
+      appointments_created: isDoubleAppointment ? 2 : 1,
+      // HORA LOCAL PARA INFORMAR AL PACIENTE
+      hora_cita_local: localTime.timeFormatted, // Ej: "9:15 AM"
+      fecha_cita_local: localTime.dateFormatted, // Ej: "5 de enero de 2026"
+      cita_para_paciente: appointmentReadable, // Ej: "9:15 AM del 5 de enero de 2026"
+      segunda_cita_local: secondLocalTime ? secondLocalTime.timeFormatted : null,
       appointment: {
         id: appointment_id,
         patient: {
@@ -2328,9 +3231,15 @@ async function scheduleAppointment(args: any): Promise<any> {
           name: patient.name,
           document: patient.document
         },
-        scheduled_at: scheduledDateTime, // Fecha y hora CALCULADA automáticamente
+        scheduled_at: scheduledDateTime, // Fecha y hora UTC-0 (base de datos)
+        scheduled_at_local: localTime.datetime, // Fecha y hora UTC-5 (Colombia)
+        hora_local: localTime.timeFormatted, // Hora formateada para el paciente
+        fecha_local: localTime.dateFormatted, // Fecha formateada para el paciente
+        second_scheduled_at: secondAppointmentTime, // Solo si es cita doble
+        second_hora_local: secondLocalTime ? secondLocalTime.timeFormatted : null,
         appointment_date: appointmentDate, // Solo fecha de la cita
         duration_minutes: availability.duration_minutes,
+        total_duration: isDoubleAppointment ? availability.duration_minutes * 2 : availability.duration_minutes,
         appointment_type: appointment_type,
         status: 'Confirmada',
         doctor: {
@@ -2351,32 +3260,37 @@ async function scheduleAppointment(args: any): Promise<any> {
       availability_info: {
         distribution_date: distribution.day_date, // Fecha en que se distribuyeron cupos
         quota: distribution.quota,
-        assigned: distribution.assigned + 1,
-        remaining: distribution.available - 1
+        assigned: distribution.assigned + requiredQuota,
+        remaining: distribution.available - requiredQuota,
+        quota_used: requiredQuota
       },
       scheduling_info: {
         requested_time: scheduled_date,
         calculated_time: scheduledDateTime,
         auto_scheduled: scheduledDateTime !== scheduled_date,
-        message: scheduledDateTime !== scheduled_date 
+        message: scheduledDateTime !== scheduled_date
           ? `La hora fue ajustada automáticamente para evitar solapamientos. Hora calculada: ${scheduledDateTime}`
           : 'Primera cita del día en esta availability'
       },
-      cancelled_appointments: cancelledAppointments.length > 0 
+      cancelled_appointments: cancelledAppointments.length > 0
         ? cancelledAppointments.map(appt => ({
-            id: appt.id,
-            scheduled_at: appt.scheduled_at,
-            specialty: appt.specialty,
-            doctor: appt.doctor,
-            location: appt.location,
-            reason: 'Cancelada automáticamente al solicitar nueva cita'
-          }))
+          id: appt.id,
+          scheduled_at: appt.scheduled_at,
+          specialty: appt.specialty,
+          doctor: appt.doctor,
+          location: appt.location,
+          reason: 'Cancelada automáticamente al solicitar nueva cita'
+        }))
         : [],
-      info: cancelledAppointments.length > 0
-        ? `La cita fue registrada exitosamente. NOTA: Se cancelaron automáticamente ${cancelledAppointments.length} cita(s) anterior(es) y se liberaron los cupos.`
-        : 'La cita fue registrada y el cupo actualizado exitosamente'
+      info: isDoubleAppointment
+        ? `Cita doble registrada exitosamente para las ${localTime.timeFormatted} y ${secondLocalTime?.timeFormatted} del ${localTime.dateFormatted}. Se reservaron ${requiredQuota} cupos consecutivos.` +
+        (cancelledAppointments.length > 0 ? ` NOTA: Se cancelaron automáticamente ${cancelledAppointments.length} cita(s) anterior(es).` : '')
+        : (cancelledAppointments.length > 0
+          ? `La cita fue registrada exitosamente para las ${localTime.timeFormatted} del ${localTime.dateFormatted}. NOTA: Se cancelaron automáticamente ${cancelledAppointments.length} cita(s) anterior(es) y se liberaron los cupos.`
+          : `La cita fue registrada exitosamente para las ${localTime.timeFormatted} del ${localTime.dateFormatted}.`),
+      mensaje_para_paciente: `Su cita ha sido confirmada para las ${localTime.timeFormatted} del ${localTime.dateFormatted} con ${availability.doctor_name} en ${availability.location_name}.`
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error agendando cita:', error);
@@ -2399,12 +3313,12 @@ async function scheduleAppointment(args: any): Promise<any> {
 // ===================================================================
 async function addToWaitingList(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
-    const { 
-      patient_id, 
+
+    const {
+      patient_id,
       specialty_id,
       cups_id,
       scheduled_date,
@@ -2415,7 +3329,7 @@ async function addToWaitingList(args: any): Promise<any> {
       requested_by = 'Sistema_MCP',
       call_type = 'normal'
     } = args;
-    
+
     // Validación: Solo requerimos patient_id, specialty_id y reason
     // NO requiere availability_id porque es LISTA DE ESPERA (no hay cupo disponible)
     // cups_id es OPCIONAL para especificar un procedimiento específico
@@ -2429,11 +3343,11 @@ async function addToWaitingList(args: any): Promise<any> {
         note: 'Lista de espera NO requiere availability_id - Solo paciente, especialidad y motivo. cups_id es opcional.'
       };
     }
-    
+
     const finalScheduledDate = scheduled_date || null;
     const finalNotes = notes || null;
     const finalCupsId = cups_id || null;
-    
+
     // 1. Validar paciente activo
     const [patientCheck] = await connection.execute(
       `SELECT id, name, document, insurance_eps_id, phone, phone_alt 
@@ -2441,7 +3355,7 @@ async function addToWaitingList(args: any): Promise<any> {
        WHERE id = ? AND status = "Activo"`,
       [patient_id]
     );
-    
+
     if ((patientCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -2450,16 +3364,16 @@ async function addToWaitingList(args: any): Promise<any> {
         patient_id: patient_id
       };
     }
-    
+
     const patient = (patientCheck as any[])[0];
-    
+
     // 2. Validar que la especialidad existe (CUALQUIER especialidad - activa o inactiva)
     // Lista de espera permite TODAS las especialidades sin restricción
     const [specialtyCheck] = await connection.execute(
       `SELECT id, name, description FROM specialties WHERE id = ?`,
       [specialty_id]
     );
-    
+
     if ((specialtyCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -2468,9 +3382,9 @@ async function addToWaitingList(args: any): Promise<any> {
         specialty_id: specialty_id
       };
     }
-    
+
     const specialty = (specialtyCheck as any[])[0];
-    
+
     // 2.5. Validar CUPS si se proporciona (OPCIONAL)
     let cupsInfo = null;
     if (finalCupsId) {
@@ -2478,7 +3392,7 @@ async function addToWaitingList(args: any): Promise<any> {
         `SELECT id, code, name, category, specialty_id, price FROM cups WHERE id = ?`,
         [finalCupsId]
       );
-      
+
       if ((cupsCheck as any[]).length === 0) {
         await connection.rollback();
         return {
@@ -2488,10 +3402,64 @@ async function addToWaitingList(args: any): Promise<any> {
           suggestion: 'Use searchCups para encontrar el ID correcto del procedimiento'
         };
       }
-      
+
       cupsInfo = (cupsCheck as any[])[0];
     }
-    
+
+    // 2.6. VERIFICAR si el paciente YA está en lista de espera para esta ESPECIALIDAD
+    const [existingWaitingList] = await connection.execute(`
+      SELECT 
+        wl.id,
+        wl.created_at,
+        wl.priority_level,
+        wl.reason,
+        (SELECT COUNT(*) + 1 
+         FROM appointments_waiting_list wl2
+         WHERE wl2.specialty_id = ?
+           AND wl2.status = 'pending'
+           AND wl2.id != wl.id
+           AND (
+             (wl2.priority_level = 'Urgente' AND wl.priority_level != 'Urgente')
+             OR (wl2.priority_level = 'Alta' AND wl.priority_level NOT IN ('Urgente', 'Alta'))
+             OR (wl2.priority_level = 'Normal' AND wl.priority_level = 'Baja')
+             OR (wl2.priority_level = wl.priority_level AND wl2.created_at < wl.created_at)
+           )
+        ) as queue_position
+      FROM appointments_waiting_list wl
+      WHERE wl.patient_id = ?
+        AND wl.specialty_id = ?
+        AND wl.status = 'pending'
+      LIMIT 1
+    `, [specialty_id, patient_id, specialty_id]);
+
+    // Si ya está en lista de espera, informar y NO agregar nuevamente
+    if ((existingWaitingList as any[]).length > 0) {
+      const existingEntry = (existingWaitingList as any[])[0];
+      await connection.rollback();
+      return {
+        success: false,
+        already_in_waiting_list: true,
+        message: `Ya se encuentra en la lista de espera para ${specialty.name}. No es posible agregar una segunda solicitud para la misma especialidad.`,
+        waiting_list_info: {
+          waiting_list_id: existingEntry.id,
+          queue_position: existingEntry.queue_position,
+          priority_level: existingEntry.priority_level,
+          reason: existingEntry.reason,
+          created_at: existingEntry.created_at
+        },
+        patient: {
+          id: patient.id,
+          name: patient.name,
+          document: patient.document
+        },
+        specialty: {
+          id: specialty.id,
+          name: specialty.name
+        },
+        suggestion: 'Si desea cambiar la prioridad o el motivo de su solicitud, contacte a una operadora.'
+      };
+    }
+
     // 3. Insertar en lista de espera (SIN availability_id - se asignará después)
     const [waitingInsert] = await connection.execute(`
       INSERT INTO appointments_waiting_list (
@@ -2511,18 +3479,18 @@ async function addToWaitingList(args: any): Promise<any> {
       requested_by,
       call_type
     ]);
-    
+
     const waiting_list_id = (waitingInsert as any).insertId;
-    
+
     // 4. Contar personas en lista de espera para esta especialidad
     const [countResult] = await connection.execute(`
       SELECT COUNT(*) as total_waiting
       FROM appointments_waiting_list
       WHERE specialty_id = ? AND status = 'pending'
     `, [specialty_id]);
-    
+
     const totalWaiting = (countResult as any[])[0].total_waiting;
-    
+
     // 5. Calcular posición en cola según prioridad
     const [queueResult] = await connection.execute(`
       SELECT COUNT(*) + 1 as queue_position
@@ -2537,17 +3505,17 @@ async function addToWaitingList(args: any): Promise<any> {
           OR (priority_level = ? AND created_at < NOW())
         )
     `, [specialty_id, waiting_list_id, priority_level, priority_level, priority_level, priority_level]);
-    
+
     const queuePosition = (queueResult as any[])[0].queue_position;
-    
+
     // 6. Obtener EPS del paciente
     const [epsInfo] = await connection.execute(
       'SELECT id, name, code FROM eps WHERE id = ?',
       [patient.insurance_eps_id]
     );
-    
+
     const eps = (epsInfo as any[]).length > 0 ? (epsInfo as any[])[0] : null;
-    
+
     // 7. Obtener TODAS las especialidades (activas E inactivas)
     // Para lista de espera NO hay restricciones
     const [allSpecialties] = await connection.execute(`
@@ -2555,9 +3523,26 @@ async function addToWaitingList(args: any): Promise<any> {
       FROM specialties
       ORDER BY name
     `);
-    
+
     await connection.commit();
-    
+
+    // 🔔 ENVIAR SMS DE NOTIFICACIÓN DE LISTA DE ESPERA
+    const patientPhone = patient.phone || patient.phone_alt;
+    if (patientPhone) {
+      sendWaitingListSMS(
+        patientPhone,
+        patient.name,
+        specialty.name,
+        queuePosition,
+        totalWaiting,
+        priority_level,
+        waiting_list_id,
+        cupsInfo?.name || null
+      );
+    } else {
+      console.log(`📱 [MCP] No se envió SMS de lista de espera: Paciente ${patient.name} sin teléfono registrado`);
+    }
+
     // 8. Retornar respuesta completa
     return {
       success: true,
@@ -2611,7 +3596,7 @@ async function addToWaitingList(args: any): Promise<any> {
       next_steps: 'Un operador se comunicará para confirmar fecha y hora de su cita.',
       specialty_note: 'available_specialties contiene TODAS las especialidades del sistema (activas e inactivas). Lista de espera permite cualquier especialidad sin restricción.'
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error agregando a lista de espera:', error);
@@ -2627,10 +3612,15 @@ async function addToWaitingList(args: any): Promise<any> {
 
 async function getPatientAppointments(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { patient_id, document, status = 'Todas', from_date } = args;
-    
+    let { patient_id, document, status = 'Todas', from_date } = args;
+
+    // NORMALIZACIÓN DE DOCUMENTO: Eliminar caracteres no numéricos
+    if (document) {
+      document = document.replace(/[^0-9]/g, '');
+    }
+
     // Validar que se proporcione al menos patient_id o document
     if (!patient_id && !document) {
       return {
@@ -2639,10 +3629,10 @@ async function getPatientAppointments(args: any): Promise<any> {
         required: 'patient_id OR document'
       };
     }
-    
+
     let finalPatientId = patient_id;
     let patientInfo = null;
-    
+
     // Si se proporciona document, buscar el patient_id
     if (!patient_id && document) {
       const [patientCheck] = await connection.execute(
@@ -2651,7 +3641,7 @@ async function getPatientAppointments(args: any): Promise<any> {
          WHERE document = ? AND status = "Activo"`,
         [document]
       );
-      
+
       if ((patientCheck as any[]).length === 0) {
         return {
           success: false,
@@ -2660,7 +3650,7 @@ async function getPatientAppointments(args: any): Promise<any> {
           suggestion: 'Verifique el número de documento o use searchPatient para buscar'
         };
       }
-      
+
       const patient = (patientCheck as any[])[0];
       finalPatientId = patient.id;
       patientInfo = patient;
@@ -2672,12 +3662,12 @@ async function getPatientAppointments(args: any): Promise<any> {
          WHERE id = ? AND status = "Activo"`,
         [patient_id]
       );
-      
+
       if ((patientCheck as any[]).length > 0) {
         patientInfo = (patientCheck as any[])[0];
       }
     }
-    
+
     // Construir query con filtros
     let query = `
       SELECT 
@@ -2704,24 +3694,24 @@ async function getPatientAppointments(args: any): Promise<any> {
       INNER JOIN locations l ON a.location_id = l.id
       WHERE a.patient_id = ?
     `;
-    
+
     const params: any[] = [finalPatientId];
-    
+
     if (status !== 'Todas') {
       query += ' AND a.status = ?';
       params.push(status);
     }
-    
+
     if (from_date) {
       query += ' AND DATE(a.scheduled_at) >= ?';
       params.push(from_date);
     }
-    
+
     query += ' ORDER BY a.scheduled_at DESC';
-    
+
     const [rows] = await connection.execute(query, params);
     const appointments = rows as any[];
-    
+
     if (appointments.length === 0) {
       return {
         success: true,
@@ -2736,45 +3726,59 @@ async function getPatientAppointments(args: any): Promise<any> {
         appointments: []
       };
     }
-    
-    const formattedAppointments = appointments.map(apt => ({
-      id: apt.id,
-      scheduled_at: apt.scheduled_at,
-      duration_minutes: apt.duration_minutes,
-      appointment_type: apt.appointment_type,
-      status: apt.status,
-      reason: apt.reason,
-      notes: apt.notes,
-      priority_level: apt.priority_level,
-      created_at: apt.created_at,
-      doctor: {
-        id: apt.doctor_id,
-        name: apt.doctor_name
-      },
-      specialty: {
-        id: apt.specialty_id,
-        name: apt.specialty_name
-      },
-      location: {
-        id: apt.location_id,
-        name: apt.location_name,
-        address: apt.location_address,
-        phone: apt.location_phone
-      }
-    }));
-    
+
+    const formattedAppointments = appointments.map(apt => {
+      // Convertir scheduled_at de UTC-0 (base de datos) a hora local (UTC-5 Colombia)
+      const localTime = convertDbToLocalTime(apt.scheduled_at);
+
+      return {
+        id: apt.id,
+        // CAMPOS PARA MOSTRAR AL PACIENTE (ya convertidos a Colombia UTC-5)
+        hora: localTime.timeFormatted, // "9:20 AM" - USAR ESTE
+        fecha: localTime.dateFormatted, // "30 de enero de 2026" - USAR ESTE
+        cita_completa: formatAppointmentForPatient(apt.scheduled_at), // "9:20 AM del 30 de enero de 2026"
+        // Campos legacy (mantener por compatibilidad)
+        scheduled_at: apt.scheduled_at, // UTC-0 - NO USAR para mostrar
+        scheduled_at_local: localTime.datetime,
+        scheduled_time_display: localTime.timeFormatted,
+        scheduled_date_display: localTime.dateFormatted,
+        appointment_readable: formatAppointmentForPatient(apt.scheduled_at),
+        duration_minutes: apt.duration_minutes,
+        appointment_type: apt.appointment_type,
+        status: apt.status,
+        reason: apt.reason,
+        notes: apt.notes,
+        priority_level: apt.priority_level,
+        created_at: apt.created_at,
+        doctor: {
+          id: apt.doctor_id,
+          name: apt.doctor_name
+        },
+        specialty: {
+          id: apt.specialty_id,
+          name: apt.specialty_name
+        },
+        location: {
+          id: apt.location_id,
+          name: apt.location_name,
+          address: apt.location_address,
+          phone: apt.location_phone
+        }
+      };
+    });
+
     // Clasificar citas
     const now = new Date();
-    const upcoming = formattedAppointments.filter(apt => 
-      new Date(apt.scheduled_at) > now && 
+    const upcoming = formattedAppointments.filter(apt =>
+      new Date(apt.scheduled_at) > now &&
       ['Pendiente', 'Confirmada'].includes(apt.status)
     );
-    
-    const past = formattedAppointments.filter(apt => 
+
+    const past = formattedAppointments.filter(apt =>
       new Date(apt.scheduled_at) <= now ||
       ['Completada', 'Cancelada'].includes(apt.status)
     );
-    
+
     return {
       success: true,
       message: `Se encontraron ${appointments.length} citas`,
@@ -2799,7 +3803,7 @@ async function getPatientAppointments(args: any): Promise<any> {
       upcoming_appointments: upcoming,
       past_appointments: past
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando citas del paciente:', error);
     return {
@@ -2817,14 +3821,14 @@ async function getPatientAppointments(args: any): Promise<any> {
 // ===================================================================
 async function searchSpecialties(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { 
+    const {
       specialty_id,
       name,
       active_only = false
     } = args;
-    
+
     let query = `
       SELECT 
         id,
@@ -2836,31 +3840,31 @@ async function searchSpecialties(args: any): Promise<any> {
       FROM specialties
       WHERE 1=1
     `;
-    
+
     const params: any[] = [];
-    
+
     // Filtro por ID específico
     if (specialty_id) {
       query += ` AND id = ?`;
       params.push(specialty_id);
     }
-    
+
     // Filtro por nombre (búsqueda parcial, case-insensitive)
     if (name) {
       query += ` AND name LIKE ?`;
       params.push(`%${name}%`);
     }
-    
+
     // Filtro por estado activo
     if (active_only) {
       query += ` AND active = 1`;
     }
-    
+
     query += ` ORDER BY name`;
-    
+
     const [specialties] = await connection.execute(query, params);
     const specialtiesList = specialties as any[];
-    
+
     if (specialtiesList.length === 0) {
       return {
         success: false,
@@ -2874,7 +3878,7 @@ async function searchSpecialties(args: any): Promise<any> {
         specialties: []
       };
     }
-    
+
     // Formatear respuesta
     const formattedSpecialties = specialtiesList.map(sp => ({
       id: sp.id,
@@ -2884,7 +3888,7 @@ async function searchSpecialties(args: any): Promise<any> {
       active: sp.active === 1,
       created_at: sp.created_at
     }));
-    
+
     return {
       success: true,
       message: `Se encontraron ${specialtiesList.length} especialidad(es)`,
@@ -2897,7 +3901,7 @@ async function searchSpecialties(args: any): Promise<any> {
       specialties: formattedSpecialties,
       usage_note: 'Use el campo "id" para specialty_id al agendar citas o agregar a lista de espera'
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando especialidades:', error);
     return {
@@ -2915,10 +3919,10 @@ async function searchSpecialties(args: any): Promise<any> {
 // ===================================================================
 async function searchCupsByName(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const { name, limit = 10 } = args;
-    
+
     // Validación: name es obligatorio
     if (!name || name.trim() === '') {
       return {
@@ -2927,13 +3931,13 @@ async function searchCupsByName(args: any): Promise<any> {
         usage: 'Proporcione un nombre o parte del nombre del procedimiento a buscar'
       };
     }
-    
+
     // Validar y ajustar límite
     const validLimit = Math.min(Math.max(1, limit), 50);
-    
+
     // Búsqueda por nombre con LIKE (case-insensitive)
     const searchPattern = `%${name.trim()}%`;
-    
+
     const query = `
       SELECT 
         c.id,
@@ -2951,10 +3955,10 @@ async function searchCupsByName(args: any): Promise<any> {
       ORDER BY c.category, c.name
       LIMIT ?
     `;
-    
+
     const [cupsList] = await connection.execute(query, [searchPattern, validLimit]);
     const cupsArray = cupsList as any[];
-    
+
     if (cupsArray.length === 0) {
       return {
         success: true,
@@ -2965,7 +3969,7 @@ async function searchCupsByName(args: any): Promise<any> {
         suggestion: 'Intente con otro término de búsqueda o use palabras más generales (ej: "mama", "abdomen", "hemograma")'
       };
     }
-    
+
     // Formatear resultados
     const formattedProcedures = cupsArray.map(cup => ({
       id: cup.id,
@@ -2979,7 +3983,7 @@ async function searchCupsByName(args: any): Promise<any> {
       } : null,
       status: cup.status
     }));
-    
+
     // Agrupar por categoría para mejor visualización
     const byCategory: any = {};
     formattedProcedures.forEach(proc => {
@@ -2988,7 +3992,7 @@ async function searchCupsByName(args: any): Promise<any> {
       }
       byCategory[proc.category].push(proc);
     });
-    
+
     return {
       success: true,
       message: `Se encontraron ${cupsArray.length} procedimiento(s) con el nombre "${name}"`,
@@ -2999,7 +4003,7 @@ async function searchCupsByName(args: any): Promise<any> {
       usage_note: 'Use el campo "id" como cups_id al agregar a lista de espera (addToWaitingList)',
       example: `addToWaitingList({ ..., cups_id: ${formattedProcedures[0].id} })`
     };
-    
+
   } catch (error: any) {
     console.error('Error buscando CUPS por nombre:', error);
     return {
@@ -3017,9 +4021,9 @@ async function searchCupsByName(args: any): Promise<any> {
 // ===================================================================
 async function searchCups(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { 
+    const {
       code,
       name,
       category,
@@ -3027,10 +4031,10 @@ async function searchCups(args: any): Promise<any> {
       status = 'Activo',
       limit = 20
     } = args;
-    
+
     // Validar límite
     const finalLimit = Math.min(Math.max(1, limit), 100);
-    
+
     // Construir query base
     let query = `
       SELECT 
@@ -3056,46 +4060,46 @@ async function searchCups(args: any): Promise<any> {
       LEFT JOIN specialties s ON c.specialty_id = s.id
       WHERE 1=1
     `;
-    
+
     const queryParams: any[] = [];
-    
+
     // Filtro por código
     if (code) {
       query += ` AND c.code LIKE ?`;
       queryParams.push(`%${code}%`);
     }
-    
+
     // Filtro por nombre
     if (name) {
       query += ` AND c.name LIKE ?`;
       queryParams.push(`%${name}%`);
     }
-    
+
     // Filtro por categoría
     if (category) {
       query += ` AND c.category LIKE ?`;
       queryParams.push(`%${category}%`);
     }
-    
+
     // Filtro por especialidad
     if (specialty_id) {
       query += ` AND c.specialty_id = ?`;
       queryParams.push(specialty_id);
     }
-    
+
     // Filtro por estado
     if (status !== 'Todos') {
       query += ` AND c.status = ?`;
       queryParams.push(status);
     }
-    
+
     // Ordenar y limitar
     query += ` ORDER BY c.category, c.name LIMIT ?`;
     queryParams.push(finalLimit);
-    
+
     // Ejecutar query
     const [cupsList] = await connection.execute(query, queryParams);
-    
+
     // Si no hay resultados
     if ((cupsList as any[]).length === 0) {
       return {
@@ -3112,7 +4116,7 @@ async function searchCups(args: any): Promise<any> {
         procedures: []
       };
     }
-    
+
     // Formatear respuesta
     const formattedProcedures = (cupsList as any[]).map(cup => ({
       id: cup.id,
@@ -3140,7 +4144,7 @@ async function searchCups(args: any): Promise<any> {
       status: cup.status,
       notes: cup.notes
     }));
-    
+
     return {
       success: true,
       message: `Se encontraron ${formattedProcedures.length} procedimiento(s) CUPS`,
@@ -3155,7 +4159,7 @@ async function searchCups(args: any): Promise<any> {
       procedures: formattedProcedures,
       usage_note: 'Use el campo "code" (código CUPS) o "id" para referenciar procedimientos en el sistema'
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando CUPS:', error);
     return {
@@ -3173,9 +4177,9 @@ async function searchCups(args: any): Promise<any> {
 // ===================================================================
 async function getWaitingListAppointments(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { 
+    const {
       patient_id,
       doctor_id,
       specialty_id,
@@ -3184,7 +4188,7 @@ async function getWaitingListAppointments(args: any): Promise<any> {
       status = 'pending',
       limit = 50
     } = args;
-    
+
     // Construir query con filtros
     let query = `
       SELECT 
@@ -3269,39 +4273,39 @@ async function getWaitingListAppointments(args: any): Promise<any> {
       INNER JOIN locations l ON a.location_id = l.id
       WHERE 1=1
     `;
-    
+
     const params: any[] = [];
-    
+
     if (patient_id) {
       query += ' AND wl.patient_id = ?';
       params.push(patient_id);
     }
-    
+
     if (doctor_id) {
       query += ' AND a.doctor_id = ?';
       params.push(doctor_id);
     }
-    
+
     if (specialty_id) {
       query += ' AND a.specialty_id = ?';
       params.push(specialty_id);
     }
-    
+
     if (location_id) {
       query += ' AND a.location_id = ?';
       params.push(location_id);
     }
-    
+
     if (priority_level !== 'Todas') {
       query += ' AND wl.priority_level = ?';
       params.push(priority_level);
     }
-    
+
     if (status !== 'all') {
       query += ' AND wl.status = ?';
       params.push(status);
     }
-    
+
     query += ` 
       ORDER BY 
         CASE wl.priority_level
@@ -3314,10 +4318,10 @@ async function getWaitingListAppointments(args: any): Promise<any> {
       LIMIT ?
     `;
     params.push(limit);
-    
+
     const [rows] = await connection.execute(query, params);
     const waitingList = rows as any[];
-    
+
     if (waitingList.length === 0) {
       return {
         success: true,
@@ -3335,7 +4339,7 @@ async function getWaitingListAppointments(args: any): Promise<any> {
         }
       };
     }
-    
+
     const formattedWaitingList = waitingList.map(item => ({
       waiting_list_id: item.waiting_list_id,
       queue_position: item.queue_position,
@@ -3357,7 +4361,7 @@ async function getWaitingListAppointments(args: any): Promise<any> {
       availability: {
         id: item.availability_id,
         date: item.availability_date,
-        time_range: `${item.start_time.slice(0,5)} - ${item.end_time.slice(0,5)}`,
+        time_range: formatTimeRangeFromUTC(item.start_time, item.end_time),
         duration_minutes: item.duration_minutes,
         total_capacity: item.total_capacity,
         current_appointments: item.current_appointments_count,
@@ -3383,7 +4387,7 @@ async function getWaitingListAppointments(args: any): Promise<any> {
         appointment_id: item.reassigned_appointment_id
       } : null
     }));
-    
+
     // Estadísticas
     const stats = {
       total_waiting: waitingList.length,
@@ -3395,7 +4399,7 @@ async function getWaitingListAppointments(args: any): Promise<any> {
       },
       can_be_reassigned_now: waitingList.filter(w => w.slots_currently_available > 0).length
     };
-    
+
     return {
       success: true,
       message: `Se encontraron ${waitingList.length} solicitudes en lista de espera`,
@@ -3416,7 +4420,7 @@ async function getWaitingListAppointments(args: any): Promise<any> {
         reassignment: 'Use reassignWaitingListAppointments para procesar automáticamente cuando haya cupos disponibles'
       }
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando lista de espera:', error);
     return {
@@ -3434,10 +4438,10 @@ async function getWaitingListAppointments(args: any): Promise<any> {
 // ===================================================================
 async function reassignWaitingListAppointments(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const { availability_id } = args;
-    
+
     // Verificar que la disponibilidad existe
     const [availCheck] = await connection.execute(`
       SELECT 
@@ -3458,17 +4462,17 @@ async function reassignWaitingListAppointments(args: any): Promise<any> {
       INNER JOIN locations l ON a.location_id = l.id
       WHERE a.id = ?
     `, [availability_id]);
-    
+
     if ((availCheck as any[]).length === 0) {
       return {
         success: false,
         error: 'Disponibilidad no encontrada'
       };
     }
-    
+
     const availability = (availCheck as any[])[0];
     const slotsAvailable = availability.capacity - availability.current_appointments;
-    
+
     if (slotsAvailable <= 0) {
       return {
         success: false,
@@ -3485,27 +4489,74 @@ async function reassignWaitingListAppointments(args: any): Promise<any> {
         }
       };
     }
-    
+
     // Llamar al procedimiento almacenado
     await connection.execute(`CALL process_waiting_list_for_availability(?)`, [availability_id]);
-    
+
     // Consultar resultados
     const [reassignedResult] = await connection.execute(`
       SELECT COUNT(*) as total_reassigned
       FROM appointments_waiting_list
       WHERE availability_id = ? AND status = 'reassigned'
     `, [availability_id]);
-    
+
     const totalReassigned = (reassignedResult as any[])[0].total_reassigned;
-    
+
+    // 🔔 ENVIAR SMS A LOS PACIENTES REAGENDADOS
+    if (totalReassigned > 0) {
+      // Consultar las citas recién creadas desde la lista de espera
+      const [reassignedAppointments] = await connection.execute(`
+        SELECT 
+          wl.id as waiting_list_id,
+          wl.reassigned_appointment_id,
+          a.scheduled_at,
+          p.id as patient_id,
+          p.name as patient_name,
+          p.phone,
+          p.phone_alt,
+          d.name as doctor_name,
+          s.name as specialty_name,
+          l.name as location_name
+        FROM appointments_waiting_list wl
+        INNER JOIN appointments a ON wl.reassigned_appointment_id = a.id
+        INNER JOIN patients p ON wl.patient_id = p.id
+        INNER JOIN doctors d ON a.doctor_id = d.id
+        INNER JOIN specialties s ON a.specialty_id = s.id
+        INNER JOIN locations l ON a.location_id = l.id
+        WHERE wl.availability_id = ? 
+          AND wl.status = 'reassigned'
+          AND wl.reassigned_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      `, [availability_id]);
+
+      // Enviar SMS a cada paciente reagendado
+      for (const appt of (reassignedAppointments as any[])) {
+        const patientPhone = appt.phone || appt.phone_alt;
+        if (patientPhone) {
+          const localTime = convertDbToLocalTime(appt.scheduled_at);
+          sendReassignmentSMS(
+            patientPhone,
+            appt.patient_name,
+            localTime.dateFormatted,
+            localTime.timeFormatted,
+            appt.doctor_name,
+            appt.specialty_name,
+            appt.location_name,
+            appt.reassigned_appointment_id
+          );
+        } else {
+          console.log(`📱 [MCP] No se envió SMS de reagendamiento: Paciente ${appt.patient_name} sin teléfono registrado`);
+        }
+      }
+    }
+
     const [stillWaitingResult] = await connection.execute(`
       SELECT COUNT(*) as still_waiting
       FROM appointments_waiting_list
       WHERE availability_id = ? AND status = 'pending'
     `, [availability_id]);
-    
+
     const stillWaiting = (stillWaitingResult as any[])[0].still_waiting;
-    
+
     // Nueva consulta de cupos actuales
     const [updatedAvailCheck] = await connection.execute(`
       SELECT 
@@ -3519,10 +4570,10 @@ async function reassignWaitingListAppointments(args: any): Promise<any> {
       FROM availabilities a
       WHERE a.id = ?
     `, [availability_id]);
-    
+
     const updated = (updatedAvailCheck as any[])[0];
     const slotsRemainingAfter = updated.capacity - updated.current_appointments;
-    
+
     return {
       success: true,
       message: `Se procesó la lista de espera exitosamente`,
@@ -3544,7 +4595,7 @@ async function reassignWaitingListAppointments(args: any): Promise<any> {
         ? `Se reasignaron ${totalReassigned} solicitudes de la lista de espera a citas confirmadas`
         : 'No se reasignó ninguna solicitud (puede que no hayan solicitudes o los cupos ya estén llenos)'
     };
-    
+
   } catch (error: any) {
     console.error('Error procesando lista de espera:', error);
     return {
@@ -3566,12 +4617,12 @@ async function reassignWaitingListAppointments(args: any): Promise<any> {
 // ===================================================================
 async function registerPregnancy(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const { patient_id, last_menstrual_date, high_risk, risk_factors, notes } = args;
-    
+
     // 1. Verificar que el paciente existe y es de sexo femenino
     const [patientCheck] = await connection.execute(`
       SELECT id, name, document, gender, status
@@ -3579,7 +4630,7 @@ async function registerPregnancy(args: any): Promise<any> {
       WHERE id = ? AND status = 'Activo'
       LIMIT 1
     `, [patient_id]);
-    
+
     if ((patientCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -3588,9 +4639,9 @@ async function registerPregnancy(args: any): Promise<any> {
         patient_id: patient_id
       };
     }
-    
+
     const patient = (patientCheck as any[])[0];
-    
+
     // Verificar género (debe ser femenino)
     if (patient.gender !== 'Femenino' && patient.gender !== 'F') {
       await connection.rollback();
@@ -3604,7 +4655,7 @@ async function registerPregnancy(args: any): Promise<any> {
         }
       };
     }
-    
+
     // 2. Verificar si ya tiene un embarazo activo
     const [activeCheck] = await connection.execute(`
       SELECT id, start_date, expected_due_date, status
@@ -3612,7 +4663,7 @@ async function registerPregnancy(args: any): Promise<any> {
       WHERE patient_id = ? AND status = 'Activa'
       LIMIT 1
     `, [patient_id]);
-    
+
     if ((activeCheck as any[]).length > 0) {
       const activePregnancy = (activeCheck as any[])[0];
       await connection.rollback();
@@ -3627,28 +4678,28 @@ async function registerPregnancy(args: any): Promise<any> {
         suggestion: 'Debe completar o interrumpir el embarazo actual antes de registrar uno nuevo'
       };
     }
-    
+
     // 3. Convertir FUM a formato correcto si viene en DD/MM/YYYY
     let fumDate = last_menstrual_date;
     if (fumDate.includes('/')) {
       const parts = fumDate.split('/');
       fumDate = `${parts[2]}-${parts[1]}-${parts[0]}`; // Convertir a YYYY-MM-DD
     }
-    
+
     // 4. Calcular Fecha Probable de Parto (FPP = FUM + 280 días)
     const fum = new Date(fumDate);
     const fpp = new Date(fum);
     fpp.setDate(fpp.getDate() + 280);
-    
+
     // 5. Calcular edad gestacional actual
     const today = new Date();
     const gestationalDays = Math.floor((today.getTime() - fum.getTime()) / (1000 * 60 * 60 * 24));
     const gestationalWeeks = Math.floor(gestationalDays / 7);
     const gestationalDaysRemainder = gestationalDays % 7;
-    
+
     // 6. Calcular días hasta el parto
     const daysUntilDue = Math.floor((fpp.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-    
+
     // 7. Insertar embarazo
     const [result] = await connection.execute(`
       INSERT INTO pregnancies (
@@ -3673,10 +4724,10 @@ async function registerPregnancy(args: any): Promise<any> {
       risk_factors || null,
       notes || null
     ]);
-    
+
     const pregnancy_id = (result as any).insertId;
     await connection.commit();
-    
+
     // 8. Formatear fechas para respuesta
     const formatDate = (date: Date) => {
       const day = date.getDate();
@@ -3685,7 +4736,7 @@ async function registerPregnancy(args: any): Promise<any> {
       const year = date.getFullYear();
       return `${day} de ${month} de ${year}`;
     };
-    
+
     return {
       success: true,
       message: 'Embarazo registrado exitosamente',
@@ -3719,7 +4770,7 @@ async function registerPregnancy(args: any): Promise<any> {
         next_steps: 'Use registerPrenatalControl para registrar cada control prenatal'
       }
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error registrando embarazo:', error);
@@ -3738,10 +4789,10 @@ async function registerPregnancy(args: any): Promise<any> {
 // ===================================================================
 async function getActivePregnancies(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const { patient_id, high_risk_only, limit } = args;
-    
+
     let query = `
       SELECT 
         p.pregnancy_id,
@@ -3761,25 +4812,25 @@ async function getActivePregnancies(args: any): Promise<any> {
       FROM active_pregnancies p
       WHERE 1=1
     `;
-    
+
     const params: any[] = [];
-    
+
     if (patient_id) {
       query += ' AND p.patient_id = ?';
       params.push(patient_id);
     }
-    
+
     if (high_risk_only) {
       query += ' AND p.high_risk = 1';
     }
-    
+
     query += ' ORDER BY p.expected_due_date ASC';
     query += ' LIMIT ?';
     params.push(limit || 50);
-    
+
     const [rows] = await connection.execute(query, params);
     const pregnancies = rows as any[];
-    
+
     // Formatear resultados
     const formatDate = (dateStr: string) => {
       const date = new Date(dateStr);
@@ -3789,7 +4840,7 @@ async function getActivePregnancies(args: any): Promise<any> {
       const year = date.getFullYear();
       return `${day} de ${month} de ${year}`;
     };
-    
+
     const formattedPregnancies = pregnancies.map(preg => ({
       pregnancy_id: preg.pregnancy_id,
       patient: {
@@ -3821,7 +4872,7 @@ async function getActivePregnancies(args: any): Promise<any> {
       },
       registered_at: preg.created_at
     }));
-    
+
     return {
       success: true,
       count: formattedPregnancies.length,
@@ -3836,7 +4887,7 @@ async function getActivePregnancies(args: any): Promise<any> {
         normal_risk_count: formattedPregnancies.filter(p => !p.high_risk).length
       }
     };
-    
+
   } catch (error: any) {
     console.error('Error consultando embarazos activos:', error);
     return {
@@ -3854,23 +4905,23 @@ async function getActivePregnancies(args: any): Promise<any> {
 // ===================================================================
 async function updatePregnancyStatus(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
-    const { 
-      pregnancy_id, 
-      status, 
-      delivery_date, 
-      delivery_type, 
-      baby_gender, 
+
+    const {
+      pregnancy_id,
+      status,
+      delivery_date,
+      delivery_type,
+      baby_gender,
       baby_weight_grams,
       interruption_date,
       interruption_reason,
       interruption_notes,
       complications
     } = args;
-    
+
     // 1. Verificar que el embarazo existe
     const [pregnancyCheck] = await connection.execute(`
       SELECT 
@@ -3885,7 +4936,7 @@ async function updatePregnancyStatus(args: any): Promise<any> {
       WHERE p.id = ?
       LIMIT 1
     `, [pregnancy_id]);
-    
+
     if ((pregnancyCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -3894,9 +4945,9 @@ async function updatePregnancyStatus(args: any): Promise<any> {
         pregnancy_id: pregnancy_id
       };
     }
-    
+
     const pregnancy = (pregnancyCheck as any[])[0];
-    
+
     // 2. Validaciones según el estado
     if (status === 'Completada') {
       if (!delivery_date) {
@@ -3906,7 +4957,7 @@ async function updatePregnancyStatus(args: any): Promise<any> {
           error: 'Se requiere delivery_date para completar el embarazo'
         };
       }
-      
+
       // Actualizar embarazo como completado
       await connection.execute(`
         UPDATE pregnancies 
@@ -3929,9 +4980,9 @@ async function updatePregnancyStatus(args: any): Promise<any> {
         complications || null,
         pregnancy_id
       ]);
-      
+
       await connection.commit();
-      
+
       return {
         success: true,
         message: 'Embarazo marcado como completado exitosamente',
@@ -3949,7 +5000,7 @@ async function updatePregnancyStatus(args: any): Promise<any> {
           complications: complications || 'Ninguna'
         }
       };
-      
+
     } else if (status === 'Interrumpida') {
       if (!interruption_date) {
         await connection.rollback();
@@ -3958,7 +5009,7 @@ async function updatePregnancyStatus(args: any): Promise<any> {
           error: 'Se requiere interruption_date para interrumpir el embarazo'
         };
       }
-      
+
       // Actualizar embarazo como interrumpido
       await connection.execute(`
         UPDATE pregnancies 
@@ -3979,9 +5030,9 @@ async function updatePregnancyStatus(args: any): Promise<any> {
         complications || null,
         pregnancy_id
       ]);
-      
+
       await connection.commit();
-      
+
       return {
         success: true,
         message: 'Embarazo marcado como interrumpido',
@@ -3998,7 +5049,7 @@ async function updatePregnancyStatus(args: any): Promise<any> {
           complications: complications || 'Ninguna'
         }
       };
-      
+
     } else if (status === 'Activa') {
       // Reactivar embarazo (poco común)
       await connection.execute(`
@@ -4008,22 +5059,22 @@ async function updatePregnancyStatus(args: any): Promise<any> {
           updated_at = NOW()
         WHERE id = ?
       `, [pregnancy_id]);
-      
+
       await connection.commit();
-      
+
       return {
         success: true,
         message: 'Embarazo reactivado',
         pregnancy_id: pregnancy_id
       };
     }
-    
+
     await connection.rollback();
     return {
       success: false,
       error: 'Estado no válido. Debe ser: Activa, Completada o Interrumpida'
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error actualizando estado de embarazo:', error);
@@ -4042,10 +5093,10 @@ async function updatePregnancyStatus(args: any): Promise<any> {
 // ===================================================================
 async function registerPrenatalControl(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const {
       pregnancy_id,
       control_date,
@@ -4063,7 +5114,7 @@ async function registerPrenatalControl(args: any): Promise<any> {
       ultrasound_performed,
       ultrasound_notes
     } = args;
-    
+
     // 1. Verificar que el embarazo existe y está activo
     const [pregnancyCheck] = await connection.execute(`
       SELECT 
@@ -4076,7 +5127,7 @@ async function registerPrenatalControl(args: any): Promise<any> {
       WHERE p.id = ? AND p.status = 'Activa'
       LIMIT 1
     `, [pregnancy_id]);
-    
+
     if ((pregnancyCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -4085,9 +5136,9 @@ async function registerPrenatalControl(args: any): Promise<any> {
         pregnancy_id: pregnancy_id
       };
     }
-    
+
     const pregnancy = (pregnancyCheck as any[])[0];
-    
+
     // 2. Insertar control prenatal
     const [result] = await connection.execute(`
       INSERT INTO prenatal_controls (
@@ -4125,9 +5176,9 @@ async function registerPrenatalControl(args: any): Promise<any> {
       ultrasound_performed ? 1 : 0,
       ultrasound_notes || null
     ]);
-    
+
     const control_id = (result as any).insertId;
-    
+
     // 3. Actualizar contador de controles en el embarazo
     await connection.execute(`
       UPDATE pregnancies 
@@ -4138,9 +5189,9 @@ async function registerPrenatalControl(args: any): Promise<any> {
         updated_at = NOW()
       WHERE id = ?
     `, [control_date, gestational_weeks, pregnancy_id]);
-    
+
     await connection.commit();
-    
+
     // 4. Formatear respuesta
     return {
       success: true,
@@ -4160,8 +5211,8 @@ async function registerPrenatalControl(args: any): Promise<any> {
         },
         vital_signs: {
           weight_kg: weight_kg || 'No registrado',
-          blood_pressure: (blood_pressure_systolic && blood_pressure_diastolic) 
-            ? `${blood_pressure_systolic}/${blood_pressure_diastolic}` 
+          blood_pressure: (blood_pressure_systolic && blood_pressure_diastolic)
+            ? `${blood_pressure_systolic}/${blood_pressure_diastolic}`
             : 'No registrado'
         },
         measurements: {
@@ -4173,7 +5224,7 @@ async function registerPrenatalControl(args: any): Promise<any> {
       },
       recommendations: recommendations || 'Sin recomendaciones específicas'
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error registrando control prenatal:', error);
@@ -4216,31 +5267,31 @@ async function getPatientById(patientId: number) {
 // Función para inferir género basado en nombre (heurística simple)
 function inferGenderFromName(name: string): string {
   const nameLower = name.toLowerCase().trim();
-  
+
   // Nombres típicamente masculinos (terminaciones comunes)
   const maleEndings = ['o', 'an', 'el', 'on', 'en', 'ar', 'er', 'ir', 'or', 'ur'];
   const maleNames = ['juan', 'carlos', 'luis', 'miguel', 'jose', 'david', 'jorge', 'manuel', 'ricardo', 'francisco', 'antonio', 'sebastian', 'andres', 'diego', 'pablo', 'alejandro', 'pedro', 'rafael', 'jesus', 'daniel'];
-  
+
   // Nombres típicamente femeninos (terminaciones comunes)
   const femaleEndings = ['a', 'ia', 'na', 'ra', 'ta', 'da', 'la', 'sa', 'ma', 'ca'];
   const femaleNames = ['maria', 'ana', 'carmen', 'lucia', 'patricia', 'rosa', 'laura', 'marta', 'elena', 'sofia', 'claudia', 'gabriela', 'andrea', 'paola', 'monica', 'teresa', 'cristina', 'diana', 'sandra', 'beatriz'];
-  
+
   // Extraer primer nombre
   const firstName = nameLower.split(' ')[0];
-  
+
   // Verificar nombres específicos
   if (maleNames.includes(firstName)) return 'Masculino';
   if (femaleNames.includes(firstName)) return 'Femenino';
-  
+
   // Verificar terminaciones
   for (const ending of femaleEndings) {
     if (firstName.endsWith(ending)) return 'Femenino';
   }
-  
+
   for (const ending of maleEndings) {
     if (firstName.endsWith(ending)) return 'Masculino';
   }
-  
+
   return 'No especificado';
 }
 
@@ -4252,22 +5303,22 @@ async function createPatient(data: any) {
     'insurance_affiliation_type', 'blood_group_id', 'population_group_id',
     'education_level_id', 'marital_status_id', 'estrato'
   ];
-  
+
   const missingFields = requiredFields.filter(field => !data[field] && data[field] !== 0);
   if (missingFields.length > 0) {
     throw new Error(`Campos obligatorios faltantes: ${missingFields.join(', ')}`);
   }
-  
+
   // Validar formato de email
   if (data.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email)) {
     throw new Error('Formato de email inválido');
   }
-  
+
   // Validar formato de fecha de nacimiento
   if (data.birth_date && !/^\d{4}-\d{2}-\d{2}$/.test(data.birth_date)) {
     throw new Error('Formato de fecha de nacimiento inválido (debe ser YYYY-MM-DD)');
   }
-  
+
   // Validar estrato
   if (data.estrato && (data.estrato < 0 || data.estrato > 6)) {
     throw new Error('Estrato debe estar entre 0 y 6');
@@ -4280,13 +5331,13 @@ async function createPatient(data: any) {
   }
 
   const {
-    document, document_type_id, name, phone, phone_alt, email, birth_date, 
-    address, municipality_id, zone_id, 
-    insurance_eps_id, insurance_affiliation_type, blood_group_id, 
-    population_group_id, education_level_id, marital_status_id, 
+    document, document_type_id, name, phone, phone_alt, email, birth_date,
+    address, municipality_id, zone_id,
+    insurance_eps_id, insurance_affiliation_type, blood_group_id,
+    population_group_id, education_level_id, marital_status_id,
     has_disability = false, disability_type_id, estrato, notes
   } = data;
-  
+
   const [result] = await pool.query(
     `INSERT INTO patients (
       document, document_type_id, name, phone, phone_alt, email, birth_date, 
@@ -4296,16 +5347,16 @@ async function createPatient(data: any) {
       estrato, notes, status
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Activo')`,
     [
-      document, document_type_id || null, name, phone || null, phone_alt || null, 
-      email || null, birth_date || null, gender, address || null, 
-      municipality_id || null, zone_id || null, insurance_eps_id || null, 
-      insurance_affiliation_type || null, blood_group_id || null, 
-      population_group_id || null, education_level_id || null, 
-      marital_status_id || null, has_disability, disability_type_id || null, 
+      document, document_type_id || null, name, phone || null, phone_alt || null,
+      email || null, birth_date || null, gender, address || null,
+      municipality_id || null, zone_id || null, insurance_eps_id || null,
+      insurance_affiliation_type || null, blood_group_id || null,
+      population_group_id || null, education_level_id || null,
+      marital_status_id || null, has_disability, disability_type_id || null,
       estrato || null, notes || null
     ]
   );
-  
+
   return {
     id: (result as any).insertId,
     ...data,
@@ -4317,7 +5368,7 @@ async function createSimplePatient(data: any) {
   // Validar campos mínimos requeridos - SOLO nombre y documento
   const requiredFields = ['document', 'name'];
   const missingFields = requiredFields.filter(field => !data[field] || String(data[field]).trim() === '');
-  
+
   if (missingFields.length > 0) {
     throw new Error(`Campos obligatorios faltantes: ${missingFields.join(', ')}`);
   }
@@ -4325,11 +5376,11 @@ async function createSimplePatient(data: any) {
   // Limpiar y validar datos
   const document = String(data.document).trim();
   const name = String(data.name).trim();
-  
+
   if (document.length < 3) {
     throw new Error('El documento debe tener al menos 3 caracteres');
   }
-  
+
   if (name.length < 2) {
     throw new Error('El nombre debe tener al menos 2 caracteres');
   }
@@ -4384,19 +5435,19 @@ async function createSimplePatient(data: any) {
     `INSERT INTO patients (document, name, phone, email, birth_date, gender, status, has_disability, notes)
      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`,
     [
-      patientData.document, 
-      patientData.name, 
-      patientData.phone, 
-      patientData.email, 
-      patientData.birth_date, 
-      patientData.gender, 
-      patientData.status, 
+      patientData.document,
+      patientData.name,
+      patientData.phone,
+      patientData.email,
+      patientData.birth_date,
+      patientData.gender,
+      patientData.status,
       patientData.notes
     ]
   );
 
   const patientId = (result as any).insertId;
-  
+
   return {
     id: patientId,
     document: patientData.document,
@@ -4414,39 +5465,39 @@ async function createSimplePatient(data: any) {
 async function updatePatient(patientId: number, data: any) {
   const fields: string[] = [];
   const values: any[] = [];
-  
+
   const allowedFields = [
-    'name', 'phone', 'phone_alt', 'email', 'address', 'municipality_id', 
-    'zone_id', 'insurance_eps_id', 'insurance_affiliation_type', 
-    'blood_group_id', 'population_group_id', 'education_level_id', 
-    'marital_status_id', 'has_disability', 'disability_type_id', 
+    'name', 'phone', 'phone_alt', 'email', 'address', 'municipality_id',
+    'zone_id', 'insurance_eps_id', 'insurance_affiliation_type',
+    'blood_group_id', 'population_group_id', 'education_level_id',
+    'marital_status_id', 'has_disability', 'disability_type_id',
     'estrato', 'notes', 'status'
   ];
-  
+
   for (const field of allowedFields) {
     if (data[field] !== undefined) {
       fields.push(`${field} = ?`);
       values.push(data[field]);
     }
   }
-  
+
   if (!fields.length) {
     throw new Error('No hay campos para actualizar');
   }
-  
+
   values.push(patientId);
   await pool.execute(
     `UPDATE patients SET ${fields.join(', ')} WHERE id = ?`,
     values
   );
-  
+
   return { id: patientId, ...data };
 }
 
 async function getAppointments(filters: any = {}) {
   const where: string[] = [];
   const values: any[] = [];
-  
+
   if (filters.date) {
     where.push('DATE(a.scheduled_at) = ?');
     values.push(filters.date);
@@ -4463,9 +5514,9 @@ async function getAppointments(filters: any = {}) {
     where.push('a.doctor_id = ?');
     values.push(filters.doctor_id);
   }
-  
+
   const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  
+
   const [rows] = await pool.execute(
     `SELECT a.*, 
             p.name AS patient_name, p.phone AS patient_phone, p.document AS patient_document,
@@ -4482,7 +5533,7 @@ async function getAppointments(filters: any = {}) {
      LIMIT 100`,
     values
   );
-  
+
   return {
     appointments: rows,
     total: (rows as any[]).length,
@@ -4495,7 +5546,7 @@ async function createAppointment(data: any) {
     patient_id, doctor_id, specialty_id, location_id, scheduled_at,
     duration_minutes = 30, appointment_type = 'Presencial', reason
   } = data;
-  
+
   // Verificar conflictos de horario
   const [conflicts] = await pool.execute(
     `SELECT id FROM appointments
@@ -4505,17 +5556,17 @@ async function createAppointment(data: any) {
      LIMIT 1`,
     [doctor_id, scheduled_at, duration_minutes, scheduled_at]
   );
-  
+
   if ((conflicts as any[]).length > 0) {
     throw new Error('Conflicto de horario: el médico ya tiene una cita en ese horario');
   }
-  
+
   const [result] = await pool.execute(
     `INSERT INTO appointments (patient_id, doctor_id, specialty_id, location_id, scheduled_at, duration_minutes, appointment_type, status, reason)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente', ?)`,
     [patient_id, doctor_id, specialty_id, location_id, scheduled_at, duration_minutes, appointment_type, reason]
   );
-  
+
   return {
     id: (result as any).insertId,
     ...data,
@@ -4525,75 +5576,75 @@ async function createAppointment(data: any) {
 
 async function updateAppointmentStatus(appointmentId: number, data: any) {
   const { status, notes, cancellation_reason } = data;
-  
+
   const fields = ['status = ?'];
   const values = [status];
-  
+
   if (notes !== undefined) {
     fields.push('notes = ?');
     values.push(notes);
   }
-  
+
   if (cancellation_reason !== undefined) {
     fields.push('cancellation_reason = ?');
     values.push(cancellation_reason);
   }
-  
+
   values.push(appointmentId);
-  
+
   await pool.execute(
     `UPDATE appointments SET ${fields.join(', ')} WHERE id = ?`,
     values
   );
-  
+
   return { id: appointmentId, ...data };
 }
 
 async function getDoctors(filters: any = {}) {
   let query = 'SELECT * FROM doctors';
   const values: any[] = [];
-  
+
   if (filters.active_only !== false) {
     query += ' WHERE active = true';
   }
-  
+
   query += ' ORDER BY name ASC';
-  
+
   const [doctors] = await pool.execute(query, values);
-  
+
   // Obtener especialidades y ubicaciones para cada médico
   const [specRows] = await pool.execute(
     `SELECT ds.doctor_id, s.id, s.name
      FROM doctor_specialties ds
      JOIN specialties s ON s.id = ds.specialty_id`
   );
-  
+
   const [locRows] = await pool.execute(
     `SELECT dl.doctor_id, l.id, l.name
      FROM doctor_locations dl
      JOIN locations l ON l.id = dl.location_id`
   );
-  
+
   // Mapear especialidades y ubicaciones
   const specMap = new Map();
   const locMap = new Map();
-  
+
   for (const row of specRows as any[]) {
     if (!specMap.has(row.doctor_id)) specMap.set(row.doctor_id, []);
     specMap.get(row.doctor_id).push({ id: row.id, name: row.name });
   }
-  
+
   for (const row of locRows as any[]) {
     if (!locMap.has(row.doctor_id)) locMap.set(row.doctor_id, []);
     locMap.get(row.doctor_id).push({ id: row.id, name: row.name });
   }
-  
+
   const result = (doctors as any[]).map(doctor => ({
     ...doctor,
     specialties: specMap.get(doctor.id) || [],
     locations: locMap.get(doctor.id) || []
   }));
-  
+
   return {
     doctors: result,
     total: result.length
@@ -4602,32 +5653,32 @@ async function getDoctors(filters: any = {}) {
 
 async function createDoctor(data: any) {
   const { name, email, phone, license_number, specialties = [], locations = [] } = data;
-  
+
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    
+
     const [result] = await connection.execute(
       'INSERT INTO doctors (name, email, phone, license_number, active) VALUES (?, ?, ?, ?, true)',
       [name, email || null, phone || null, license_number]
     );
-    
+
     const doctorId = (result as any).insertId;
-    
+
     // Agregar especialidades
     if (specialties.length > 0) {
       const specValues = specialties.map((sid: number) => [doctorId, sid]);
       await connection.query('INSERT INTO doctor_specialties (doctor_id, specialty_id) VALUES ?', [specValues]);
     }
-    
+
     // Agregar ubicaciones
     if (locations.length > 0) {
       const locValues = locations.map((lid: number) => [doctorId, lid]);
       await connection.query('INSERT INTO doctor_locations (doctor_id, location_id) VALUES ?', [locValues]);
     }
-    
+
     await connection.commit();
-    
+
     return {
       id: doctorId,
       name,
@@ -4652,7 +5703,7 @@ async function getSpecialties(activeOnly: boolean = true) {
     query += ' WHERE active = true';
   }
   query += ' ORDER BY name ASC';
-  
+
   const [rows] = await pool.execute(query);
   return {
     specialties: rows,
@@ -4662,12 +5713,12 @@ async function getSpecialties(activeOnly: boolean = true) {
 
 async function createSpecialty(data: any) {
   const { name, description, default_duration_minutes = 30 } = data;
-  
+
   const [result] = await pool.execute(
     'INSERT INTO specialties (name, description, default_duration_minutes, active) VALUES (?, ?, ?, true)',
     [name, description || null, default_duration_minutes]
   );
-  
+
   return {
     id: (result as any).insertId,
     name,
@@ -4683,7 +5734,7 @@ async function getLocations(activeOnly: boolean = true) {
     query += " WHERE status = 'Activa'";
   }
   query += ' ORDER BY name ASC';
-  
+
   const [rows] = await pool.execute(query);
   return {
     locations: rows,
@@ -4693,13 +5744,13 @@ async function getLocations(activeOnly: boolean = true) {
 
 async function createLocation(data: any) {
   const { name, address, phone, type = 'Sucursal', capacity = 0 } = data;
-  
+
   const [result] = await pool.execute(
     `INSERT INTO locations (name, address, phone, type, status, capacity, current_patients)
      VALUES (?, ?, ?, ?, 'Activa', ?, 0)`,
     [name, address || null, phone || null, type, capacity]
   );
-  
+
   return {
     id: (result as any).insertId,
     name,
@@ -4714,7 +5765,7 @@ async function createLocation(data: any) {
 
 async function getDaySummary(date?: string) {
   const targetDate = date || new Date().toISOString().split('T')[0];
-  
+
   const [stats] = await pool.execute(
     `SELECT 
        COUNT(*) as total_citas,
@@ -4726,7 +5777,7 @@ async function getDaySummary(date?: string) {
      WHERE DATE(scheduled_at) = ?`,
     [targetDate]
   );
-  
+
   const [topDoctors] = await pool.execute(
     `SELECT d.name, COUNT(*) as citas
      FROM appointments a
@@ -4737,9 +5788,9 @@ async function getDaySummary(date?: string) {
      LIMIT 5`,
     [targetDate]
   );
-  
+
   const summary = (stats as any[])[0];
-  
+
   return {
     fecha: targetDate,
     estadisticas: summary,
@@ -4760,12 +5811,12 @@ async function getPatientHistory(patientId: number, limit: number = 10) {
      LIMIT ?`,
     [patientId, limit]
   );
-  
+
   const [patient] = await pool.execute(
     'SELECT name, document FROM patients WHERE id = ? LIMIT 1',
     [patientId]
   );
-  
+
   return {
     paciente: (patient as any[])[0] || null,
     historial: appointments,
@@ -4775,7 +5826,7 @@ async function getPatientHistory(patientId: number, limit: number = 10) {
 
 async function getDoctorSchedule(doctorId: number, date?: string) {
   const targetDate = date || new Date().toISOString().split('T')[0];
-  
+
   const [appointments] = await pool.execute(
     `SELECT a.*, p.name as patient_name, p.phone as patient_phone, s.name as specialty_name
      FROM appointments a
@@ -4785,12 +5836,12 @@ async function getDoctorSchedule(doctorId: number, date?: string) {
      ORDER BY a.scheduled_at ASC`,
     [doctorId, targetDate]
   );
-  
+
   const [doctor] = await pool.execute(
     'SELECT name FROM doctors WHERE id = ? LIMIT 1',
     [doctorId]
   );
-  
+
   return {
     medico: (doctor as any[])[0] || null,
     fecha: targetDate,
@@ -4805,12 +5856,12 @@ async function executeCustomQuery(query: string, params: any[] = []) {
   if (!trimmedQuery.startsWith('select')) {
     throw new Error('Solo se permiten consultas SELECT');
   }
-  
+
   // Prevenir múltiples declaraciones
   if (trimmedQuery.includes(';') && !trimmedQuery.endsWith(';')) {
     throw new Error('No se permiten múltiples declaraciones SQL');
   }
-  
+
   const [rows] = await pool.execute(query, params);
   return {
     resultados: rows,
@@ -4854,14 +5905,14 @@ async function getDisabilityTypes() {
 async function getMunicipalities(zoneId?: number) {
   let query = 'SELECT m.id, m.name, m.zone_id, z.name as zone_name FROM municipalities m LEFT JOIN zones z ON m.zone_id = z.id';
   const params: any[] = [];
-  
+
   if (zoneId) {
     query += ' WHERE m.zone_id = ?';
     params.push(zoneId);
   }
-  
+
   query += ' ORDER BY m.name';
-  
+
   const [rows] = await pool.query(query, params);
   return { municipalities: rows };
 }
@@ -4917,12 +5968,12 @@ app.get('/mcp-unified', (req, res) => {
  */
 async function cancelAppointment(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     await connection.beginTransaction();
-    
+
     const { appointment_id, cancellation_reason, notes } = args;
-    
+
     // 1. Verificar que la cita existe y obtener información
     const [appointmentCheck] = await connection.execute(`
       SELECT 
@@ -4944,7 +5995,7 @@ async function cancelAppointment(args: any): Promise<any> {
       INNER JOIN locations l ON a.location_id = l.id
       WHERE a.id = ?
     `, [appointment_id]);
-    
+
     if ((appointmentCheck as any[]).length === 0) {
       await connection.rollback();
       return {
@@ -4953,9 +6004,9 @@ async function cancelAppointment(args: any): Promise<any> {
         appointment_id
       };
     }
-    
+
     const appointment = (appointmentCheck as any[])[0];
-    
+
     // Verificar si ya está cancelada
     if (appointment.status === 'Cancelada') {
       await connection.rollback();
@@ -4970,7 +6021,7 @@ async function cancelAppointment(args: any): Promise<any> {
         }
       };
     }
-    
+
     // Verificar si ya está completada
     if (appointment.status === 'Completada') {
       await connection.rollback();
@@ -4986,12 +6037,12 @@ async function cancelAppointment(args: any): Promise<any> {
         suggestion: 'Si desea corregir el estado, contacte al administrador del sistema'
       };
     }
-    
+
     // 2. Cancelar la cita
-    const notesText = notes 
+    const notesText = notes
       ? `${notes} | Motivo: ${cancellation_reason}`
       : `CANCELADA: ${cancellation_reason}`;
-    
+
     await connection.execute(`
       UPDATE appointments
       SET status = 'Cancelada',
@@ -4999,7 +6050,7 @@ async function cancelAppointment(args: any): Promise<any> {
           cancellation_reason = ?
       WHERE id = ?
     `, [notesText, cancellation_reason, appointment_id]);
-    
+
     // 3. Liberar el cupo en availability_distribution
     const [liberationResult] = await connection.execute(`
       UPDATE availability_distribution ad
@@ -5008,11 +6059,39 @@ async function cancelAppointment(args: any): Promise<any> {
         AND DATE(ad.day_date) = DATE(?)
         AND ad.assigned > 0
     `, [appointment.availability_id, appointment.scheduled_at]);
-    
+
     const quotaLiberated = (liberationResult as any).affectedRows > 0;
-    
+
     await connection.commit();
-    
+
+    // 🔔 ENVIAR SMS DE CANCELACIÓN AL PACIENTE
+    const localTime = convertDbToLocalTime(appointment.scheduled_at);
+    const patientPhone = appointment.patient_document; // Necesitamos obtener el teléfono
+
+    // Consultar teléfono del paciente
+    const [phoneCheck] = await connection.execute(`
+      SELECT phone, phone_alt FROM patients WHERE id = ?
+    `, [appointment.patient_id]);
+
+    if ((phoneCheck as any[]).length > 0) {
+      const phoneData = (phoneCheck as any[])[0];
+      const phone = phoneData.phone || phoneData.phone_alt;
+
+      if (phone) {
+        sendCancellationSMS(
+          phone,
+          appointment.patient_name,
+          localTime.dateFormatted,
+          localTime.timeFormatted,
+          appointment.specialty_name,
+          appointment.id,
+          cancellation_reason
+        );
+      } else {
+        console.log(`📱 [MCP] No se envió SMS de cancelación: Paciente ${appointment.patient_name} sin teléfono registrado`);
+      }
+    }
+
     return {
       success: true,
       message: 'Cita cancelada exitosamente y cupo liberado',
@@ -5035,7 +6114,7 @@ async function cancelAppointment(args: any): Promise<any> {
       quota_info: {
         availability_id: appointment.availability_id,
         quota_liberated: quotaLiberated,
-        message: quotaLiberated 
+        message: quotaLiberated
           ? 'Cupo liberado exitosamente en availability_distribution'
           : 'No fue necesario liberar cupo (no había cupos assigned)'
       },
@@ -5044,7 +6123,7 @@ async function cancelAppointment(args: any): Promise<any> {
         'Puede procesar lista de espera con reassignWaitingListAppointments si hay solicitudes pendientes'
       ]
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error cancelando cita:', error);
@@ -5063,13 +6142,19 @@ async function cancelAppointment(args: any): Promise<any> {
  */
 async function syncAvailabilityQuotas(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const { availability_id, dry_run = false } = args;
-    
-    // Construir query base con subquery para evitar error de referencia
-    let whereClause = availability_id ? `WHERE availability_id = ${availability_id}` : '';
-    
+
+    // SECURITY FIX: Build parameterized query instead of string interpolation
+    let whereClauseOuter = '';
+    const outerParams: any[] = [];
+
+    if (availability_id) {
+      whereClauseOuter = 'WHERE subq.availability_id = ?';
+      outerParams.push(availability_id);
+    }
+
     // Obtener datos actuales vs reales usando subquery
     const [data] = await connection.execute(`
       SELECT * FROM (
@@ -5096,11 +6181,11 @@ async function syncAvailabilityQuotas(args: any): Promise<any> {
         GROUP BY ad.id, ad.availability_id, ad.day_date, ad.quota, ad.assigned,
                  av.date, d.name, s.name, l.name
       ) AS subq
-      ${whereClause}
-      WHERE difference != 0
+      ${whereClauseOuter}
+      ${whereClauseOuter ? 'AND' : 'WHERE'} difference != 0
       ORDER BY ABS(difference) DESC
-    `);
-    
+    `, outerParams);
+
     if ((data as any[]).length === 0) {
       return {
         success: true,
@@ -5110,20 +6195,20 @@ async function syncAvailabilityQuotas(args: any): Promise<any> {
         dry_run
       };
     }
-    
+
     const records = data as any[];
     const updates: any[] = [];
-    
+
     if (!dry_run) {
       await connection.beginTransaction();
-      
+
       for (const record of records) {
         await connection.execute(`
           UPDATE availability_distribution
           SET assigned = ?
           WHERE id = ?
         `, [record.assigned_real, record.id]);
-        
+
         updates.push({
           distribution_id: record.id,
           availability_id: record.availability_id,
@@ -5137,7 +6222,7 @@ async function syncAvailabilityQuotas(args: any): Promise<any> {
           corrected: true
         });
       }
-      
+
       await connection.commit();
     } else {
       // Modo dry-run: solo reportar qué se actualizaría
@@ -5156,10 +6241,10 @@ async function syncAvailabilityQuotas(args: any): Promise<any> {
         });
       }
     }
-    
+
     return {
       success: true,
-      message: dry_run 
+      message: dry_run
         ? `Simulación completada. Se encontraron ${records.length} inconsistencias que SE ACTUALIZARÍAN`
         : `Sincronización completada. Se corrigieron ${records.length} registros`,
       dry_run,
@@ -5170,11 +6255,11 @@ async function syncAvailabilityQuotas(args: any): Promise<any> {
         inconsistencies_fixed: dry_run ? 0 : records.length,
         largest_difference: Math.max(...records.map((r: any) => Math.abs(r.difference)))
       },
-      next_steps: dry_run 
+      next_steps: dry_run
         ? ['Ejecute con dry_run: false para aplicar los cambios']
         : ['Los cupos ahora reflejan el conteo real de citas activas', 'Puede verificar con auditAvailabilityQuotas']
     };
-    
+
   } catch (error: any) {
     if (!args.dry_run) {
       await connection.rollback();
@@ -5195,13 +6280,23 @@ async function syncAvailabilityQuotas(args: any): Promise<any> {
  */
 async function auditAvailabilityQuotas(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
     const { availability_id, show_only_inconsistencies = true, limit = 50 } = args;
-    
-    let whereClause = availability_id ? `WHERE ad.availability_id = ${availability_id}` : '';
-    let havingClause = show_only_inconsistencies ? 'WHERE difference != 0' : '';
-    
+
+    // SECURITY FIX: Build parameterized query instead of string interpolation
+    let innerWhereClause = '';
+    let outerWhereClause = show_only_inconsistencies ? 'WHERE difference != 0' : '';
+    const queryParams: any[] = [];
+
+    if (availability_id) {
+      innerWhereClause = 'WHERE ad.availability_id = ?';
+      queryParams.push(availability_id);
+    }
+
+    // Add limit as the last parameter
+    queryParams.push(limit);
+
     const [data] = await connection.execute(`
       SELECT * FROM (
         SELECT 
@@ -5233,17 +6328,17 @@ async function auditAvailabilityQuotas(args: any): Promise<any> {
         LEFT JOIN appointments a ON a.availability_id = ad.availability_id 
           AND DATE(a.scheduled_at) = ad.day_date
           AND a.status IN ('Pendiente', 'Confirmada')
-        ${whereClause}
+        ${innerWhereClause}
         GROUP BY ad.id, ad.availability_id, ad.day_date, ad.quota, ad.assigned,
                  av.date, av.start_time, av.end_time, d.name, s.name, l.name
       ) AS subq
-      ${havingClause}
+      ${outerWhereClause}
       ORDER BY ABS(difference) DESC
       LIMIT ?
-    `, [limit]);
-    
+    `, queryParams);
+
     const records = data as any[];
-    
+
     // Calcular estadísticas
     const stats = {
       total_checked: records.length,
@@ -5251,11 +6346,11 @@ async function auditAvailabilityQuotas(args: any): Promise<any> {
       over_assigned: records.filter((r: any) => r.status === 'OVER-ASSIGNED').length,
       under_assigned: records.filter((r: any) => r.status === 'UNDER-ASSIGNED').length,
       total_difference: records.reduce((sum: number, r: any) => sum + Math.abs(r.difference), 0),
-      largest_difference: records.length > 0 
+      largest_difference: records.length > 0
         ? Math.max(...records.map((r: any) => Math.abs(r.difference)))
         : 0
     };
-    
+
     return {
       success: true,
       message: `Auditoría completada. Se analizaron ${stats.total_checked} registros`,
@@ -5273,16 +6368,16 @@ async function auditAvailabilityQuotas(args: any): Promise<any> {
       },
       recommendations: stats.over_assigned > 0 || stats.under_assigned > 0
         ? [
-            `Se encontraron ${stats.over_assigned + stats.under_assigned} inconsistencias`,
-            'Ejecute syncAvailabilityQuotas con dry_run: true para ver qué se corregiría',
-            'Luego ejecute syncAvailabilityQuotas con dry_run: false para aplicar correcciones'
-          ]
+          `Se encontraron ${stats.over_assigned + stats.under_assigned} inconsistencias`,
+          'Ejecute syncAvailabilityQuotas con dry_run: true para ver qué se corregiría',
+          'Luego ejecute syncAvailabilityQuotas con dry_run: false para aplicar correcciones'
+        ]
         : [
-            'Todos los cupos están consistentes',
-            'No se requiere acción correctiva'
-          ]
+          'Todos los cupos están consistentes',
+          'No se requiere acción correctiva'
+        ]
     };
-    
+
   } catch (error: any) {
     console.error('Error auditando cupos:', error);
     return {
@@ -5303,7 +6398,7 @@ async function auditAvailabilityQuotas(args: any): Promise<any> {
 app.post('/mcp-unified', async (req, res) => {
   try {
     const request: JSONRPCRequest = req.body;
-    
+
     // Soporte para inicialización MCP
     if (request.method === 'initialize') {
       return res.json(createSuccessResponse(request.id, {
@@ -5319,21 +6414,21 @@ app.post('/mcp-unified', async (req, res) => {
         }
       }));
     }
-    
+
     if (request.method === 'tools/list') {
       return res.json(createSuccessResponse(request.id, {
         tools: UNIFIED_TOOLS
       }));
     }
-    
+
     if (request.method === 'tools/call') {
       const { name, arguments: args } = request.params;
       const result = await executeToolCall(name, args || {});
       return res.json(createSuccessResponse(request.id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }));
     }
-    
+
     return res.json(createErrorResponse(request.id, -32601, 'Método no encontrado'));
-    
+
   } catch (error: any) {
     console.error('Error en MCP unified:', error);
     return res.json(createErrorResponse(req.body?.id || 'unknown', -32603, error.message));
@@ -5347,10 +6442,10 @@ app.post('/elevenlabs-mcp', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('X-ElevenLabs-Optimized', 'true');
   res.setHeader('X-Response-Time', Date.now());
-  
+
   try {
     const request: JSONRPCRequest = req.body;
-    
+
     // Soporte para inicialización de ElevenLabs
     if (request.method === 'initialize') {
       return res.json({
@@ -5370,7 +6465,7 @@ app.post('/elevenlabs-mcp', async (req, res) => {
         }
       });
     }
-    
+
     // Respuesta ultra-rápida para tools/list
     if (request.method === 'tools/list') {
       const response = {
@@ -5382,26 +6477,26 @@ app.post('/elevenlabs-mcp', async (req, res) => {
       };
       return res.json(response);
     }
-    
+
     // Ejecución de herramientas optimizada
     if (request.method === 'tools/call') {
       const { name, arguments: args } = request.params;
       const result = await executeToolCall(name, args || {});
       return res.json({
-        jsonrpc: "2.0", 
-        id: request.id, 
-        result: { 
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] 
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }]
         }
       });
     }
-    
+
     return res.json({
       jsonrpc: "2.0",
       id: request.id,
       error: { code: -32601, message: 'Método no encontrado' }
     });
-    
+
   } catch (error: any) {
     console.error('Error en ElevenLabs MCP:', error);
     return res.json({
@@ -5419,18 +6514,18 @@ app.all('/mcp-inspector', async (req, res) => {
   console.log(`Headers:`, req.headers);
   console.log(`Body:`, req.body);
   console.log(`URL: ${req.url}`);
-  
+
   // Headers específicos para MCP Inspector
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-MCP-Transport, X-MCP-Session');
-  
+
   if (req.method === 'OPTIONS') {
     console.log('OPTIONS request handled');
     return res.status(200).end();
   }
-  
+
   try {
     // Manejar solicitudes GET para MCP Inspector
     if (req.method === 'GET') {
@@ -5455,10 +6550,10 @@ app.all('/mcp-inspector', async (req, res) => {
         timestamp: new Date().toISOString()
       });
     }
-    
+
     const request: JSONRPCRequest = req.body || {};
     console.log('Parsed request:', JSON.stringify(request, null, 2));
-    
+
     // Soporte para initialize request del MCP Inspector
     if (request.method === 'initialize') {
       console.log('Initialize method detected');
@@ -5477,7 +6572,7 @@ app.all('/mcp-inspector', async (req, res) => {
       console.log('Initialize response:', JSON.stringify(response, null, 2));
       return res.json(response);
     }
-    
+
     if (request.method === 'tools/list') {
       return res.json(createSuccessResponse(request.id, {
         tools: UNIFIED_TOOLS,
@@ -5487,13 +6582,13 @@ app.all('/mcp-inspector', async (req, res) => {
         }
       }));
     }
-    
+
     if (request.method === 'tools/call') {
       const { name, arguments: args } = request.params;
       const result = await executeToolCall(name, args || {});
       return res.json(createSuccessResponse(request.id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] }));
     }
-    
+
     // Si no hay método específico, redirigir al endpoint principal
     if (!request.method) {
       console.log('No method specified - returning default response');
@@ -5503,10 +6598,10 @@ app.all('/mcp-inspector', async (req, res) => {
         tools: UNIFIED_TOOLS.length
       }));
     }
-    
+
     console.log(`Unknown method: ${request.method}`);
     return res.json(createErrorResponse(request.id || 'unknown', -32601, `Método no encontrado: ${request.method}`));
-    
+
   } catch (error: any) {
     console.error('Error en MCP inspector:', error);
     return res.json(createErrorResponse(req.body?.id || 'unknown', -32603, error.message));
@@ -5538,7 +6633,7 @@ app.get('/test-db', async (req, res) => {
     const [result] = await pool.execute('SELECT COUNT(*) as patients FROM patients');
     const [result2] = await pool.execute('SELECT COUNT(*) as doctors FROM doctors');
     const [result3] = await pool.execute('SELECT COUNT(*) as appointments FROM appointments');
-    
+
     res.json({
       database: 'connected',
       stats: {
@@ -5555,44 +6650,8 @@ app.get('/test-db', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/health', async (req, res) => {
-  try {
-    // Test database connection
-    await pool.query('SELECT 1');
-    res.json({
-      status: 'healthy',
-      database: 'connected',
-      tools: UNIFIED_TOOLS.length,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      database: 'disconnected',
-      error: error instanceof Error ? error.message : 'Unknown error',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
-
-// Test database endpoint
-app.get('/test-db', async (req, res) => {
-  try {
-    const [rows] = await pool.query('SELECT COUNT(*) as patient_count FROM patients');
-    res.json({
-      status: 'database_ok',
-      patient_count: (rows as any[])[0].patient_count,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'database_error',
-      error: error instanceof Error ? error.message : 'Unknown error',
-      timestamp: new Date().toISOString()
-    });
-  }
-});
+// REMOVED: Duplicate /health and /test-db endpoints that were overwriting the above
+// The original implementations above are more complete (query multiple tables)
 
 // === IMPLEMENTACIONES DE NUEVAS FUNCIONES ===
 
@@ -5616,41 +6675,41 @@ async function getAvailabilities(args: any) {
     LEFT JOIN specialties s ON av.specialty_id = s.id
     LEFT JOIN locations l ON av.location_id = l.id
   `;
-  
+
   const filters: string[] = [];
   const values: any[] = [];
-  
+
   if (args.date) {
     filters.push('av.date = ?');
     values.push(args.date);
   }
-  
+
   if (args.doctor_id) {
     filters.push('av.doctor_id = ?');
     values.push(args.doctor_id);
   }
-  
+
   if (args.specialty_id) {
     filters.push('av.specialty_id = ?');
     values.push(args.specialty_id);
   }
-  
+
   if (args.location_id) {
     filters.push('av.location_id = ?');
     values.push(args.location_id);
   }
-  
+
   if (args.status) {
     filters.push('av.status = ?');
     values.push(args.status);
   }
-  
+
   if (filters.length > 0) {
     query += ' WHERE ' + filters.join(' AND ');
   }
-  
+
   query += ' ORDER BY av.date ASC, av.start_time ASC';
-  
+
   const [rows] = await pool.query(query, values);
   return {
     availabilities: rows,
@@ -5664,10 +6723,10 @@ async function createAvailability(args: any) {
     'INSERT INTO availabilities (doctor_id, specialty_id, location_id, date, start_time, end_time, capacity, duration_minutes, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [args.doctor_id, args.specialty_id, args.location_id, args.date, args.start_time, args.end_time, args.capacity, args.duration_minutes || 30, args.notes || '']
   );
-  
+
   const insertId = (result as any).insertId;
   const [availability] = await pool.query('SELECT * FROM availabilities WHERE id = ?', [insertId]);
-  
+
   return {
     success: true,
     availability: (availability as any[])[0],
@@ -5678,35 +6737,35 @@ async function createAvailability(args: any) {
 async function updateAvailability(availabilityId: number, args: any) {
   const updates: string[] = [];
   const values: any[] = [];
-  
+
   if (args.capacity !== undefined) {
     updates.push('capacity = ?');
     values.push(args.capacity);
   }
-  
+
   if (args.status) {
     updates.push('status = ?');
     values.push(args.status);
   }
-  
+
   if (args.notes !== undefined) {
     updates.push('notes = ?');
     values.push(args.notes);
   }
-  
+
   if (updates.length === 0) {
     throw new Error('No hay campos para actualizar');
   }
-  
+
   values.push(availabilityId);
-  
+
   await pool.query(
     `UPDATE availabilities SET ${updates.join(', ')} WHERE id = ?`,
     values
   );
-  
+
   const [updated] = await pool.query('SELECT * FROM availabilities WHERE id = ?', [availabilityId]);
-  
+
   return {
     success: true,
     availability: (updated as any[])[0],
@@ -5720,19 +6779,19 @@ async function assignSpecialtyToDoctor(doctorId: number, specialtyId: number) {
     'SELECT * FROM doctor_specialties WHERE doctor_id = ? AND specialty_id = ?',
     [doctorId, specialtyId]
   );
-  
+
   if ((existing as any[]).length > 0) {
     return {
       success: false,
       message: 'El médico ya tiene asignada esta especialidad'
     };
   }
-  
+
   await pool.query(
     'INSERT INTO doctor_specialties (doctor_id, specialty_id) VALUES (?, ?)',
     [doctorId, specialtyId]
   );
-  
+
   return {
     success: true,
     message: 'Especialidad asignada exitosamente al médico'
@@ -5744,14 +6803,14 @@ async function removeSpecialtyFromDoctor(doctorId: number, specialtyId: number) 
     'DELETE FROM doctor_specialties WHERE doctor_id = ? AND specialty_id = ?',
     [doctorId, specialtyId]
   );
-  
+
   if ((result as any).affectedRows === 0) {
     return {
       success: false,
       message: 'No se encontró la relación médico-especialidad'
     };
   }
-  
+
   return {
     success: true,
     message: 'Especialidad removida exitosamente del médico'
@@ -5761,7 +6820,7 @@ async function removeSpecialtyFromDoctor(doctorId: number, specialtyId: number) 
 async function getDashboardStats(args: any) {
   const dateFrom = args.date_from || new Date().toISOString().split('T')[0];
   const dateTo = args.date_to || new Date().toISOString().split('T')[0];
-  
+
   // Estadísticas de citas
   const [appointmentStats] = await pool.query(`
     SELECT 
@@ -5773,14 +6832,14 @@ async function getDashboardStats(args: any) {
     FROM appointments 
     WHERE DATE(scheduled_at) BETWEEN ? AND ?
   `, [dateFrom, dateTo]);
-  
+
   // Estadísticas de pacientes
   const [patientStats] = await pool.query(`
     SELECT COUNT(*) as total_patients
     FROM patients 
     WHERE DATE(created_at) BETWEEN ? AND ?
   `, [dateFrom, dateTo]);
-  
+
   // Disponibilidades
   const [availabilityStats] = await pool.query(`
     SELECT 
@@ -5790,7 +6849,7 @@ async function getDashboardStats(args: any) {
     FROM availabilities 
     WHERE date BETWEEN ? AND ?
   `, [dateFrom, dateTo]);
-  
+
   return {
     period: { from: dateFrom, to: dateTo },
     appointments: (appointmentStats as any[])[0],
@@ -5816,23 +6875,23 @@ async function getAppointmentStats(args: any) {
     LEFT JOIN doctors d ON a.doctor_id = d.id
     WHERE DATE(a.scheduled_at) BETWEEN ? AND ?
   `;
-  
+
   const values = [args.date_from, args.date_to];
-  
+
   if (args.doctor_id) {
     query += ' AND a.doctor_id = ?';
     values.push(args.doctor_id);
   }
-  
+
   if (args.specialty_id) {
     query += ' AND a.specialty_id = ?';
     values.push(args.specialty_id);
   }
-  
+
   query += ' GROUP BY DATE(a.scheduled_at), a.specialty_id, a.doctor_id ORDER BY date DESC';
-  
+
   const [rows] = await pool.query(query, values);
-  
+
   return {
     period: { from: args.date_from, to: args.date_to },
     stats: rows,
@@ -5845,10 +6904,15 @@ async function getAppointmentStats(args: any) {
 // ===================================================================
 async function actualizarPhone(args: any): Promise<any> {
   const connection = await pool.getConnection();
-  
+
   try {
-    const { document, new_phone, new_phone_alt } = args;
-    
+    let { document, new_phone, new_phone_alt } = args;
+
+    // NORMALIZACIÓN DE DOCUMENTO: Eliminar caracteres no numéricos
+    if (document) {
+      document = document.replace(/[^0-9]/g, '');
+    }
+
     // 1. Validar que se proporcionó el documento
     if (!document) {
       return {
@@ -5857,7 +6921,7 @@ async function actualizarPhone(args: any): Promise<any> {
         usage: 'Proporcione el documento del paciente para consultar o actualizar sus teléfonos'
       };
     }
-    
+
     // 2. Buscar paciente por documento
     const [patientCheck] = await connection.execute(`
       SELECT 
@@ -5873,7 +6937,7 @@ async function actualizarPhone(args: any): Promise<any> {
       WHERE p.document = ?
       LIMIT 1
     `, [document]);
-    
+
     if ((patientCheck as any[]).length === 0) {
       return {
         success: false,
@@ -5882,9 +6946,9 @@ async function actualizarPhone(args: any): Promise<any> {
         suggestion: 'Verifique el número de documento e intente nuevamente'
       };
     }
-    
+
     const patient = (patientCheck as any[])[0];
-    
+
     // 3. Si el paciente está inactivo, informar
     if (patient.status === 'Inactivo') {
       return {
@@ -5899,13 +6963,13 @@ async function actualizarPhone(args: any): Promise<any> {
         suggestion: 'Este paciente está marcado como inactivo. Contacte al administrador.'
       };
     }
-    
+
     // 4. Obtener teléfonos actuales
     const currentPhones = {
       phone: patient.phone,
       phone_alt: patient.phone_alt
     };
-    
+
     // 5. Si NO se proporcionan teléfonos nuevos, solo consultar
     if (!new_phone && !new_phone_alt) {
       return {
@@ -5925,52 +6989,52 @@ async function actualizarPhone(args: any): Promise<any> {
         info: 'Para actualizar, proporcione new_phone o new_phone_alt en la solicitud'
       };
     }
-    
+
     // 6. Actualizar teléfonos
     await connection.beginTransaction();
-    
+
     const updates: string[] = [];
     const params: any[] = [];
-    
+
     if (new_phone) {
       updates.push('phone = ?');
       params.push(new_phone);
     }
-    
+
     if (new_phone_alt) {
       updates.push('phone_alt = ?');
       params.push(new_phone_alt);
     }
-    
+
     // Agregar documento al final de params
     params.push(document);
-    
+
     const updateQuery = `
       UPDATE patients 
       SET ${updates.join(', ')}
       WHERE document = ?
     `;
-    
+
     await connection.execute(updateQuery, params);
     await connection.commit();
-    
+
     // 7. Preparar respuesta con cambios realizados
     const changes: any = {};
-    
+
     if (new_phone) {
       changes.phone_principal = {
         anterior: currentPhones.phone || 'No registrado',
         nuevo: new_phone
       };
     }
-    
+
     if (new_phone_alt) {
       changes.phone_alternativo = {
         anterior: currentPhones.phone_alt || 'No registrado',
         nuevo: new_phone_alt
       };
     }
-    
+
     return {
       success: true,
       action: 'update',
@@ -5987,13 +7051,279 @@ async function actualizarPhone(args: any): Promise<any> {
         phone_alternativo: new_phone_alt || currentPhones.phone_alt || 'No registrado'
       }
     };
-    
+
   } catch (error: any) {
     await connection.rollback();
     console.error('Error actualizando teléfonos:', error);
     return {
       success: false,
       error: 'Error al actualizar teléfonos del paciente',
+      details: error.message
+    };
+  } finally {
+    connection.release();
+  }
+}
+
+// ===================================================================
+// FUNCIÓN PARA CANCELAR CITAS VENCIDAS AUTOMÁTICAMENTE
+// ===================================================================
+async function cancelarCitasVencidas(args: any): Promise<any> {
+  const connection = await pool.getConnection();
+
+  try {
+    let { document, current_date, dry_run = false } = args;
+
+    // NORMALIZACIÓN DE DOCUMENTO: Eliminar caracteres no numéricos
+    if (document) {
+      document = document.replace(/[^0-9]/g, '');
+    }
+
+    // 1. Validar parámetros obligatorios
+    if (!document) {
+      return {
+        success: false,
+        error: 'El parámetro document es obligatorio',
+        suggestion: 'Proporcione el número de documento del paciente para cancelar sus citas vencidas'
+      };
+    }
+
+    if (!current_date) {
+      return {
+        success: false,
+        error: 'El parámetro current_date es obligatorio',
+        suggestion: 'Proporcione la fecha actual en formato ISO 8601 (YYYY-MM-DDTHH:mm:ss) desde {{system__time}} de ElevenLabs'
+      };
+    }
+
+    // 2. Validar formato de fecha
+    const currentDateTime = new Date(current_date);
+    if (isNaN(currentDateTime.getTime())) {
+      return {
+        success: false,
+        error: 'Formato de fecha inválido',
+        received: current_date,
+        expected_format: 'ISO 8601 (YYYY-MM-DDTHH:mm:ss)',
+        example: '2025-11-21T15:30:00'
+      };
+    }
+
+    // 3. Verificar que el paciente existe y obtener su ID
+    const [patientRows] = await connection.execute(`
+      SELECT id, document, name, phone, status
+      FROM patients
+      WHERE document = ?
+      LIMIT 1
+    `, [document]);
+
+    if ((patientRows as any[]).length === 0) {
+      return {
+        success: false,
+        error: 'Paciente no encontrado',
+        document: document,
+        suggestion: 'Verifique el número de documento o use searchPatient para buscar'
+      };
+    }
+
+    const patient = (patientRows as any[])[0];
+
+    if (patient.status !== 'Activo') {
+      return {
+        success: false,
+        error: 'El paciente no está activo en el sistema',
+        patient: {
+          name: patient.name,
+          document: patient.document,
+          status: patient.status
+        },
+        suggestion: 'Solo se pueden cancelar citas de pacientes activos'
+      };
+    }
+
+    // 4. Buscar citas vencidas del paciente específico que NO están canceladas
+    const [expiredAppointments] = await connection.execute(`
+      SELECT 
+        a.id,
+        a.patient_id,
+        a.scheduled_at,
+        a.status,
+        a.reason,
+        p.name as patient_name,
+        p.document as patient_document,
+        p.phone as patient_phone,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name
+      FROM appointments a
+      LEFT JOIN patients p ON a.patient_id = p.id
+      LEFT JOIN doctors d ON a.doctor_id = d.id
+      LEFT JOIN specialties s ON a.specialty_id = s.id
+      LEFT JOIN locations l ON a.location_id = l.id
+      WHERE a.patient_id = ?
+        AND a.scheduled_at < ?
+        AND a.status != 'Cancelada'
+      ORDER BY a.scheduled_at ASC
+    `, [patient.id, current_date]);
+
+    const expiredList = expiredAppointments as any[];
+
+    if (expiredList.length === 0) {
+      return {
+        success: true,
+        message: 'No se encontraron citas vencidas para este paciente',
+        patient: {
+          id: patient.id,
+          name: patient.name,
+          document: patient.document,
+          phone: patient.phone
+        },
+        current_date: current_date,
+        appointments_found: 0,
+        appointments_cancelled: 0
+      };
+    }
+
+    // 5. Si es dry_run, solo mostrar qué se cancelaría
+    if (dry_run) {
+      return {
+        success: true,
+        dry_run: true,
+        message: `Se encontraron ${expiredList.length} citas vencidas que serían canceladas para este paciente`,
+        patient: {
+          id: patient.id,
+          name: patient.name,
+          document: patient.document,
+          phone: patient.phone
+        },
+        current_date: current_date,
+        appointments_to_cancel: expiredList.length,
+        preview: expiredList.map(apt => ({
+          appointment_id: apt.id,
+          patient: {
+            name: apt.patient_name,
+            document: apt.patient_document,
+            phone: apt.patient_phone
+          },
+          scheduled_at: apt.scheduled_at,
+          current_status: apt.status,
+          would_change_to: 'Cancelada',
+          doctor: apt.doctor_name,
+          specialty: apt.specialty_name,
+          location: apt.location_name,
+          reason: apt.reason
+        })),
+        note: 'Ejecute sin dry_run para aplicar los cambios'
+      };
+    }
+
+    // 5. Cancelar citas (transacción)
+    await connection.beginTransaction();
+
+    let cancelledCount = 0;
+    let quotasLiberated = 0;
+    const cancelledAppointments = [];
+    const errors = [];
+
+    for (const apt of expiredList) {
+      try {
+        // Actualizar estado de la cita a Cancelada
+        await connection.execute(
+          `UPDATE appointments 
+           SET status = 'Cancelada', 
+               notes = CONCAT(COALESCE(notes, ''), '\n[Auto-cancelada por vencimiento: ', ?, ']')
+           WHERE id = ?`,
+          [current_date, apt.id]
+        );
+
+        // Liberar cupo en availability_distribution si existe
+        const [availabilityCheck] = await connection.execute(
+          `SELECT id, quota, assigned 
+           FROM availability_distribution 
+           WHERE availability_id = (SELECT availability_id FROM appointments WHERE id = ?)`,
+          [apt.id]
+        );
+
+        let quotaLiberated = false;
+        if ((availabilityCheck as any[]).length > 0) {
+          const distRow = (availabilityCheck as any[])[0];
+          if (distRow.assigned > 0) {
+            await connection.execute(
+              `UPDATE availability_distribution 
+               SET assigned = assigned - 1
+               WHERE id = ?`,
+              [distRow.id]
+            );
+            quotaLiberated = true;
+            quotasLiberated++;
+          }
+        }
+
+        cancelledCount++;
+        cancelledAppointments.push({
+          appointment_id: apt.id,
+          patient: {
+            name: apt.patient_name,
+            document: apt.patient_document,
+            phone: apt.patient_phone
+          },
+          scheduled_at: apt.scheduled_at,
+          previous_status: apt.status,
+          new_status: 'Cancelada',
+          doctor: apt.doctor_name,
+          specialty: apt.specialty_name,
+          location: apt.location_name,
+          quota_liberated: quotaLiberated
+        });
+
+      } catch (error: any) {
+        errors.push({
+          appointment_id: apt.id,
+          patient: apt.patient_name,
+          error: error.message
+        });
+      }
+    }
+
+    // 6. Commit de la transacción
+    await connection.commit();
+
+    return {
+      success: true,
+      message: `Se cancelaron exitosamente ${cancelledCount} de ${expiredList.length} citas vencidas del paciente ${patient.name}`,
+      patient: {
+        id: patient.id,
+        name: patient.name,
+        document: patient.document,
+        phone: patient.phone
+      },
+      current_date: current_date,
+      summary: {
+        total_found: expiredList.length,
+        successfully_cancelled: cancelledCount,
+        quotas_liberated: quotasLiberated,
+        errors: errors.length
+      },
+      cancelled_appointments: cancelledAppointments,
+      errors: errors.length > 0 ? errors : undefined,
+      by_previous_status: {
+        pendiente: expiredList.filter(a => a.status === 'Pendiente').length,
+        confirmada: expiredList.filter(a => a.status === 'Confirmada').length,
+        completada: expiredList.filter(a => a.status === 'Completada').length,
+        pausada: expiredList.filter(a => a.status === 'Pausada').length
+      },
+      next_steps: [
+        'Los cupos liberados están disponibles para nuevas citas',
+        'Puede agendar nuevas citas para este paciente',
+        'El paciente ha sido notificado sobre las cancelaciones'
+      ]
+    };
+
+  } catch (error: any) {
+    await connection.rollback();
+    console.error('Error cancelando citas vencidas:', error);
+    return {
+      success: false,
+      error: 'Error al cancelar citas vencidas',
       details: error.message
     };
   } finally {

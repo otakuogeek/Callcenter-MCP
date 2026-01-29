@@ -419,9 +419,14 @@ export class CallManagerService {
 
       let limitClause = '';
       if (options.limit) {
-        limitClause = ` LIMIT ${options.limit}`;
+        // Sanitizar limit y offset como números
+        const safeLimit = Math.min(Math.max(1, parseInt(String(options.limit)) || 50), 1000);
+        limitClause = ` LIMIT ?`;
+        params.push(safeLimit);
         if (options.offset) {
-          limitClause += ` OFFSET ${options.offset}`;
+          const safeOffset = Math.max(0, parseInt(String(options.offset)) || 0);
+          limitClause += ` OFFSET ?`;
+          params.push(safeOffset);
         }
       }
 

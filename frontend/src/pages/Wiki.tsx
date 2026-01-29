@@ -97,7 +97,7 @@ export default function Wiki() {
   };
 
   const handleBackToIndex = () => {
-    navigate("/wiki");
+    navigate("/admin/wiki");
     setSearchQuery("");
     setSearchResults([]);
   };

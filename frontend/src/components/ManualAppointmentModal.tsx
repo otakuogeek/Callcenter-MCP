@@ -15,6 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Calendar, Clock, User, Phone, Mail } from "lucide-react";
 import api from "@/lib/api";
 import { Combobox, ComboOption } from "@/components/ui/combobox";
+import { convertColombiaTimeToUTC } from "@/utils/dateHelpers";
 
 interface ManualAppointmentModalProps {
   isOpen: boolean;
@@ -50,7 +51,8 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
     locationId: "",
     reason: "",
     insuranceType: "",
-    notes: ""
+    notes: "",
+    cupsId: ""  // Código CUPS del procedimiento
   });
 
   // Prefill from defaults when opening
@@ -97,6 +99,32 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
   const [locations, setLocations] = useState<Array<{ id: number; name: string }>>([]);
   const [specialties, setSpecialties] = useState<Array<{ id: number; name: string }>>([]);
   const [doctors, setDoctors] = useState<Array<{ id: number; name: string; specialties?: Array<{ id: number; name: string }> }>>([]);
+  const [cupsList, setCupsList] = useState<Array<{ id: number; code: string; name: string; category: string }>>([]);
+  const [cupsLoading, setCupsLoading] = useState(false);
+
+  // Cargar CUPS cuando cambia la especialidad
+  useEffect(() => {
+    if (!isOpen || !formData.specialtyId) {
+      setCupsList([]);
+      return;
+    }
+    setCupsLoading(true);
+    // Obtener el nombre de la especialidad para filtrar por categoría
+    const specialty = specialties.find(s => String(s.id) === formData.specialtyId);
+    const category = specialty?.name || '';
+    api.getCups({ status: 'Activo', category, page: 1, limit: 100 })
+      .then((response: any) => {
+        const items = response?.data || response || [];
+        setCupsList(items.map((c: any) => ({
+          id: Number(c.id),
+          code: c.code,
+          name: c.name,
+          category: c.category
+        })));
+      })
+      .catch(() => setCupsList([]))
+      .finally(() => setCupsLoading(false));
+  }, [isOpen, formData.specialtyId, specialties]);
 
   const filteredDoctors = useMemo(() => {
     const sid = Number(formData.specialtyId);
@@ -179,7 +207,7 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
           try {
             const conf = await api.checkAppointmentConflicts({
               doctor_id: Number(formData.doctorId),
-              scheduled_at: `${formData.date} ${hhmm}:00`,
+              scheduled_at: `${formData.date} ${convertColombiaTimeToUTC(hhmm)}:00`,
               duration_minutes: dur,
             });
             if (!conf?.conflict) return hhmm;
@@ -300,7 +328,7 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
       }
 
       // Construir fecha-hora sin desfase de zona horaria
-      const scheduledAt = `${formData.date} ${formData.time}:00`;
+      const scheduledAt = `${formData.date} ${convertColombiaTimeToUTC(formData.time)}:00`;
 
       // Pre-chequeo de conflictos para mejor UX
       try {
@@ -327,7 +355,7 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
       // Crear cita
       await api.createAppointment({
         patient_id: patientIdNum,
-  availability_id: defaults?.availabilityId ?? null,
+        availability_id: defaults?.availabilityId ?? null,
         location_id: Number(formData.locationId),
         specialty_id: Number(formData.specialtyId),
         doctor_id: Number(formData.doctorId),
@@ -338,7 +366,8 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
         reason: formData.reason || null,
         insurance_type: formData.insuranceType || null,
         notes: formData.notes || null,
-  manual: true,
+        cups_id: formData.cupsId ? Number(formData.cupsId) : null,
+        manual: true,
       });
 
       const displayPatient = selectedPatientId
@@ -575,6 +604,27 @@ const ManualAppointmentModal = ({ isOpen, onClose, onSuccess, defaults }: Manual
                   onChange={(e) => handleInputChange("insuranceType", e.target.value)}
                   placeholder="EPS, Particular, etc."
                 />
+              </div>
+
+              <div>
+                <Label htmlFor="cupsId">Código CUPS (Procedimiento)</Label>
+                <Select 
+                  value={formData.cupsId} 
+                  onValueChange={(value) => handleInputChange("cupsId", value)}
+                  disabled={cupsLoading || !formData.specialtyId}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={cupsLoading ? "Cargando..." : (formData.specialtyId ? "Seleccionar CUPS" : "Primero seleccione especialidad")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Sin CUPS</SelectItem>
+                    {cupsList.map(c => (
+                      <SelectItem key={c.id} value={String(c.id)}>
+                        {c.code} - {c.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 

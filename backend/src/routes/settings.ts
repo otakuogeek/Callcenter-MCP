@@ -48,6 +48,7 @@ const schema = z.object({
   ai_message_welcome: z.string().nullable().optional(),
   ai_message_offline: z.string().nullable().optional(),
   ai_message_transfer: z.string().nullable().optional(),
+  maintenance_mode: z.boolean().optional(),
 });
 
 router.get('/', requireAuth, async (_req: Request, res: Response) => {

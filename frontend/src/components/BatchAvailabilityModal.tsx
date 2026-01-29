@@ -6,6 +6,7 @@ import { AnimatedForm, AnimatedInputField, AnimatedSelectField } from "@/compone
 import { AnimatedButton } from "@/components/ui/animated-button";
 import { EnhancedAnimatedPresenceWrapper } from "@/components/ui/enhanced-animated-container";
 import { toast } from "sonner";
+import { convertColombiaTimeToUTC } from "@/utils/dateHelpers";
 
 interface BatchAvailabilityModalProps {
   isOpen: boolean;
@@ -80,13 +81,21 @@ const BatchAvailabilityModal = ({
     setLoading(true);
     try {
       const token = localStorage.getItem('token');
+      
+      // Convertir horas de UTC-5 (Colombia) a UTC-0 antes de enviar
+      const dataToSend = {
+        ...formData,
+        start_time: convertColombiaTimeToUTC(formData.start_time),
+        end_time: convertColombiaTimeToUTC(formData.end_time)
+      };
+      
       const response = await fetch('/api/availabilities/batch', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify(formData)
+        body: JSON.stringify(dataToSend)
       });
 
       if (!response.ok) {

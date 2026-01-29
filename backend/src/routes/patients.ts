@@ -50,6 +50,10 @@ const basicPatientSchema = z.object({
 // Listado / búsqueda básica
 router.get('/', requireAuth, async (req: Request, res: Response) => {
   const q = String(req.query.q || '').trim();
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+  const offset = (page - 1) * limit;
+  
   try {
     const baseQuery = `
       SELECT 
@@ -72,13 +76,13 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     if (q) {
       const like = `%${q}%`;
       const [rows] = await pool.query(
-        baseQuery + ' WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ? ORDER BY p.id DESC LIMIT 5000',
-        [like, like, like]
+        baseQuery + ' WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ? ORDER BY p.id DESC LIMIT ? OFFSET ?',
+        [like, like, like, limit, offset]
       );
       return res.json(rows);
     }
     
-    const [rows] = await pool.query(baseQuery + ' ORDER BY p.id DESC LIMIT 5000');
+    const [rows] = await pool.query(baseQuery + ' ORDER BY p.id DESC LIMIT ? OFFSET ?', [limit, offset]);
     return res.json(rows);
   } catch (error) {
     console.error('Error fetching patients:', error);
@@ -153,7 +157,8 @@ router.get('/:id', requireAuth, async (req: Request, res: Response) => {
     const row = Array.isArray(rows) ? (rows as any)[0] : null;
     if (!row) return res.status(404).json({ message: 'Not found' });
     return res.json(row);
-  } catch {
+  } catch (error) {
+    console.error('Error fetching patient by id:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -339,7 +344,8 @@ router.patch('/:id', requireAuth, async (req: Request, res: Response) => {
     values.push(id);
     await pool.query(`UPDATE patients SET ${fields.join(', ')} WHERE id = ?`, values);
     return res.json({ id, ...p });
-  } catch {
+  } catch (error) {
+    console.error('Error updating patient (PATCH):', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -354,7 +360,8 @@ router.post('/:id/eps', requireAuth, async (req: Request, res: Response) => {
   try {
     await pool.query('UPDATE patients SET insurance_eps_id = ? WHERE id = ?', [parsed.data.insurance_eps_id ?? null, id]);
     return res.json({ id, insurance_eps_id: parsed.data.insurance_eps_id ?? null });
-  } catch {
+  } catch (error) {
+    console.error('Error updating patient EPS:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -369,7 +376,8 @@ router.post('/:id/status', requireAuth, async (req: Request, res: Response) => {
   try {
     await pool.query('UPDATE patients SET status = ? WHERE id = ?', [parsed.data.status, id]);
     return res.json({ id, status: parsed.data.status });
-  } catch {
+  } catch (error) {
+    console.error('Error updating patient status:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });
@@ -387,7 +395,8 @@ router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
       await pool.query("UPDATE patients SET status='Inactivo' WHERE id = ?", [id]);
       return res.json({ id, status: 'Inactivo' });
     }
-  } catch {
+  } catch (error) {
+    console.error('Error deleting patient:', error);
     return res.status(500).json({ message: 'Server error' });
   }
 });

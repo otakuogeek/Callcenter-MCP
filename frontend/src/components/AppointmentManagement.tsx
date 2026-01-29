@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Button } from "@/components/ui/button";
-import { Plus, Calendar, Filter, Search, X, Zap, Printer, BarChart3 } from "lucide-react";
+import { Plus, Calendar, Filter, Search, X, Zap, Printer, BarChart3, RefreshCw, History, Eye } from "lucide-react";
 import { useAppointmentData, type AvailabilityForm } from "@/hooks/useAppointmentData";
 import AppointmentFilters from "./AppointmentFilters";
 import DateNavigationCards from "./DateNavigationCards";
@@ -20,7 +20,7 @@ import { Separator } from "@/components/ui/separator";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { safeDateFromString } from "@/utils/dateHelpers";
+import { safeDateFromString, formatDateTimeColombia } from "@/utils/dateHelpers";
 import { generateDailyAgendaPDF } from "@/utils/pdfGenerators";
 import { format } from "date-fns";
 
@@ -57,6 +57,13 @@ const AppointmentManagement = () => {
   // Preferencias desde settings
   const [autoCancelSettings, setAutoCancelSettings] = useState<{ auto_cancel_without_confirmation?: boolean; auto_cancel_also_appointments_default?: boolean }>({});
 
+  // Estado para sincronización global de horas
+  const [isSyncingGlobal, setIsSyncingGlobal] = useState(false);
+
+  // Estados para visualización de agendas pasadas y todos los estados
+  const [showPastAgendas, setShowPastAgendas] = useState(false);
+  const [showAllStatus, setShowAllStatus] = useState(false);
+
   const { 
     locations, 
     availabilities,
@@ -72,6 +79,14 @@ const AppointmentManagement = () => {
   
   const { toast } = useToast();
 
+  // Helper para recargar availabilities con los filtros actuales
+  const reloadAvailabilities = useCallback(() => {
+    loadAvailabilities({ 
+      include_past: showPastAgendas, 
+      include_all_status: showAllStatus 
+    });
+  }, [loadAvailabilities, showPastAgendas, showAllStatus]);
+
   const [availabilityForm, setAvailabilityForm] = useState<AvailabilityForm>({
     locationId: "",
     specialty: "",
@@ -80,7 +95,7 @@ const AppointmentManagement = () => {
     startTime: "",
     endTime: "",
     capacity: 1,
-    durationMinutes: 30, // 🔥 Duración por defecto de 30 minutos
+    durationMinutes: 15, // 🔥 Duración por defecto de 15 minutos
     notes: "",
     autoPreallocate: false,
     preallocationPublishDate: '',
@@ -233,7 +248,14 @@ const AppointmentManagement = () => {
           duration_minutes: apt.duration_minutes,
           status: apt.status,
           reason: apt.reason,
-          age: apt.age
+          age: apt.age,
+          // Campos CUPS
+          cups_id: apt.cups_id,
+          cups_code: apt.cups_code,
+          cups_name: apt.cups_name,
+          cups_description: apt.cups_description,
+          cups_category: apt.cups_category,
+          cups_price: apt.cups_price
         });
         
         // Actualizar horarios de inicio y fin basados en citas
@@ -274,14 +296,62 @@ const AppointmentManagement = () => {
     }
   };
 
+  // Función para sincronizar horas de TODAS las agendas activas
+  const handleSyncAllAppointmentTimes = async () => {
+    if (!confirm(`¿Está seguro de sincronizar las horas de TODAS las agendas activas?\n\nEsto reorganizará secuencialmente las citas de cada agenda desde su hora de inicio.\n\nSe procesarán todas las agendas de hoy en adelante.`)) {
+      return;
+    }
+
+    try {
+      setIsSyncingGlobal(true);
+      
+      toast({
+        title: "Sincronizando horas",
+        description: "Procesando todas las agendas activas...",
+      });
+
+      const result = await api.syncAllAppointmentTimes();
+
+      if (result.success && result.data) {
+        toast({
+          title: "Sincronización exitosa",
+          description: `${result.data.totalUpdated} citas sincronizadas en ${result.data.totalAgendas} agendas`,
+          variant: "default",
+        });
+
+        // Recargar las disponibilidades
+        reloadAvailabilities();
+      } else {
+        toast({
+          title: "Aviso",
+          description: result.message || "No hay citas para sincronizar",
+          variant: "default",
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "Error al sincronizar",
+        description: e?.message || "No se pudo sincronizar las horas",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSyncingGlobal(false);
+    }
+  };
+
   useEffect(() => {
-    // Cargar todas las disponibilidades futuras (sin filtrar por fecha específica)
-    loadAvailabilities();
+    // Cargar todas las disponibilidades con los parámetros de visualización
+    // Se ejecuta al montar y cuando cambien los toggles
+    console.log('[AppointmentManagement] Loading availabilities with params:', { showPastAgendas, showAllStatus });
+    loadAvailabilities({ 
+      include_past: showPastAgendas, 
+      include_all_status: showAllStatus 
+    });
     // También cargar resumen mensual para marcar el calendario
     const ref = date || new Date();
     loadCalendarSummary(ref.getUTCMonth(), ref.getUTCFullYear());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Solo cargar una vez al montar el componente
+  }, [showPastAgendas, showAllStatus, loadAvailabilities]); // Incluir loadAvailabilities en deps
 
   // Event listener para limpiar filtro de fecha desde AvailabilityList
   useEffect(() => {
@@ -324,10 +394,10 @@ const AppointmentManagement = () => {
   // Auto-refresco cada 90s
   useEffect(() => {
     const timer = setInterval(() => {
-      loadAvailabilities();
+      reloadAvailabilities();
     }, 90_000);
     return () => clearInterval(timer);
-  }, [loadAvailabilities]);
+  }, [reloadAvailabilities]);
 
   // Filtros activos para mostrar como chips
   const activeFilters = [
@@ -364,12 +434,13 @@ const AppointmentManagement = () => {
       return new Date(year, month - 1, day);
     };
 
-    // Mostrar solo citas futuras (desde hoy en adelante)
+    // Filtrar por fecha: solo mostrar pasadas si el toggle está activo
     const availabilityDate = normalizeDate(availability.date);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
-    if (availabilityDate < today) {
+    // Solo filtrar pasadas si el toggle NO está activo
+    if (!showPastAgendas && availabilityDate < today) {
       return false;
     }
 
@@ -512,16 +583,17 @@ const AppointmentManagement = () => {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50">
       <div className="container mx-auto p-6 space-y-8">
         {/* Header con diseño mejorado */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 pb-2">
-          <div className="space-y-2">
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
-              Gestión de Agenda Médica
-            </h1>
-            <p className="text-gray-600 text-lg font-medium">
-              Administra y supervisa las disponibilidades de consultas médicas
-            </p>
-          </div>
-          <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-4 pb-2">
+          {/* Título y Tabs */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+            <div className="space-y-2">
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+                Gestión de Agenda Médica
+              </h1>
+              <p className="text-gray-600 text-lg font-medium">
+                Administra y supervisa las disponibilidades de consultas médicas
+              </p>
+            </div>
             <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as "calendar" | "distribution" | "analytics")} className="bg-white/80 backdrop-blur-sm rounded-xl p-1 shadow-lg border border-white/20">
               <TabsList className="grid w-full grid-cols-3 gap-1">
                 <TabsTrigger value="calendar" className="flex items-center gap-2 data-[state=active]:bg-blue-600 data-[state=active]:text-white">
@@ -538,7 +610,10 @@ const AppointmentManagement = () => {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            
+          </div>
+          
+          {/* Botones de acción - en fila separada */}
+          <div className="flex flex-wrap items-center justify-end gap-3">
             <Button 
               onClick={handlePrintDailyAgenda}
               variant="outline"
@@ -548,6 +623,18 @@ const AppointmentManagement = () => {
               <Printer className="w-5 h-5" />
               <span className="hidden sm:inline">Imprimir Agenda</span>
               <span className="sm:hidden">Imprimir</span>
+            </Button>
+            
+            <Button 
+              onClick={handleSyncAllAppointmentTimes}
+              disabled={isSyncingGlobal}
+              variant="outline"
+              className="border-2 border-blue-500 text-blue-600 hover:border-blue-600 hover:bg-blue-50 shadow-md hover:shadow-lg transform hover:scale-105 transition-all duration-200 flex items-center gap-2 disabled:opacity-50"
+              size="lg"
+            >
+              <RefreshCw className={`w-5 h-5 ${isSyncingGlobal ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">{isSyncingGlobal ? 'Sincronizando...' : 'Sincronizar Horas'}</span>
+              <span className="sm:hidden">{isSyncingGlobal ? '...' : 'Sync'}</span>
             </Button>
             
             <Button 
@@ -614,6 +701,32 @@ const AppointmentManagement = () => {
                   <Badge className="bg-blue-600 text-white ml-1">{activeFilters.length}</Badge>
                 )}
               </Button>
+              
+              {/* Toggle para ver agendas pasadas */}
+              <div className="flex items-center gap-4 ml-4 pl-4 border-l border-gray-200">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="show-past"
+                    checked={showPastAgendas}
+                    onCheckedChange={setShowPastAgendas}
+                  />
+                  <Label htmlFor="show-past" className="text-sm text-gray-600 flex items-center gap-1 cursor-pointer">
+                    <History className="w-4 h-4" />
+                    <span className="hidden lg:inline">Ver pasadas</span>
+                  </Label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    id="show-all-status"
+                    checked={showAllStatus}
+                    onCheckedChange={setShowAllStatus}
+                  />
+                  <Label htmlFor="show-all-status" className="text-sm text-gray-600 flex items-center gap-1 cursor-pointer">
+                    <Eye className="w-4 h-4" />
+                    <span className="hidden lg:inline">Todos los estados</span>
+                  </Label>
+                </div>
+              </div>
             </div>
 
             {/* Chips de filtros activos con diseño mejorado */}
@@ -754,7 +867,7 @@ const AppointmentManagement = () => {
           onClose={() => setIsSmartAppointmentOpen(false)}
           onSuccess={(result) => {
             // Recargar datos después de crear una cita o agregar a cola
-            loadAvailabilities();
+            reloadAvailabilities();
             loadCalendarSummary();
             
             if (result.assignmentType === 'appointment') {
@@ -810,7 +923,7 @@ const AppointmentManagement = () => {
               {autoCancelLog.map(item => (
                 <div key={item.id + item.when} className="flex items-center justify-between">
                   <div className="truncate mr-2">{item.label}</div>
-                  <div className="text-xs text-gray-500 whitespace-nowrap">{new Date(item.when).toLocaleString()}</div>
+                  <div className="text-xs text-gray-500 whitespace-nowrap">{formatDateTimeColombia(item.when)}</div>
                   {typeof item.appointmentsCancelled === 'number' && (
                     <Badge variant="secondary" className="ml-2">Citas canceladas: {item.appointmentsCancelled}</Badge>
                   )}

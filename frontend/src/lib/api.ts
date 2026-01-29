@@ -109,9 +109,27 @@ async function request<T>(
     throw new Error(msg);
   }
   
-  const data = await res.json();
-  logger.debug('API Response data:', data);
-  return data;
+  // Manejar respuestas vacías (204 No Content) o respuestas sin body
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    logger.debug('API Response: No content (204 or empty body)');
+    return undefined as T;
+  }
+  
+  // Intentar parsear JSON, pero manejar respuestas vacías
+  const text = await res.text();
+  if (!text || text.trim() === '') {
+    logger.debug('API Response: Empty text body');
+    return undefined as T;
+  }
+  
+  try {
+    const data = JSON.parse(text);
+    logger.debug('API Response data:', data);
+    return data;
+  } catch {
+    logger.debug('API Response: Could not parse as JSON, returning text');
+    return text as unknown as T;
+  }
 }
 
 export const api = {
@@ -119,6 +137,7 @@ export const api = {
   get: <T>(path: string) => request<T>(path, { method: 'GET' }),
   post: <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body }),
   put: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PUT', body }),
+  patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   
   // Autenticación
@@ -147,6 +166,22 @@ export const api = {
         // Si ya viene como objeto con data, retornar tal cual
         return response;
       }),
+  
+  // Historial completo del paciente (todas las citas + cola de espera)
+  getPatientHistory: (patient_id: number, statusFilter?: string) => 
+    request<{
+      success: boolean;
+      patient_id: number;
+      summary: {
+        total_appointments: number;
+        total_waiting_list: number;
+        total_records: number;
+        status_counts: Record<string, number>;
+      };
+      appointments: any[];
+      waiting_list: any[];
+    }>(`/appointments/patient-history/${patient_id}${statusFilter && statusFilter !== 'all' ? `?status=${statusFilter}` : ''}`),
+
   getPatientCallLogs: (patient_id: number) => 
     request<unknown[]>(`/call-logs?patient_id=${patient_id}`),
   
@@ -382,6 +417,11 @@ export const api = {
     request<ApiResponse<unknown>>(`/eps/${id}`, { method: 'PUT', body: data }),
   deleteEps: (id: number) => 
     request<void>(`/eps/${id}`, { method: 'DELETE' }),
+  transferEpsPatients: (epsId: number, data: { targetEpsId: number; deleteAfterTransfer: boolean }) =>
+    request<{ success: boolean; message: string; transferred_count: number; deleted: boolean }>(
+      `/eps/${epsId}/transfer-patients`, 
+      { method: 'POST', body: data }
+    ),
   
   // CUPS (Códigos de Procedimientos)
   getCups: (params?: { page?: number; limit?: number; search?: string; category?: string; status?: string }) => {
@@ -448,12 +488,19 @@ export const api = {
   // Disponibilidades
   /**
    * Get availabilities with optional date filtering
+   * @param params.date - Specific date to filter
+   * @param params.start_date - Start date for range
+   * @param params.end_date - End date for range
+   * @param params.include_past - Include past availabilities (default: false)
+   * @param params.include_all_status - Include all statuses including cancelled (default: false)
    */
-  getAvailabilities: (params?: { date?: string; start_date?: string; end_date?: string }) => {
+  getAvailabilities: (params?: { date?: string; start_date?: string; end_date?: string; include_past?: boolean; include_all_status?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (params?.date) searchParams.set('date', params.date);
     if (params?.start_date) searchParams.set('start_date', params.start_date);
     if (params?.end_date) searchParams.set('end_date', params.end_date);
+    if (params?.include_past) searchParams.set('include_past', 'true');
+    if (params?.include_all_status) searchParams.set('include_all_status', 'true');
     const qs = searchParams.toString();
     return request<unknown[]>(`/availabilities${qs ? `?${qs}` : ''}`);
   },
@@ -470,6 +517,52 @@ export const api = {
    */
   togglePauseAvailability: (id: number) =>
     request<ApiResponse<{ action: 'paused' | 'resumed'; slots_blocked?: number; slots_freed?: number }>>(`/availabilities/${id}/toggle-pause`, { method: 'POST' }),
+  
+  // Obtener citas de una disponibilidad específica
+  getAvailabilityAppointments: (availabilityId: number) =>
+    request<{
+      success: boolean;
+      data: {
+        availability: {
+          id: number;
+          date: string;
+          startTime: string;
+          endTime: string;
+          capacity: number;
+          bookedSlots: number;
+          status: string;
+          doctorName: string;
+          specialtyName: string;
+          locationName: string;
+        };
+        summary: {
+          totalAppointments: number;
+          confirmedAppointments: number;
+          cancelledAppointments: number;
+          noShowAppointments: number;
+          capacity: number;
+          availableSlots: number;
+          occupancyRate: number;
+          isOverbooked: boolean;
+        };
+        statusBreakdown: Record<string, number>;
+        appointments: Array<{
+          id: number;
+          scheduledAt: string;
+          status: string;
+          reason: string;
+          durationMinutes: number;
+          createdAt: string;
+          patient: {
+            id: number;
+            name: string;
+            documentType: string;
+            document: string;
+            phone: string;
+          };
+        }>;
+      };
+    }>(`/availabilities/${availabilityId}/appointments`),
   
   // Distribución de disponibilidades
   getAvailabilityDistribution: (availabilityId: number) => 
@@ -523,6 +616,20 @@ export const api = {
     }>>(`/availabilities/${availabilityId}/sync-appointment-times`, { 
       method: 'POST' 
     }),
+  syncAllAppointmentTimes: () => 
+    request<ApiResponse<{
+      totalAgendas: number;
+      totalUpdated: number;
+      agendas: Array<{
+        id: number;
+        doctor: string;
+        specialty: string;
+        location: string;
+        updated: number;
+      }>;
+    }>>(`/availabilities/sync-all-appointment-times`, { 
+      method: 'POST'
+    }),
   getAvailableForReassignment: (availabilityId: number) => 
     request<ApiResponse<{
       original_availability_id: number;
@@ -546,7 +653,7 @@ export const api = {
         doctor_name: string;
       }>;
     }>>(`/availabilities/${availabilityId}/available-for-reassignment`),
-  reassignAppointment: (appointmentId: number, newAvailabilityId: number) =>
+  reassignAppointment: (appointmentId: number, newAvailabilityId: number, selectedTime?: string, transferReason?: string) =>
     request<ApiResponse<{
       appointment_id: number;
       patient_name: string;
@@ -561,7 +668,9 @@ export const api = {
       method: 'POST',
       body: {
         appointment_id: appointmentId,
-        new_availability_id: newAvailabilityId
+        new_availability_id: newAvailabilityId,
+        selected_time: selectedTime,
+        transfer_reason: transferReason
       }
     }),
   
@@ -1567,6 +1676,8 @@ export const api = {
           total: number;
         }>;
         occupancyStats: Array<{
+          doctorId: number;
+          specialtyId: number;
           doctor: string;
           specialty: string;
           totalSlots: number;
@@ -1580,6 +1691,41 @@ export const api = {
         }>;
       };
     }>(`/analytics/appointments?start_date=${startDate}&end_date=${endDate}`);
+  },
+
+  // Detalle de ocupación por doctor/especialidad
+  async getOccupancyDetails(doctorId: number, specialtyId: number) {
+    return this.get<{
+      success: boolean;
+      data: {
+        doctor_id: number;
+        specialty_id: number;
+        doctor_name: string;
+        specialty_name: string;
+        summary: {
+          totalCapacity: number;
+          totalConfirmed: number;
+          totalCancelled: number;
+          availableSlots: number;
+          occupancyRate: number;
+          totalAvailabilities: number;
+        };
+        availabilities: Array<{
+          id: number;
+          date: string;
+          startTime: string;
+          endTime: string;
+          location: string;
+          capacity: number;
+          confirmedAppointments: number;
+          cancelledAppointments: number;
+          availableSlots: number;
+          occupancyRate: number;
+          status: string;
+          isOverbooked: boolean;
+        }>;
+      };
+    }>(`/analytics/occupancy-details?doctor_id=${doctorId}&specialty_id=${specialtyId}`);
   }
 };
 

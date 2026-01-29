@@ -7,6 +7,7 @@ import BatchAvailabilityModal from "./BatchAvailabilityModal";
 import HolidayManagement from "./HolidayManagement";
 import AppointmentDistributionModal from "./AppointmentDistributionModal";
 import { toast } from "sonner";
+import { formatDateColombia } from "@/utils/dateHelpers";
 
 interface BatchAvailability {
   id: number;
@@ -153,7 +154,7 @@ const AdvancedAvailabilityManager = () => {
       });
     }
 
-    return `${startDate.toLocaleDateString('es-CO')} - ${endDate.toLocaleDateString('es-CO')}`;
+    return `${formatDateColombia(startDate)} - ${formatDateColombia(endDate)}`;
   };
 
   const getBatchStatus = (batch: BatchGroup) => {

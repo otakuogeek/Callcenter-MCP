@@ -13,6 +13,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, Bot, Phone, Calendar, Clock } from "lucide-react";
 import type { Availability } from "@/hooks/useAppointmentData";
+import { formatFullDateColombia, formatDateColombia } from "@/utils/dateHelpers";
 
 interface CancelAvailabilityModalProps {
   isOpen: boolean;
@@ -43,24 +44,14 @@ const CancelAvailabilityModal = ({ isOpen, onClose, availability, onCancel, onRe
       
       let explanation = `Estimados pacientes con citas programadas,
 
-Nos dirigimos a ustedes para informarles que, debido a una situación imprevista, nos vemos en la necesidad de cancelar la agenda del ${availability.doctor} en ${availability.specialty} programada para el día ${new Date(availability.date).toLocaleDateString('es-ES', { 
-  weekday: 'long', 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
-})} de ${availability.startTime} a ${availability.endTime} en ${availability.locationName}.
+Nos dirigimos a ustedes para informarles que, debido a una situación imprevista, nos vemos en la necesidad de cancelar la agenda del ${availability.doctor} en ${availability.specialty} programada para el día ${formatFullDateColombia(availability.date)} de ${availability.startTime} a ${availability.endTime} en ${availability.locationName}.
 
 Lamentamos profundamente cualquier inconveniente que esta cancelación pueda causarles. Entendemos la importancia de sus citas médicas y queremos asegurarles que estamos trabajando para reprogramar todas las consultas afectadas.`;
 
       if (enableRescheduling && newDate && newTime) {
         explanation += `
 
-Nos complace informarles que hemos podido reagendar esta disponibilidad para el día ${new Date(newDate).toLocaleDateString('es-ES', { 
-  weekday: 'long', 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
-})} en el mismo horario (${newTime}). Nuestro equipo se pondrá en contacto con cada uno de ustedes para confirmar la nueva fecha.`;
+Nos complace informarles que hemos podido reagendar esta disponibilidad para el día ${formatFullDateColombia(newDate)} en el mismo horario (${newTime}). Nuestro equipo se pondrá en contacto con cada uno de ustedes para confirmar la nueva fecha.`;
       } else {
         explanation += `
 
@@ -113,7 +104,7 @@ ${availability.locationName}`;
         
         toast({
           title: "Agenda Reagendada",
-          description: `La agenda ha sido reagendada automáticamente para el ${new Date(newDate).toLocaleDateString('es-ES')} a las ${newTime}`,
+          description: `La agenda ha sido reagendada automáticamente para el ${formatDateColombia(newDate)} a las ${newTime}`,
         });
       }
 
@@ -150,15 +141,19 @@ ${availability.locationName}`;
       // Si se solicitó reagendar y hay datos, crear nueva disponibilidad
       if (enableRescheduling && newDate && newTime && onReschedule) {
         await onReschedule(availability, newDate, newTime);
-        toast({ title: "Agenda Reagendada", description: `Nueva fecha: ${new Date(newDate).toLocaleDateString('es-ES')} ${newTime}` });
+        toast({ title: "Agenda Reagendada", description: `Nueva fecha: ${formatDateColombia(newDate)} ${newTime}` });
       }
 
       onClose();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error cancelando agenda:", error);
+      
+      // Mostrar mensaje específico si hay citas confirmadas
+      const errorMessage = error.message || "No se pudo cancelar la agenda";
+      
       toast({
-        title: "Error",
-        description: "No se pudo cancelar la agenda",
+        title: "No se puede cancelar la agenda",
+        description: errorMessage,
         variant: "destructive",
       });
     } finally {
@@ -197,7 +192,7 @@ ${availability.locationName}`;
             <div className="grid grid-cols-2 gap-2 text-sm">
               <p><strong>Doctor:</strong> {availability.doctor}</p>
               <p><strong>Especialidad:</strong> {availability.specialty}</p>
-              <p><strong>Fecha:</strong> {new Date(availability.date).toLocaleDateString('es-ES')}</p>
+              <p><strong>Fecha:</strong> {formatDateColombia(availability.date)}</p>
               <p><strong>Horario:</strong> {availability.startTime} - {availability.endTime}</p>
               <p><strong>Ubicación:</strong> {availability.locationName}</p>
               <p><strong>Pacientes Afectados:</strong> {availability.bookedSlots} de {availability.capacity}</p>

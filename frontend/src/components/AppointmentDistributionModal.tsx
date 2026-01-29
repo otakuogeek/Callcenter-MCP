@@ -5,6 +5,7 @@ import { AnimatedForm, AnimatedInputField } from "@/components/ui/animated-form"
 import { AnimatedButton } from "@/components/ui/animated-button";
 import { EnhancedAnimatedPresenceWrapper } from "@/components/ui/enhanced-animated-container";
 import { toast } from "sonner";
+import { formatDateColombia, formatFullDateColombia } from "@/utils/dateHelpers";
 
 interface AppointmentDistributionModalProps {
   isOpen: boolean;
@@ -149,7 +150,7 @@ const AppointmentDistributionModal = ({
                 </div>
                 <div className="mt-2 text-xs text-blue-700">
                   Rango: {batchAvailabilities.length > 0 ?
-                    `${new Date(batchAvailabilities[0].date).toLocaleDateString('es-CO')} - ${new Date(batchAvailabilities[batchAvailabilities.length - 1].date).toLocaleDateString('es-CO')}`
+                    `${formatDateColombia(batchAvailabilities[0].date)} - ${formatDateColombia(batchAvailabilities[batchAvailabilities.length - 1].date)}`
                     : 'N/A'
                   }
                 </div>
@@ -241,12 +242,7 @@ const AppointmentDistributionModal = ({
                         return (
                           <tr key={index} className="hover:bg-gray-50">
                             <td className="px-4 py-3 text-sm text-gray-900">
-                              {new Date(item.date).toLocaleDateString('es-CO', {
-                                weekday: 'long',
-                                year: 'numeric',
-                                month: 'long',
-                                day: 'numeric'
-                              })}
+                              {formatFullDateColombia(item.date)}
                             </td>
                             <td className="px-4 py-3 text-sm text-gray-900 font-medium">
                               {item.appointments}

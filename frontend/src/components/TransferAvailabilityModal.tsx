@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { CalendarDays, Bot, Phone, AlertTriangle, ArrowRight } from "lucide-react";
 import type { Availability } from "@/hooks/useAppointmentData";
 import api from "@/lib/api";
+import { formatFullDateColombia, formatDateColombia } from "@/utils/dateHelpers";
 
 interface TransferAvailabilityModalProps {
   isOpen: boolean;
@@ -49,19 +50,9 @@ const TransferAvailabilityModal = ({ isOpen, onClose, availability, onTransfer }
     try {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
-      const originalDate = new Date(availability.date).toLocaleDateString('es-ES', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      });
+      const originalDate = formatFullDateColombia(availability.date);
       
-      const newDateFormatted = new Date(newDate).toLocaleDateString('es-ES', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      });
+      const newDateFormatted = formatFullDateColombia(newDate);
       
       const notification = `Estimados pacientes,
 
@@ -194,7 +185,7 @@ Clínica Medical Center`;
 
         toast({
           title: "Agenda Copiada",
-          description: `La agenda ha sido copiada exitosamente al ${new Date(newDate).toLocaleDateString('es-ES')} con estatus: ${newStatus}`,
+          description: `La agenda ha sido copiada exitosamente al ${formatDateColombia(newDate)} con estatus: ${newStatus}`,
         });
       } else {
         // Mover la disponibilidad existente
@@ -208,7 +199,7 @@ Clínica Medical Center`;
 
         toast({
           title: "Agenda Transferida",
-          description: `La agenda ha sido transferida exitosamente al ${new Date(newDate).toLocaleDateString('es-ES')} con estatus: ${newStatus}`,
+          description: `La agenda ha sido transferida exitosamente al ${formatDateColombia(newDate)} con estatus: ${newStatus}`,
         });
       }
 
@@ -253,7 +244,7 @@ Clínica Medical Center`;
               <p><strong>Doctor:</strong> {availability.doctor}</p>
               <p><strong>Especialidad:</strong> {availability.specialty}</p>
               <p><strong>Ubicación:</strong> {availability.locationName}</p>
-              <p><strong>Fecha actual:</strong> {new Date(availability.date).toLocaleDateString('es-ES')}</p>
+              <p><strong>Fecha actual:</strong> {formatDateColombia(availability.date)}</p>
               <p><strong>Horario:</strong> {availability.startTime} - {availability.endTime}</p>
               <p><strong>Pacientes con citas:</strong> {availability.bookedSlots}/{availability.capacity}</p>
             </div>
@@ -301,7 +292,7 @@ Clínica Medical Center`;
                 Vista Previa del Cambio
               </h3>
               <div className="text-sm text-blue-700">
-                <p><strong>De:</strong> {new Date(availability.date).toLocaleDateString('es-ES')} → <strong>A:</strong> {new Date(newDate).toLocaleDateString('es-ES')}</p>
+                <p><strong>De:</strong> {formatDateColombia(availability.date)} → <strong>A:</strong> {formatDateColombia(newDate)}</p>
                 <p><strong>Acción:</strong> {transferMode === 'move' ? 'Mover agenda' : 'Copiar agenda'}</p>
                 <p><strong>Nuevo estatus:</strong> {
                   newDate >= new Date().toISOString().split('T')[0] 

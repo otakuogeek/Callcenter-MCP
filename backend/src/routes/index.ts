@@ -67,6 +67,12 @@ import medicalRecords from './medical-records';
 import transcription from './transcription';
 // Sistema de documentación Wiki
 import wiki from './wiki';
+// Sistema de WhatsApp Bot con Baileys y DeepSeek AI
+import whatsapp from './whatsapp';
+// Sistema de Órdenes (vista simplificada de appointments)
+import orders from './orders';
+// Sistema de Soporte Técnico
+import support from './support';
 import { requireAuth } from '../middleware/auth';
 import { getAllChannelSizes, getSSEMetrics, renderPrometheusMetrics } from '../events/sse';
 
@@ -113,12 +119,14 @@ router.use('/locations', locations);
 router.use('/doctors', doctors);
 router.use('/availabilities', availabilities);
 router.use('/appointments', appointments);
+router.use('/orders', orders); // Sistema de órdenes (vista simplificada de appointments)
+router.use('/support', support); // Sistema de soporte técnico
 router.use('/cups', cups);
 router.use('/eps', eps);
 router.use('/eps-authorizations', epsAuthorizations);
 router.use('/settings', settings);
 router.use('/uploads', uploads);
-router.use('/sms', smsRoutes); // Servicio de envío de SMS Zadarma
+router.use('/sms', smsRoutes); // Servicio de envío de SMS LabsMobile
 router.use('/timezones', timezones);
 router.use('/zones', zones);
 router.use('/municipalities', municipalities);
@@ -213,6 +221,8 @@ router.use('/medical-records', medicalRecords);
 router.use('/transcription', transcription);
 // Sistema de documentación Wiki (requiere autenticación)
 router.use('/wiki', requireAuth, wiki);
+// Sistema de WhatsApp Bot (la mayoría de endpoints requiere autenticación)
+router.use('/whatsapp', whatsapp);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)

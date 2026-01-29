@@ -29,16 +29,19 @@ function writeEvent(res: Response, event: string, data: any) {
 
 export function subscribe(channel: ChannelName, req: Request, res: Response) {
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  // Evitar buffering por proxies intermedios / Nginx
-  res.setHeader('X-Accel-Buffering', 'no'); // Nginx
   res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Transfer-Encoding', 'chunked');
+  res.setHeader('X-Accel-Buffering', 'no'); // Nginx: evitar buffering
+  
+  // NO establecer Connection ni Transfer-Encoding en HTTP/2
+  // HTTP/2 usa multiplexing y estos headers causan ERR_HTTP2_PROTOCOL_ERROR
+  
   // Sugerir retry base al cliente (fallback manejado en frontend también)
-  res.write('retry: 5000\n');
-  ;(res as any).flushHeaders?.();
+  res.write('retry: 5000\n\n');
+  
+  // Flush headers si está disponible
+  if (typeof (res as any).flushHeaders === 'function') {
+    (res as any).flushHeaders();
+  }
 
   // Initial comment to open stream
   res.write(`: connected to ${channel}\n\n`);

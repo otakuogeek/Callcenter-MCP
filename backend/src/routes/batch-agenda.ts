@@ -15,7 +15,7 @@ const batchAgendaSchema = z.object({
   start_time: z.string(), // formato HH:mm
   end_time: z.string(), // formato HH:mm
   total_capacity: z.number().int().min(1),
-  slot_duration_minutes: z.number().int().min(5).max(120).default(30),
+  slot_duration_minutes: z.number().int().min(1).max(120).default(30),
   exclude_weekends: z.boolean().default(true),
   exclude_holidays: z.boolean().default(true),
   custom_excluded_dates: z.array(z.string()).optional(), // fechas específicas a excluir

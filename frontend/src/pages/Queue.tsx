@@ -84,76 +84,30 @@ const Queue = () => {
   // Estado para acordeones - expandir todas las especialidades con resultados de búsqueda
   const [expandedSpecialties, setExpandedSpecialties] = useState<string[]>([]);
 
-  // Maneja la apertura de acordeones y carga perezosa de pacientes por especialidad
-  const handleAccordionChange = async (values: string[] | string) => {
+  // Función refresh principal - Cargar TODOS los pacientes de una vez
+  const refresh = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      // Cambiar a FALSE para cargar TODOS los pacientes de todas las especialidades
+      const response = await api.getWaitingList(false); // NO summary mode - cargar todo
+      setWaitingListData(response);
+      // Si no hay búsqueda activa, usar los datos del servidor como filteredData
+      if (!searchTerm) {
+        setFilteredData(response);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Error cargando cola de espera');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Maneja solo la apertura/cierre de acordeones - SIN carga perezosa
+  const handleAccordionChange = (values: string[] | string) => {
     // shadcn/ui Accordion can return string or string[] depending on props
     const newValues = Array.isArray(values) ? values : values ? [values] : [];
-    // Detectar especialidades que se abrieron ahora
-    const newlyOpened = newValues.filter(v => !expandedSpecialties.includes(v));
     setExpandedSpecialties(newValues);
-
-    if (!newlyOpened.length) return;
-
-    // Para cada nueva especialidad abierta, cargar pacientes si es necesario
-    for (const val of newlyOpened) {
-      const match = val.match(/specialty-(\d+)/);
-      if (!match) continue;
-      const specialtyId = Number(match[1]);
-
-      const existingSection = waitingListData?.data?.find((s: any) => s.specialty_id === specialtyId);
-      if (!existingSection) continue;
-
-      // Si ya tiene pacientes cargados (array con elementos), no hacemos nada
-      // Solo cargar si: 1) patients es undefined, o 2) es un array vacío pero total_waiting > 0
-      const hasLoadedPatients = existingSection.patients && Array.isArray(existingSection.patients) && existingSection.patients.length > 0;
-      const shouldLoad = !hasLoadedPatients && existingSection.total_waiting > 0;
-      
-      if (!shouldLoad) continue;
-
-      try {
-        // Llamada lazy al backend
-        const resp = await api.getWaitingListBySpecialty(specialtyId);
-        if (resp && resp.success) {
-          const patientsData = resp.data.patients || resp.data || [];
-          const totalCount = resp.data.total_waiting || patientsData.length;
-          
-          // Actualizar waitingListData y filteredData con los pacientes recibidos
-          setWaitingListData((prev: any) => {
-            if (!prev) return prev;
-            const updated = { ...prev };
-            updated.data = updated.data.map((s: any) => {
-              if (s.specialty_id === specialtyId) {
-                return { 
-                  ...s, 
-                  patients: patientsData, 
-                  total_waiting: totalCount 
-                };
-              }
-              return s;
-            });
-            return updated;
-          });
-
-          setFilteredData((prev: any) => {
-            if (!prev) return prev;
-            const updated = { ...prev };
-            updated.data = updated.data.map((s: any) => {
-              if (s.specialty_id === specialtyId) {
-                return { 
-                  ...s, 
-                  patients: patientsData, 
-                  total_waiting: totalCount 
-                };
-              }
-              return s;
-            });
-            return updated;
-          });
-        }
-      } catch (err) {
-        console.error('Error cargando pacientes por especialidad:', err);
-      }
-    }
   };
 
   // Función para generar PDF de una especialidad
@@ -207,24 +161,32 @@ const Queue = () => {
     }
   };
 
-  // refresh: if full=true fetch full data (patients included), otherwise fetch summary (counts only)
-  const refresh = async (full: boolean = false) => {
-    try {
-      setError(null);
-      const response = await api.getWaitingList(full ? false : true);
-      setWaitingListData(response);
-    } catch (e: any) {
-      setError(e?.message || 'Error cargando cola de espera');
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Primer carga inicial al montar el componente
   useEffect(() => {
     refresh();
-    // Actualizar cada 30 segundos
-    const interval = setInterval(refresh, 30000);
-    return () => clearInterval(interval);
+    
+    // Función para manejar visibilidad de la página
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        refresh(); // Refrescar cuando la página vuelve a estar visible
+      }
+    };
+
+    // Agregar listener para cambios de visibilidad
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    // Actualizar cada 60 segundos (reducido de 30s para mejor rendimiento)
+    // Solo actualizar si la página está visible
+    const interval = setInterval(() => {
+      if (!document.hidden) {
+        refresh();
+      }
+    }, 60000);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, []);
 
   // Cargar lista de CUPS disponibles
@@ -534,26 +496,33 @@ const Queue = () => {
     } else {
       setFilteredData(waitingListData);
     }
-  }, [waitingListData]);
+  }, [searchTerm, waitingListData]);
 
-  // Función para contar solicitudes duplicadas por documento
-  const getDuplicateRequestsCount = (patientDocument: string): number => {
+  // Función para contar solicitudes duplicadas por documento EN LA MISMA ESPECIALIDAD
+  // Conteo total de resultados
+  const totalFilteredResults = filteredData?.data?.reduce((acc: number, s: any) => acc + (s.patients?.length || 0), 0) ?? 0;
+
+  const getDuplicateRequestsCount = (patientDocument: string, specialtyId: number): number => {
     if (!waitingListData?.data) return 0;
     
     let count = 0;
-    waitingListData.data.forEach((specialty: any) => {
+    // Buscar la especialidad específica
+    const specialty = waitingListData.data.find((s: any) => s.specialty_id === specialtyId);
+    
+    if (specialty) {
       specialty.patients?.forEach((patient: any) => {
         if (patient.patient_document === patientDocument) {
           count++;
         }
       });
-    });
+    }
+    
     return count;
   };
 
-  // Verificar si un paciente tiene múltiples solicitudes
-  const hasMultipleRequests = (patientDocument: string): boolean => {
-    return getDuplicateRequestsCount(patientDocument) > 1;
+  // Verificar si un paciente tiene múltiples solicitudes EN LA MISMA ESPECIALIDAD
+  const hasMultipleRequests = (patientDocument: string, specialtyId: number): boolean => {
+    return getDuplicateRequestsCount(patientDocument, specialtyId) > 1;
   };
 
   const getSpecialtyIcon = (specialty: string) => {
@@ -670,7 +639,7 @@ const Queue = () => {
                   </div>
                   {searchTerm && (
                     <p className="text-sm text-blue-700 mt-2">
-                      {filteredData?.data?.reduce((acc: number, s: any) => acc + (s.patients?.length || 0), 0) ?? 0} resultado(s) encontrado(s)
+                      {totalFilteredResults} resultado(s) encontrado(s)
                     </p>
                   )}
                 </CardContent>

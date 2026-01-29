@@ -4,6 +4,7 @@
 // ===================================================================
 
 import mysql from 'mysql2/promise';
+import { formatDateInTimeZone, getNowInTimeZone } from './utils/timezone';
 
 // Herramientas MCP mejoradas específicamente para gestión de pacientes
 export const PATIENT_MANAGEMENT_TOOLS = [
@@ -2085,13 +2086,13 @@ async function getPatientStatistics(args: any, pool: mysql.Pool): Promise<any> {
 async function getAvailableAppointments(args: any, pool: mysql.Pool): Promise<any> {
   try {
     // Configurar fechas por defecto
-    const dateFrom = args.date_from || new Date().toISOString().split('T')[0]; // Hoy
-    const dateTo = args.date_to || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]; // +30 días
+    const dateFrom = args.date_from || getNowInTimeZone().date; // Hoy (America/Bogota)
+    const dateTo = args.date_to || formatDateInTimeZone(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)); // +30 días (America/Bogota)
     
     let query = `
       SELECT 
         a.id as availability_id,
-        a.date,
+        DATE_FORMAT(a.date, '%Y-%m-%d') as date,
         a.start_time,
         a.end_time,
         a.capacity,

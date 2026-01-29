@@ -20,8 +20,9 @@ router.get('/', requireAuth, async (_req: Request, res: Response) => {
     const names = rows.map((r) => r.name as string);
     if (!Array.isArray(names) || names.length === 0) return res.json(fallback);
     return res.json(names);
-  } catch {
+  } catch (error) {
     // Si la tabla no existe u otro error, retornar fallback para no romper el UI
+    console.error('Error fetching timezones, using fallback:', error);
     return res.json(fallback);
   }
 });

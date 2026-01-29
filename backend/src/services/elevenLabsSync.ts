@@ -209,7 +209,8 @@ export class ElevenLabsSync {
     page: number = 1, 
     limit: number = 20,
     searchTerm?: string,
-    dateFilter?: string
+    dateFilter?: string,
+    transcriptSearch?: string
   ): Promise<{ calls: any[]; total: number }> {
     const connection = await pool.getConnection();
     
@@ -227,6 +228,12 @@ export class ElevenLabsSync {
         )`);
         const searchPattern = `%${searchTerm}%`;
         queryParams.push(searchPattern, searchPattern, searchPattern);
+      }
+
+      // 🔥 Búsqueda en transcripciones
+      if (transcriptSearch) {
+        whereConditions.push('transcript LIKE ?');
+        queryParams.push(`%${transcriptSearch}%`);
       }
 
       // Date filter
@@ -338,6 +345,54 @@ export class ElevenLabsSync {
       console.error('[ElevenLabs Webhook] Sync error:', error.message);
       await this.completeSyncLog(syncLogId, 'failed', 0, 1, error.message);
       throw error;
+    }
+  }
+
+  /**
+   * Obtener una conversación específica desde la base de datos
+   */
+  static async getCallFromDBByConversationId(conversationId: string): Promise<any | null> {
+    const connection = await pool.getConnection();
+
+    try {
+      const sql = `
+        SELECT 
+          id, conversation_id, call_id, agent_id,
+          caller_number, callee_number,
+          status, call_direction, call_type,
+          started_at, ended_at, duration_seconds,
+          transcript, analysis, summary, metadata,
+          end_reason, recording_url,
+          created_at, updated_at
+        FROM elevenlabs_calls
+        WHERE conversation_id = ?
+        LIMIT 1
+      `;
+
+      const [rows] = await connection.execute<RowDataPacket[]>(sql, [conversationId]);
+
+      if (!rows.length) return null;
+
+      const row: any = rows[0];
+
+      // Parsear campos JSON si existen
+      const safeParse = (value: any) => {
+        if (!value || typeof value !== 'string') return value;
+        try {
+          return JSON.parse(value);
+        } catch {
+          return value;
+        }
+      };
+
+      return {
+        ...row,
+        transcript: safeParse(row.transcript),
+        analysis: safeParse(row.analysis),
+        metadata: safeParse(row.metadata)
+      };
+    } finally {
+      connection.release();
     }
   }
 }

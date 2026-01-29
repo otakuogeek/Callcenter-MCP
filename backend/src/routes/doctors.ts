@@ -11,6 +11,7 @@ const doctorSchema = z.object({
   email: z.string().email().optional().nullable(),
   phone: z.string().optional().nullable(),
   license_number: z.string().min(3),
+  role: z.enum(['Doctor', 'Enfermera']).default('Doctor'),
   active: z.boolean().default(true),
   specialties: z.array(z.number().int()).optional(),
   locations: z.array(z.number().int()).optional(),
@@ -26,6 +27,7 @@ router.get('/', requireAuth, async (_req: Request, res: Response) => {
          email,
          phone,
          license_number,
+         role,
          CASE WHEN active IS NULL THEN 1 ELSE active END AS active
        FROM doctors
        ORDER BY name ASC`
@@ -100,8 +102,8 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
   try {
     await conn.beginTransaction();
     const [result] = await conn.query(
-      'INSERT INTO doctors (name, email, phone, license_number, active) VALUES (?, ?, ?, ?, ?)',
-      [d.name, d.email ?? null, d.phone ?? null, d.license_number, d.active]
+      'INSERT INTO doctors (name, email, phone, license_number, role, active) VALUES (?, ?, ?, ?, ?, ?)',
+      [d.name, d.email ?? null, d.phone ?? null, d.license_number, d.role ?? 'Doctor', d.active]
     );
     // @ts-ignore
     const doctorId = result.insertId as number;
@@ -217,7 +219,7 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     await conn.beginTransaction();
     const fields: string[] = []; const values: any[] = [];
-    for (const k of ['name','email','phone','license_number','active'] as const) {
+    for (const k of ['name','email','phone','license_number','role','active'] as const) {
       if (k in d) { fields.push(`${k} = ?`); // @ts-ignore
         values.push(d[k] ?? null); }
     }

@@ -28,8 +28,8 @@ export async function initializeOutboundCallManager(): Promise<OutboundCallManag
     outboundManager = new OutboundCallManager({
       db: dbConnection,
       redis,
-      zadarmaApiKey: process.env.ZADARMA_USER_KEY || '',
-      zadarmaSecret: process.env.ZADARMA_SECRET_KEY || '',
+      elevenLabsApiKey: process.env.ELEVENLABS_API_KEY || '',
+      elevenLabsAgentId: process.env.ELEVENLABS_AGENT_ID || '',
       callerIdInternational: process.env.OUTBOUND_DEFAULT_CALLER_ID || '',
       maxConcurrentCalls: parseInt(process.env.OUTBOUND_MAX_CONCURRENT_CALLS || '5'),
       timezone: process.env.OUTBOUND_SCHEDULE_TIMEZONE || 'America/Bogota',

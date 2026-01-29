@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { formatDateTimeColombia, formatDateColombia, formatTimeColombia, COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 let transporter: any | null = null;
 
@@ -63,7 +64,7 @@ export async function sendAppointmentConfirmationEmail(params: {
   doctorName?: string | null;
   specialtyName?: string | null;
   locationName?: string | null;
-  scheduledAt: string; // yyyy-mm-dd HH:MM:SS
+  scheduledAt: string; // yyyy-mm-dd HH:MM:SS en UTC-0 desde la base de datos
   appointmentType?: string | null;
 }) {
   const { to, patientName, doctorName, specialtyName, locationName, scheduledAt, appointmentType } = params;
@@ -72,13 +73,21 @@ export async function sendAppointmentConfirmationEmail(params: {
   const supportPhone = process.env.MAIL_SUPPORT_PHONE || '';
   const supportEmail = process.env.MAIL_SUPPORT_EMAIL || '';
   const footerExtra = process.env.MAIL_FOOTER || '';
+  
+  // 🇨🇴 Convertir fecha de UTC-0 (MySQL) a UTC-5 (Colombia) para mostrar al usuario
+  const scheduledAtColombia = formatDateTimeColombia(scheduledAt);
+  const dateColombia = formatDateColombia(scheduledAt);
+  const timeColombia = formatTimeColombia(scheduledAt);
+  
   const context = {
     brand,
     patientName,
     doctorName,
     specialtyName,
     locationName,
-    scheduledAt,
+    scheduledAt: scheduledAtColombia, // Fecha/hora formateada en zona horaria Colombia
+    dateColombia, // Solo fecha en formato DD/MM/YYYY
+    timeColombia, // Solo hora en formato h:mm a. m./p. m.
     appointmentType,
     supportPhone,
     supportEmail,
@@ -99,7 +108,7 @@ export async function sendAppointmentConfirmationEmail(params: {
     lines.push('');
     if (specialtyName) lines.push(`Especialidad: ${specialtyName}`);
     if (doctorName) lines.push(`Profesional: ${doctorName}`);
-    lines.push(`Fecha y hora: ${scheduledAt}`);
+    lines.push(`Fecha y hora: ${scheduledAtColombia}`);
     if (appointmentType) lines.push(`Modalidad: ${appointmentType}`);
     if (locationName) lines.push(`Lugar: ${locationName}`);
     lines.push('');
@@ -115,7 +124,7 @@ export async function sendAppointmentConfirmationEmail(params: {
         <ul>
           ${specialtyName ? `<li><strong>Especialidad:</strong> ${escapeHtml(specialtyName)}</li>` : ''}
           ${doctorName ? `<li><strong>Profesional:</strong> ${escapeHtml(doctorName)}</li>` : ''}
-          <li><strong>Fecha y hora:</strong> ${escapeHtml(scheduledAt)}</li>
+          <li><strong>Fecha y hora:</strong> ${escapeHtml(scheduledAtColombia)}</li>
           ${appointmentType ? `<li><strong>Modalidad:</strong> ${escapeHtml(appointmentType!)}</li>` : ''}
           ${locationName ? `<li><strong>Lugar:</strong> ${escapeHtml(locationName)}</li>` : ''}
         </ul>

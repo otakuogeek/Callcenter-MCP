@@ -1,6 +1,10 @@
-import { Calendar, Users, BarChart3, Clock, HeadphonesIcon, MapPin, FileText, Settings, MessageSquare, BookOpen } from "lucide-react";
-import { Link, useLocation } from "react-router-dom";
+import { Calendar, Users, BarChart3, Clock, HeadphonesIcon, MapPin, FileText, Settings, MessageSquare, BookOpen, MessageCircle, ClipboardList, LifeBuoy, LogOut } from "lucide-react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
+import { api } from "@/lib/api";
 
 import {
   Sidebar,
@@ -14,26 +18,25 @@ import {
   SidebarHeader,
   SidebarFooter,
 } from "@/components/ui/sidebar";
-import LogoutButton from "./LogoutButton";
 
 // Menu items principales (enfoque en calendario)
 // Ocultamos Dashboard Calendario y Agenda Diaria (mantener código comentado para posible reactivación)
 const calendarItems = [
   // {
   //   title: "Dashboard Calendario",
-  //   url: "/",
+  //   url: "/admin",
   //   icon: Calendar,
   //   highlight: true,
   // },
   // {
   //   title: "Agenda Diaria",
-  //   url: "/daily-schedule",
+  //   url: "/admin/daily-schedule",
   //   icon: CalendarDays,
   //   highlight: true,
   // },
   {
     title: "Gestión de agenda",
-    url: "/appointments",
+    url: "/admin/appointments",
     icon: Clock,
   },
 ];
@@ -41,12 +44,12 @@ const calendarItems = [
 const mainItems = [
   {
     title: "Pacientes",
-    url: "/patients",
+    url: "/admin/patients",
     icon: Users,
   },
   // {
   //   title: "Monitor de Llamadas",
-  //   url: "/calls/monitor",
+  //   url: "/admin/calls/monitor",
   //   icon: Activity,
   //   highlight: true,
   // },
@@ -56,38 +59,48 @@ const mainItems = [
 const managementItems = [
   {
     title: "Cola de Espera",
-    url: "/queue",
+    url: "/admin/queue",
     icon: Clock,
   },
   {
     title: "Cola Diaria",
-    url: "/daily-queue",
+    url: "/admin/daily-queue",
     icon: Calendar,
   },
   // {
   //   title: "Agentes",
-  //   url: "/agents",
+  //   url: "/admin/agents",
   //   icon: HeadphonesIcon,
   // },
   {
     title: "Llamadas",
-    url: "/consultations",
+    url: "/admin/consultations",
+    icon: FileText,
+  },
+  {
+    title: "Órdenes",
+    url: "/admin/orders",
     icon: FileText,
   },
   {
     title: "Ubicaciones",
-    url: "/locations",
+    url: "/admin/locations",
     icon: MapPin,
   },
   {
     title: "SMS",
-    url: "/sms",
+    url: "/admin/sms",
     icon: MessageSquare,
   },
   {
     title: "Wiki",
-    url: "/wiki",
+    url: "/admin/wiki",
     icon: BookOpen,
+  },
+  {
+    title: "Soporte",
+    url: "/admin/support",
+    icon: LifeBuoy,
   },
 ];
 
@@ -95,24 +108,53 @@ const managementItems = [
 const analyticsItems = [
   {
     title: "Análisis",
-    url: "/analytics",
+    url: "/admin/analytics",
     icon: BarChart3,
   },
   {
     title: "Distribución",
-    url: "/distribution",
+    url: "/admin/distribution",
     icon: Calendar,
+  },
+];
+
+// Menu items de WhatsApp
+const whatsappItems = [
+  {
+    title: "WhatsApp Bot",
+    url: "/admin/whatsapp",
+    icon: MessageCircle,
   },
 ];
 
 // Nuevos items para funcionalidades mejoradas
 // (advancedItems actualmente no renderizado; se puede habilitar cuando se requiera)
 
+// Helper para decodificar JWT y obtener el rol
+const getUserRole = (): string | null => {
+  try {
+    const token = localStorage.getItem('token');
+    if (!token) return null;
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.role || null;
+  } catch {
+    return null;
+  }
+};
+
 export function AppSidebar() {
   const [queueCount, setQueueCount] = useState<number>(0);
   const [transferCount, setTransferCount] = useState<number>(0);
+  const [supportUnreadCount, setSupportUnreadCount] = useState<number>(0);
   const [connectionMode, setConnectionMode] = useState<'SSE'|'POLL'>(() => (localStorage.getItem('connMode') as any) || 'SSE');
   const location = useLocation();
+  const navigate = useNavigate();
+  const [maintenanceMode, setMaintenanceMode] = useState(false);
+  const { toast } = useToast();
+  
+  // Obtener rol del usuario para controlar visibilidad de secciones
+  const userRole = getUserRole();
+  const isSuperAdmin = userRole === 'superadmin';
 
   // const currentDate = new Date(); // (no usado actualmente)
 
@@ -125,6 +167,11 @@ export function AppSidebar() {
     let attempts = 0;
     let closed = false;
     let fallbackInterval: any = null;
+    
+    // WORKAROUND: SSE tiene problemas con HTTP/2 (ERR_HTTP2_PROTOCOL_ERROR)
+    // Si estamos en HTTPS (lo cual implica HTTP/2), usar polling directamente
+    const forcePolling = window.location.protocol === 'https:' || 
+                        localStorage.getItem('connMode') === 'POLL';
 
     const pollFallback = async () => {
       try {
@@ -158,13 +205,20 @@ export function AppSidebar() {
 
     const connect = () => {
       if (closed) return;
+      
+      // Si forzamos polling, no intentar SSE
+      if (forcePolling) {
+        startFallback();
+        return;
+      }
+      
       try {
         es = new EventSource(url);
   es.onopen = () => { attempts = 0; stopFallback(); if (connectionMode !== 'SSE') { setConnectionMode('SSE'); localStorage.setItem('connMode','SSE'); } };
         es.onmessage = onEvent;
         ['enqueue','assign','scheduled','cancelled','created','accepted','rejected','completed'].forEach(ev => es!.addEventListener(ev, onEvent as any));
-        es.onerror = (err) => {
-          console.warn(`EventSource error for ${path}:`, err);
+        es.onerror = () => {
+          // Silently handle SSE errors - fallback to polling
           try { es?.close(); } catch {}
           es = null;
           attempts += 1;
@@ -223,6 +277,15 @@ export function AppSidebar() {
         } catch (error) {
           console.warn('Error fetching transfers:', error);
         }
+
+        // Obtener estado de mantenimiento
+        try {
+          const s = await api.getSettings();
+          const m = (s as any)?.maintenance_mode;
+          if (typeof m !== "undefined") setMaintenanceMode(!!m);
+        } catch (error) {
+          console.warn('Error fetching settings:', error);
+        }
       } catch (error) {
         console.warn('Error in fetchInitial:', error);
       }
@@ -247,8 +310,37 @@ export function AppSidebar() {
       }
     };
 
+    // Polling para mensajes sin leer de soporte (cada 30 segundos)
+    const pollSupportUnread = async () => {
+      try {
+        const base = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+        const token = localStorage.getItem('token') || '';
+        const headers: any = token ? { Authorization: `Bearer ${token}` } : {};
+        
+        const supportRes = await fetch(`${base}/support/tickets`, { headers });
+        if (supportRes.ok) {
+          const supportData = await supportRes.json();
+          if (supportData.success && Array.isArray(supportData.data)) {
+            const totalUnread = supportData.data.reduce((sum: number, ticket: any) => {
+              return sum + (ticket.unread_count || 0);
+            }, 0);
+            setSupportUnreadCount(totalUnread);
+          }
+        }
+      } catch (error) {
+        console.warn('Error polling support unread:', error);
+      }
+    };
+
     // Iniciar polling cada 30 segundos
-    queuePollingInterval = setInterval(pollQueue, 30000);
+    queuePollingInterval = setInterval(() => {
+      pollQueue();
+      pollSupportUnread();
+    }, 30000);
+    
+    // Cargar datos iniciales
+    pollQueue();
+    pollSupportUnread();
     
     const onTransfers = (ev: MessageEvent) => {
       try {
@@ -267,6 +359,26 @@ export function AppSidebar() {
   esTransfers?.close?.();
     };
   }, [location.pathname]);
+
+  const handleMaintenanceToggle = async (checked: boolean) => {
+    try {
+      const res = await api.updateSettings({ maintenance_mode: checked });
+      if ((res as any)?.success || typeof (res as any)?.maintenance_mode !== "undefined") {
+        setMaintenanceMode(checked);
+        toast({
+          title: checked ? "Modo Mantenimiento Activado" : "Modo Mantenimiento Desactivado",
+          description: checked ? "El portal de pacientes mostrará la página de mantenimiento." : "El portal de pacientes vuelve a estar disponible.",
+          variant: checked ? "destructive" : "default",
+        });
+      }
+    } catch {
+      toast({
+        title: "Error",
+        description: "No fue posible actualizar el estado de mantenimiento.",
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <Sidebar className="border-r border-medical-200">
@@ -351,14 +463,19 @@ export function AppSidebar() {
                         <item.icon className="w-4 h-4" />
                         <span>{item.title}</span>
                       </span>
-                      {item.title === 'Cola de Espera' && (
+                      {item.title === 'Cola de Espera' && queueCount > 0 && (
                         <span className="inline-flex items-center justify-center px-2 py-0.5 text-xs rounded-full bg-medical-600 text-white min-w-6">
                           {queueCount}
                         </span>
                       )}
-                      {item.title === 'Agentes' && (
+                      {item.title === 'Agentes' && transferCount > 0 && (
                         <span className="inline-flex items-center justify-center px-2 py-0.5 text-xs rounded-full bg-orange-600 text-white min-w-6">
                           {transferCount}
+                        </span>
+                      )}
+                      {item.title === 'Soporte' && supportUnreadCount > 0 && (
+                        <span className="inline-flex items-center justify-center px-2 py-0.5 text-xs rounded-full bg-red-500 text-white min-w-6 animate-pulse">
+                          {supportUnreadCount}
                         </span>
                       )}
                     </Link>
@@ -393,24 +510,77 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
+        <SidebarGroup>
+          <SidebarGroupLabel className="text-green-700 font-semibold flex items-center gap-2">
+            <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+            WhatsApp
+          </SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {whatsappItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton 
+                    asChild 
+                    className="hover:bg-green-50 hover:text-green-700 data-[active=true]:bg-green-100 data-[active=true]:text-green-800"
+                  >
+                    <Link to={item.url} className="flex items-center space-x-3">
+                      <item.icon className="w-4 h-4 text-green-600" />
+                      <span>{item.title}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
        
       </SidebarContent>
 
       <SidebarFooter className="p-4 border-t border-medical-200 space-y-2">
+        <SidebarMenu>
+        </SidebarMenu>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton 
               asChild 
               className="hover:bg-medical-50 hover:text-medical-700"
             >
-              <Link to="/settings" className="flex items-center space-x-3">
+              <Link to="/admin/settings" className="flex items-center space-x-3">
                 <Settings className="w-4 h-4" />
                 <span>Configuración</span>
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          {/* Auditoría solo visible para superadmin */}
+          {isSuperAdmin && (
+            <SidebarMenuItem>
+              <SidebarMenuButton 
+                asChild 
+                className="hover:bg-medical-50 hover:text-medical-700"
+              >
+                <Link to="/admin/audit" className="flex items-center space-x-3">
+                  <ClipboardList className="w-4 h-4" />
+                  <span>Auditoría</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
+          <SidebarMenuItem>
+            <SidebarMenuButton 
+              className="hover:bg-red-50 hover:text-red-700 cursor-pointer"
+              onClick={() => {
+                localStorage.removeItem('token');
+                navigate('/login');
+              }}
+            >
+              <div className="flex items-center space-x-3">
+                <LogOut className="w-4 h-4" />
+                <span>Cerrar Sesión</span>
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
-        <LogoutButton />
       </SidebarFooter>
     </Sidebar>
   );

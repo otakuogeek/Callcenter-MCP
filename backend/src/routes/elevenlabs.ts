@@ -208,7 +208,7 @@ router.post('/call-real', requireAuth, async (req: Request, res: Response) => {
 
 /**
  * POST /api/elevenlabs/call-physical
- * Inicia una llamada telefónica FÍSICA REAL usando Zadarma SIP verificado
+ * Inicia una llamada telefónica FÍSICA REAL usando ElevenLabs
  * Esta llamada REALMENTE sonará en el teléfono del destinatario
  */
 router.post('/call-physical', requireAuth, async (req: Request, res: Response) => {
@@ -538,7 +538,7 @@ router.post('/call-direct', requireAuth, async (req: Request, res: Response) => 
         success: true,
         message: 'Audio generado exitosamente para llamada directa',
         data: result,
-        note: 'Para completar la llamada, usa la integración con Zadarma u otro proveedor de telefonía'
+        note: 'Para completar la llamada, usa la integración con ElevenLabs'
       });
     } else {
       res.status(400).json({
@@ -552,73 +552,6 @@ router.post('/call-direct', requireAuth, async (req: Request, res: Response) => 
     res.status(500).json({
       success: false,
       error: 'Error al procesar llamada directa',
-      details: error.message
-    });
-  }
-});
-
-/**
- * POST /api/elevenlabs/call-with-zadarma
- * Realiza una llamada completa usando ElevenLabs (audio) + Zadarma (telefonía)
- */
-router.post('/call-with-zadarma', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { phoneNumber, message, patientId, voiceId } = req.body;
-
-    if (!phoneNumber || !message) {
-      return res.status(400).json({
-        success: false,
-        error: 'phoneNumber y message son requeridos'
-      });
-    }
-
-    console.log('📞 Iniciando llamada completa ElevenLabs + Zadarma:', {
-      phoneNumber,
-      messageLength: message.length,
-      patientId
-    });
-
-    // 1. Generar audio con ElevenLabs (modo directo)
-    const audioResult = await elevenLabsService.initiateCall({
-      phoneNumber,
-      message,
-      patientId,
-      voiceId,
-      directCall: true,
-      metadata: {
-        call_type: 'zadarma_integrated',
-        created_by: 'api'
-      }
-    });
-
-    if (!audioResult.success) {
-      return res.status(400).json({
-        success: false,
-        error: 'Error al generar audio',
-        details: audioResult.error
-      });
-    }
-
-    // 2. TODO: Integrar con Zadarma para realizar la llamada
-    // Por ahora retornamos éxito indicando que el audio está listo
-    
-    res.json({
-      success: true,
-      message: 'Audio generado exitosamente. Integración con Zadarma pendiente.',
-      data: {
-        conversationId: audioResult.conversationId,
-        phoneNumber,
-        audioGenerated: true,
-        zadarmaIntegration: 'pending',
-        note: 'El audio TTS ha sido generado. La integración con Zadarma para realizar la llamada física está en desarrollo.'
-      }
-    });
-
-  } catch (error: any) {
-    console.error('Error en llamada completa:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Error al procesar llamada',
       details: error.message
     });
   }

@@ -14,7 +14,8 @@ const dbConfig = {
   acquireTimeout: 10000,
   timeout: 10000,
   reconnect: true,
-  charset: 'utf8mb4'
+  charset: 'utf8mb4',
+  timezone: '+00:00' // UTC-0 para consistencia
 };
 
 export const db = mysql.createPool(dbConfig);

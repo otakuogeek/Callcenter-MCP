@@ -12,7 +12,8 @@ export class CallLogService {
       database: process.env.DB_NAME || 'biosanar',
       waitForConnections: true,
       connectionLimit: 10,
-      queueLimit: 0
+      queueLimit: 0,
+      timezone: '+00:00' // UTC-0 para consistencia
     });
   }
 

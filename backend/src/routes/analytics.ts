@@ -349,23 +349,34 @@ router.get('/appointments', requireAuth, async (req: Request, res: Response) => 
       total: stat.total
     }));
 
-    // 4. Estadísticas de ocupación por doctor y especialidad (desde hoy en adelante, incluyendo agendas llenas)
+    // 4. Estadísticas de ocupación por doctor y especialidad (desde hoy en adelante, excluyendo citas canceladas)
     const [occupancyStats] = await pool.query<any[]>(`
       SELECT 
+        av.doctor_id,
+        av.specialty_id,
         d.name as doctor,
         s.name as specialty,
         SUM(av.capacity) as total_slots,
-        SUM(av.booked_slots) as booked_slots,
+        COALESCE(SUM(confirmed_counts.confirmed_count), 0) as booked_slots,
         COUNT(av.id) as total_availabilities
       FROM availabilities av
       JOIN doctors d ON av.doctor_id = d.id
       JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN (
+        SELECT 
+          a.availability_id,
+          COUNT(*) as confirmed_count
+        FROM appointments a
+        WHERE a.status NOT IN ('Cancelada', 'No asistió')
+          AND a.availability_id IS NOT NULL
+        GROUP BY a.availability_id
+      ) confirmed_counts ON confirmed_counts.availability_id = av.id
       WHERE av.date >= CURDATE()
         AND av.status IN ('Activa', 'Completa')
         AND d.active = 1
       GROUP BY av.doctor_id, av.specialty_id, d.name, s.name
       HAVING COUNT(av.id) > 0 AND SUM(av.capacity) > 0
-      ORDER BY SUM(av.booked_slots) DESC
+      ORDER BY COALESCE(SUM(confirmed_counts.confirmed_count), 0) DESC
       LIMIT 15
     `, []);
 
@@ -390,6 +401,8 @@ router.get('/appointments', requireAuth, async (req: Request, res: Response) => 
           const occupancyRate = stat.total_slots > 0 ? 
             Math.round((stat.booked_slots / stat.total_slots) * 100) : 0;
           return {
+            doctorId: stat.doctor_id,
+            specialtyId: stat.specialty_id,
             doctor: stat.doctor,
             specialty: stat.specialty,
             totalSlots: parseInt(stat.total_slots),
@@ -411,6 +424,126 @@ router.get('/appointments', requireAuth, async (req: Request, res: Response) => 
 
   } catch (error: any) {
     console.error('Error en analytics de citas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Error interno del servidor'
+    });
+  }
+});
+
+// GET /api/analytics/occupancy-details - Detalle de agendas por doctor y especialidad
+router.get('/occupancy-details', requireAuth, async (req: Request, res: Response) => {
+  const { doctor_id, specialty_id } = req.query;
+
+  if (!doctor_id || !specialty_id) {
+    return res.status(400).json({
+      success: false,
+      error: 'Se requieren doctor_id y specialty_id'
+    });
+  }
+
+  try {
+    // Obtener todas las agendas futuras para este doctor/especialidad
+    const [availabilities] = await pool.query<any[]>(`
+      SELECT 
+        av.id as availability_id,
+        av.date,
+        av.start_time,
+        av.end_time,
+        av.capacity,
+        av.booked_slots as booked_slots_field,
+        av.status,
+        l.name as location_name,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        COALESCE(confirmed.confirmed_count, 0) as confirmed_appointments,
+        COALESCE(cancelled.cancelled_count, 0) as cancelled_appointments
+      FROM availabilities av
+      JOIN doctors d ON av.doctor_id = d.id
+      JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN (
+        SELECT 
+          availability_id,
+          COUNT(*) as confirmed_count
+        FROM appointments
+        WHERE status NOT IN ('Cancelada', 'No asistió')
+          AND availability_id IS NOT NULL
+        GROUP BY availability_id
+      ) confirmed ON confirmed.availability_id = av.id
+      LEFT JOIN (
+        SELECT 
+          availability_id,
+          COUNT(*) as cancelled_count
+        FROM appointments
+        WHERE status IN ('Cancelada', 'No asistió')
+          AND availability_id IS NOT NULL
+        GROUP BY availability_id
+      ) cancelled ON cancelled.availability_id = av.id
+      WHERE av.doctor_id = ?
+        AND av.specialty_id = ?
+        AND av.date >= CURDATE()
+        AND av.status IN ('Activa', 'Completa')
+      ORDER BY av.date ASC, av.start_time ASC
+    `, [doctor_id, specialty_id]);
+
+    // Calcular totales
+    const totals = availabilities.reduce((acc: any, av: any) => {
+      acc.totalCapacity += av.capacity;
+      acc.totalConfirmed += av.confirmed_appointments;
+      acc.totalCancelled += av.cancelled_appointments;
+      return acc;
+    }, { totalCapacity: 0, totalConfirmed: 0, totalCancelled: 0 });
+
+    const occupancyRate = totals.totalCapacity > 0 
+      ? Math.round((totals.totalConfirmed / totals.totalCapacity) * 100) 
+      : 0;
+
+    res.json({
+      success: true,
+      data: {
+        doctor_id: parseInt(doctor_id as string),
+        specialty_id: parseInt(specialty_id as string),
+        doctor_name: availabilities[0]?.doctor_name || '',
+        specialty_name: availabilities[0]?.specialty_name || '',
+        summary: {
+          totalCapacity: totals.totalCapacity,
+          totalConfirmed: totals.totalConfirmed,
+          totalCancelled: totals.totalCancelled,
+          availableSlots: totals.totalCapacity - totals.totalConfirmed,
+          occupancyRate,
+          totalAvailabilities: availabilities.length
+        },
+        availabilities: availabilities.map((av: any) => {
+          // Formatear fecha como YYYY-MM-DD para evitar problemas de timezone
+          let dateStr = av.date;
+          if (av.date instanceof Date) {
+            dateStr = av.date.toISOString().split('T')[0];
+          } else if (typeof av.date === 'string' && av.date.includes('T')) {
+            dateStr = av.date.split('T')[0];
+          }
+          return {
+            id: av.availability_id,
+            date: dateStr,
+            startTime: av.start_time,
+            endTime: av.end_time,
+            location: av.location_name || 'Sin sede',
+            capacity: av.capacity,
+            confirmedAppointments: av.confirmed_appointments,
+            cancelledAppointments: av.cancelled_appointments,
+            availableSlots: Math.max(0, av.capacity - av.confirmed_appointments),
+            occupancyRate: av.capacity > 0 
+              ? Math.round((av.confirmed_appointments / av.capacity) * 100) 
+              : 0,
+            status: av.status,
+            isOverbooked: av.confirmed_appointments > av.capacity
+          };
+        })
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error al obtener detalles de ocupación:', error);
     res.status(500).json({
       success: false,
       error: 'Error interno del servidor'

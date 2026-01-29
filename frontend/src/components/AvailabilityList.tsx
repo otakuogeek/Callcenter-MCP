@@ -4,7 +4,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Calendar as CalendarIcon, User, MapPin, CheckCircle, AlertCircle, XCircle, Eye, Edit, X, Clock, Stethoscope, Users, TrendingUp, CalendarDays, UserPlus, Printer, FileSpreadsheet, Pause, Play, PauseCircle, PlayCircle } from "lucide-react";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
+import { formatInTimeZone } from "date-fns-tz";
 import { es } from "date-fns/locale";
 import { safeFormatDate } from "@/utils/dateHelpers";
 import { motion, AnimatePresence } from "framer-motion";
@@ -19,6 +20,30 @@ import QuickAppointmentModal from "./QuickAppointmentModal";
 import { generateDailyAgendaPDF, exportSingleAgendaToExcel } from "@/utils/pdfGenerators";
 import { useToast } from "@/hooks/use-toast";
 import api from "@/lib/api";
+
+// Función helper para mostrar la hora EXACTA de la BD (UTC-0) sin conversión
+const formatUTCDate = (utcDateString: string, formatString: string): string => {
+  return formatInTimeZone(parseISO(utcDateString), 'UTC', formatString, { locale: es });
+};
+
+// Función para formatear hora en zona horaria UTC-5 (Colombia) sin adaptarse a la zona del cliente
+const formatColombiaTime = (dateString: string, time: string): string => {
+  // Tomar la hora UTC-0 de la BD y restar 5 horas para UTC-5
+  const [hours, minutes] = time.split(':').map(Number);
+  let colombiaHours = hours - 5;
+  
+  // Manejar cambio de día
+  if (colombiaHours < 0) {
+    colombiaHours += 24;
+  }
+  
+  // Formatear a 12 horas con AM/PM
+  const period = colombiaHours >= 12 ? 'p. m.' : 'a. m.';
+  let displayHours = colombiaHours % 12;
+  if (displayHours === 0) displayHours = 12;
+  
+  return `${displayHours}:${minutes.toString().padStart(2, '0')} ${period}`;
+};
 
 interface AvailabilityListProps {
   date: Date | undefined;
@@ -36,6 +61,7 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
   const [expandedCard, setExpandedCard] = useState<number | null>(null);
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [isQuickAppointmentModalOpen, setIsQuickAppointmentModalOpen] = useState(false);
+  const [showCancelled, setShowCancelled] = useState(false);
   const [manualDefaults, setManualDefaults] = useState<{
     availabilityId?: number;
     locationId?: number;
@@ -45,6 +71,11 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
     startTime?: string;
     endTime?: string;
   } | null>(null);
+
+  // Filtrar agendas canceladas según el toggle
+  const visibleAvailabilities = showCancelled 
+    ? filteredAvailabilities 
+    : filteredAvailabilities.filter(a => a.status !== 'Cancelada');
 
   const getStatusBadge = (status: string) => {
     const variants = {
@@ -251,7 +282,13 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
           duration_minutes: apt.duration_minutes,
           status: apt.status,
           reason: apt.reason,
-          age: apt.age
+          age: apt.age,
+          cups_id: apt.cups_id,
+          cups_code: apt.cups_code,
+          cups_name: apt.cups_name,
+          cups_description: apt.cups_description,
+          cups_category: apt.cups_category,
+          cups_price: apt.cups_price
         }))
       }];
 
@@ -401,9 +438,20 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
               <CalendarIcon className="w-5 h-5 text-blue-600" />
               {date ? 'Agendas del Día Seleccionado' : 'Próximas Disponibilidades'}
             </CardTitle>
-            <Badge variant="secondary" className="bg-blue-100 text-blue-800">
-              {filteredAvailabilities.length} agenda{filteredAvailabilities.length !== 1 ? 's' : ''}
-            </Badge>
+            <div className="flex items-center gap-3">
+              <Badge variant="secondary" className="bg-blue-100 text-blue-800">
+                {visibleAvailabilities.length} agenda{visibleAvailabilities.length !== 1 ? 's' : ''}
+              </Badge>
+              <Button
+                variant={showCancelled ? "default" : "outline"}
+                size="sm"
+                onClick={() => setShowCancelled(!showCancelled)}
+                className="flex items-center gap-2"
+              >
+                {showCancelled ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                {showCancelled ? 'Ocultar Canceladas' : 'Mostrar Canceladas'}
+              </Button>
+            </div>
           </div>
           <CardDescription className="text-sm text-gray-600">
             {date 
@@ -424,9 +472,9 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                 <div>
                   <p className="font-semibold text-base">Filtro por Fecha Activo</p>
                   <p className="text-sm text-blue-50">
-                    {filteredAvailabilities.length === 0 
+                    {visibleAvailabilities.length === 0 
                       ? `No hay agendas programadas para esta fecha`
-                      : `Mostrando ${filteredAvailabilities.length} agenda${filteredAvailabilities.length !== 1 ? 's' : ''} programada${filteredAvailabilities.length !== 1 ? 's' : ''}`
+                      : `Mostrando ${visibleAvailabilities.length} agenda${visibleAvailabilities.length !== 1 ? 's' : ''} programada${visibleAvailabilities.length !== 1 ? 's' : ''}`
                     }
                   </p>
                 </div>
@@ -449,7 +497,7 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
         )}
         
         <CardContent className="p-6">
-          {filteredAvailabilities.length === 0 ? (
+          {visibleAvailabilities.length === 0 ? (
             <div className="text-center py-16 px-6">
               <div className="max-w-md mx-auto">
                 {date ? (
@@ -508,7 +556,7 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
           ) : (
             <div className="space-y-4">
               <AnimatePresence>
-                {filteredAvailabilities.map((availability, index) => (
+                {visibleAvailabilities.map((availability, index) => (
                   <motion.div
                     key={availability.id}
                     initial={{ opacity: 0, y: 20 }}
@@ -645,9 +693,16 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                     <CalendarIcon className="w-4 h-4" />
                                     {safeFormatDate(availability.date, "EEE, d 'de' MMM", { locale: es })}
                                   </div>
-                                  <div className="flex items-center gap-1 text-sm font-bold text-gray-700">
+                                  <div className="flex items-center gap-1">
                                     <Clock className="w-4 h-4" />
-                                    {availability.startTime} - {availability.endTime}
+                                    <div className="flex flex-col items-end">
+                                      <Badge className="bg-green-600 hover:bg-green-700 text-white text-xs mb-1">
+                                        {formatColombiaTime(availability.date, availability.startTimeRaw || availability.startTime)} - {formatColombiaTime(availability.date, availability.endTimeRaw || availability.endTime)}
+                                      </Badge>
+                                      <p className="text-muted-foreground" style={{fontSize: '0.65rem'}}>
+                                        Hora BD: {availability.startTimeRaw || availability.startTime} - {availability.endTimeRaw || availability.endTime} (UTC-0)
+                                      </p>
+                                    </div>
                                   </div>
                                 </div>
                               </div>

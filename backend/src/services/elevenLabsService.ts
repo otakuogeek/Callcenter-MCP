@@ -1,9 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import pool from '../db/pool';
 import { ResultSetHeader, RowDataPacket } from 'mysql2';
-import zadarmaVoiceService from './zadarma-voice.service';
 import { elevenLabsOutboundService } from './elevenlabs-outbound.service';
-import { zadarmaRealCallService } from './zadarma-real-verified.service';
 
 interface ElevenLabsConfig {
   apiKey: string;
@@ -274,42 +272,20 @@ export class ElevenLabsService {
 
       console.log('✅ [ElevenLabs] Audio generado para llamada directa:', directCallId);
 
-      // 🔥 NUEVO: Iniciar llamada automáticamente con Zadarma
-      console.log('📞 [ElevenLabs → Zadarma] Iniciando llamada telefónica...');
-      const audioBuffer = Buffer.from(ttsResponse.data);
-      
-      const zadarmaResult = await zadarmaVoiceService.initiateCallWithElevenLabsAudio(
-        phoneNumber,
-        audioBuffer
-      );
-
-      let finalStatus = 'audio_generated';
-      let zadarmaCallId = null;
-
-      if (zadarmaResult.status === 'success' && zadarmaResult.call_id) {
-        finalStatus = 'call_initiated';
-        zadarmaCallId = zadarmaResult.call_id;
-        console.log('✅ [Zadarma] Llamada iniciada con éxito. Call ID:', zadarmaCallId);
-      } else {
-        console.warn('⚠️  [Zadarma] No se pudo iniciar la llamada:', zadarmaResult.message);
-      }
+      // El audio se genera y se guarda, la llamada se puede iniciar manualmente
+      // o a través del sistema de llamadas salientes de ElevenLabs
+      console.log('📞 [ElevenLabs] Audio listo para llamada telefónica');
 
       return {
         success: true,
         conversationId: directCallId,
-        callId: zadarmaCallId || directCallId,
-        status: finalStatus,
+        callId: directCallId,
+        status: 'audio_generated',
         details: {
-          message: zadarmaCallId 
-            ? `Llamada iniciada exitosamente a ${phoneNumber}` 
-            : 'Audio generado. Llamada no iniciada automáticamente.',
+          message: `Audio generado para ${phoneNumber}. Use el sistema de llamadas salientes.`,
           audioBase64: audioBase64.substring(0, 100) + '...',
           phoneNumber,
-          zadarmaCallId,
-          zadarmaStatus: zadarmaResult.status,
-          note: zadarmaCallId 
-            ? `Llamada en progreso con Zadarma (Call ID: ${zadarmaCallId})`
-            : 'Audio listo. Verificar configuración de Zadarma.'
+          note: 'Audio TTS generado correctamente. Use ElevenLabs outbound para iniciar la llamada.'
         }
       };
 
@@ -413,90 +389,64 @@ export class ElevenLabsService {
   }
 
   /**
-   * Inicia una llamada telefónica REAL VERIFICADA usando Zadarma
-   * Este método usa las credenciales verificadas y el SIP 895480
+   * Inicia una llamada telefónica REAL usando ElevenLabs Outbound API
+   * Usa el sistema nativo de llamadas salientes de ElevenLabs
    */
   async makePhysicalCall(options: CallOptions): Promise<CallResponse> {
     try {
       const phoneNumber = this.normalizePhoneNumber(options.phoneNumber);
       
-      console.log('📞 [ElevenLabs → Zadarma] Iniciando llamada FÍSICA real...');
+      console.log('📞 [ElevenLabs] Iniciando llamada FÍSICA real...');
       console.log('   Número destino:', phoneNumber);
 
-      // 1. Generar audio TTS primero
-      if (!options.message) {
-        throw new Error('Message is required for physical calls');
-      }
-
-      const voiceId = options.voiceId || 'cjVigY5qzO86Huf0OWal';
-      
-      console.log('🎤 Generando audio TTS...');
-      const ttsResponse = await this.client.post(
-        `/text-to-speech/${voiceId}`,
-        {
-          text: options.message,
-          model_id: 'eleven_turbo_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.8,
-            speed: 1.0
-          }
-        },
-        {
-          responseType: 'arraybuffer'
-        }
-      );
-
-      const audioBase64 = Buffer.from(ttsResponse.data).toString('base64');
-      const conversationId = `physical_${Date.now()}`;
-
-      // 2. Guardar en base de datos
-      await this.saveCallRecord({
-        conversationId,
+      // Usar el servicio de llamadas salientes de ElevenLabs
+      const result = await elevenLabsOutboundService.initiateOutboundCall({
         phoneNumber,
+        message: options.message || 'Llamada desde Biosanar IPS',
         patientId: options.patientId,
         appointmentId: options.appointmentId,
-        agentId: 'zadarma_sip_895480',
-        status: 'physical_call_initiated',
-        metadata: {
-          ...options.metadata,
-          message: options.message,
-          callType: 'physical_zadarma',
-          audioSize: audioBase64.length
-        }
+        metadata: options.metadata
       });
 
-      // 3. Hacer la llamada REAL con Zadarma
-      console.log('📞 Iniciando llamada física con Zadarma...');
-      const zadarmaResult = await zadarmaRealCallService.makeRealCall(phoneNumber);
+      if (result.success) {
+        console.log('✅ [ElevenLabs] ¡LLAMADA FÍSICA INICIADA!');
+        console.log('   Call ID:', result.callId);
 
-      if (zadarmaResult.success) {
-        console.log('✅ [Zadarma] ¡LLAMADA FÍSICA INICIADA!');
-        console.log('   From:', zadarmaResult.from);
-        console.log('   To:', zadarmaResult.to);
-        console.log('   Time:', zadarmaResult.timestamp);
+        // Guardar en base de datos
+        await this.saveCallRecord({
+          conversationId: result.conversationId || result.callId || `physical_${Date.now()}`,
+          phoneNumber,
+          patientId: options.patientId,
+          appointmentId: options.appointmentId,
+          agentId: this.config.agentId || 'elevenlabs_outbound',
+          status: 'physical_call_initiated',
+          metadata: {
+            ...options.metadata,
+            message: options.message,
+            callType: 'elevenlabs_outbound'
+          }
+        });
 
         return {
           success: true,
-          conversationId,
+          conversationId: result.conversationId,
+          callId: result.callId,
           status: 'physical_call_ringing',
           details: {
             message: `¡Llamada FÍSICA iniciada! El teléfono ${phoneNumber} debería estar sonando.`,
             phoneNumber,
-            conversationId,
-            zadarmaFrom: zadarmaResult.from,
-            zadarmaTo: zadarmaResult.to,
-            timestamp: zadarmaResult.timestamp,
-            note: 'El SIP 895480 llamará primero, luego conectará automáticamente con el destino',
-            audioGenerated: true
+            conversationId: result.conversationId,
+            callId: result.callId,
+            timestamp: new Date().toISOString(),
+            note: 'Llamada iniciada con ElevenLabs Outbound API'
           }
         };
       }
 
       return {
         success: false,
-        error: zadarmaResult.error || 'Error iniciando llamada física',
-        details: zadarmaResult.data
+        error: result.error || 'Error iniciando llamada física',
+        details: result.details
       };
 
     } catch (error: any) {

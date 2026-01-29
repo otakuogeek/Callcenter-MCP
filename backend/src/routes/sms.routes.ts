@@ -3,6 +3,7 @@ import labsmobileService from '../services/labsmobile-sms.service';
 import { requireAuth } from '../middleware/auth';
 import pool from '../db/pool';
 import { RowDataPacket } from 'mysql2';
+import { formatFullDateColombia, formatTimeColombia, formatTime24Colombia, COLOMBIA_TIMEZONE } from '../utils/dateUtils';
 
 const router = Router();
 
@@ -94,7 +95,7 @@ router.get('/balance', requireAuth, async (req: Request, res: Response) => {
  * Envía SMS de confirmación de cita
  * Body: { phoneNumber, patientName, appointmentDate, appointmentTime, doctorName, location }
  */
-router.post('/appointment-confirmation', async (req: Request, res: Response) => {
+router.post('/appointment-confirmation', requireAuth, async (req: Request, res: Response) => {
   try {
     const { phoneNumber, patientName, appointmentDate, appointmentTime, doctorName, location } = req.body;
 
@@ -236,7 +237,7 @@ router.post('/appointment-cancellation', requireAuth, async (req: Request, res: 
  */
 router.get('/templates', requireAuth, async (req: Request, res: Response) => {
   try {
-    // LabsMobile no requiere plantillas pre-aprobadas como Zadarma
+    // LabsMobile no requiere plantillas pre-aprobadas
     // Retornamos las plantillas predefinidas del sistema
     const templates = [
       {
@@ -306,7 +307,7 @@ router.get('/sender-ids', requireAuth, async (req: Request, res: Response) => {
 /**
  * POST /api/sms/send-public
  * Envía un SMS sin autenticación (endpoint público para pruebas)
- * Ahora usa LabsMobile en lugar del servicio PHP/Zadarma
+ * Usa LabsMobile como proveedor de SMS
  * Body: { number: string, message: string }
  */
 router.post('/send-public', async (req: Request, res: Response) => {
@@ -367,7 +368,7 @@ router.get('/history', requireAuth, async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = (page - 1) * limit;
-    
+
     const { status, patient_id, appointment_id, start_date, end_date } = req.query;
 
     // Construir query dinámico con filtros
@@ -502,7 +503,7 @@ router.get('/stats', requireAuth, async (req: Request, res: Response) => {
     // Estadísticas por día (últimos 7 días si no se especifica rango)
     let dateRangeClause = whereClause;
     let dateParams = [...params];
-    
+
     if (!start_date && !end_date) {
       dateRangeClause += ' AND sent_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)';
     }
@@ -553,28 +554,28 @@ router.get('/stats', requireAuth, async (req: Request, res: Response) => {
 router.post('/normalize-phones', requireAuth, async (req: Request, res: Response) => {
   try {
     const pool = require('../db/pool').default;
-    
+
     // Obtener todos los pacientes con teléfono
     const [patients]: any = await pool.query(
       'SELECT id, phone FROM patients WHERE phone IS NOT NULL AND phone != ""'
     );
-    
+
     let updated = 0;
     let errors = 0;
-    
+
     for (const patient of patients) {
       const phone = patient.phone;
-      
+
       // Eliminar caracteres no numéricos
       let cleaned = phone.replace(/\D/g, '');
-      
+
       // Eliminar 0 inicial
       if (cleaned.startsWith('0')) {
         cleaned = cleaned.substring(1);
       }
-      
+
       let formatted = phone; // Por defecto, mantener original
-      
+
       // Formatear según la longitud y formato
       if (cleaned.length === 10 && !phone.includes('+')) {
         // Número colombiano de 10 dígitos sin +
@@ -583,7 +584,7 @@ router.post('/normalize-phones', requireAuth, async (req: Request, res: Response
         // Tiene 57 pero sin +
         formatted = '+' + cleaned;
       }
-      
+
       // Si el formato cambió, actualizar
       if (formatted !== phone) {
         try {
@@ -599,7 +600,7 @@ router.post('/normalize-phones', requireAuth, async (req: Request, res: Response
         }
       }
     }
-    
+
     return res.json({
       success: true,
       message: 'Normalización completada',
@@ -684,7 +685,11 @@ router.get('/waiting-list/eps-list', requireAuth, async (req: Request, res: Resp
  */
 router.post('/send-bulk-waiting-list', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { specialty_id, max_count, from_position, to_position, excluded_eps_ids } = req.body;
+    console.log('🔵 [BULK SMS] Request body completo:', JSON.stringify(req.body, null, 2));
+    
+    const { specialty_id, max_count, from_position, to_position, excluded_eps_ids, custom_message } = req.body;
+    
+    console.log('🔵 [BULK SMS] custom_message extraído:', custom_message);
 
     // Validar parámetros
     const fromPos = from_position && from_position > 0 ? from_position : 1;
@@ -707,7 +712,7 @@ router.post('/send-bulk-waiting-list', requireAuth, async (req: Request, res: Re
     const hasMoreBatches = limit > MAX_SMS_PER_BATCH;
 
     console.log(`📊 [BULK SMS] Solicitados: ${limit} SMS, Procesando: ${actualLimit} SMS (Lote 1/${Math.ceil(limit / MAX_SMS_PER_BATCH)})`);
-    
+
     limit = actualLimit;
 
     // Construir query para obtener pacientes en lista de espera
@@ -778,9 +783,14 @@ router.post('/send-bulk-waiting-list', requireAuth, async (req: Request, res: Re
     }
 
     console.log(`📱 [BULK SMS] Enviando SMS a ${patients.length} pacientes...`);
+    console.log(`📝 [BULK SMS] custom_message recibido:`, custom_message);
+    console.log(`📝 [BULK SMS] typeof custom_message:`, typeof custom_message);
 
-    // Preparar mensaje
-    const message = 'Le informamos que hay citas disponibles para [Nombre de Especialidad]. Agende su cita en: https://biosanarcall.site/users';
+    // Preparar mensaje - usar custom_message si está presente, de lo contrario usar el mensaje por defecto
+    const defaultMessage = 'Le informamos que hay citas disponibles para [Nombre de Especialidad]. Agende su cita en: https://biosanarcall.site/users';
+    const message = custom_message || defaultMessage;
+    
+    console.log(`📝 [BULK SMS] Mensaje final a usar:`, message);
 
     // Enviar SMS a cada paciente
     const results = [];
@@ -926,7 +936,7 @@ router.get('/waiting-list/count', requireAuth, async (req: Request, res: Respons
     specialtiesQuery += ' GROUP BY s.id, s.name ORDER BY patient_count DESC';
 
     const [specialties] = await pool.query<RowDataPacket[]>(
-      specialtiesQuery, 
+      specialtiesQuery,
       specialty_id ? [specialty_id] : []
     );
 
@@ -1068,15 +1078,8 @@ router.post('/notify-availability-patients', requireAuth, async (req: Request, r
       });
     }
 
-    // Formatear fecha y hora
-    const appointmentDate = new Date(availability.date);
-    const formattedDate = appointmentDate.toLocaleDateString('es-CO', { 
-      weekday: 'long', 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
-    });
-    const formattedTime = availability.start_time.substring(0, 5); // HH:MM
+    // Formatear fecha (usando timezone Colombia UTC-5)
+    const formattedDate = formatFullDateColombia(availability.date);
 
     // Enviar SMS a cada paciente
     let successCount = 0;
@@ -1085,12 +1088,15 @@ router.post('/notify-availability-patients', requireAuth, async (req: Request, r
 
     for (const appointment of appointmentsRows) {
       try {
+        // Formatear la hora INDIVIDUAL de cada paciente desde scheduled_at (UTC-0 → UTC-5)
+        const appointmentTime = formatTimeColombia(appointment.scheduled_at);
+        
         const message = `Hola ${appointment.patient_name}! 📅 Recordatorio de su cita:\n\n` +
           `🏥 Especialidad: ${availability.specialty_name}\n` +
           `👨‍⚕️ Doctor: ${availability.doctor_name}\n` +
           `📍 Sede: ${availability.location_name}\n` +
           `📆 Fecha: ${formattedDate}\n` +
-          `🕐 Hora: ${formattedTime}\n\n` +
+          `🕐 Hora: ${appointmentTime}\n\n` +
           `Por favor asista puntualmente. ¡Le esperamos!\n` +
           `- Fundación Biosanar IPS`;
 
@@ -1148,7 +1154,8 @@ router.post('/notify-availability-patients', requireAuth, async (req: Request, r
           specialty: availability.specialty_name,
           location: availability.location_name,
           date: formattedDate,
-          time: formattedTime
+          start_time: availability.start_time,
+          end_time: availability.end_time
         },
         total_pacientes: appointmentsRows.length,
         sms_enviados: successCount,
