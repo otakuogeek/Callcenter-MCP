@@ -80,6 +80,7 @@ interface StateMetrics {
 const stateContexts = new Map<string, StateContext>();
 const MAX_RETRIES = 3;
 const STATE_TIMEOUT = 7200000; // 2 horas (120 minutos)
+const MAX_STATE_CONTEXTS = 1000; // Límite máximo de estados en memoria
 
 /**
  * Obtener o crear contexto de estado
@@ -94,6 +95,19 @@ export function getStateContext(phone: string): StateContext {
   }
 
   if (!context) {
+    // Evict oldest entries if at capacity
+    if (stateContexts.size >= MAX_STATE_CONTEXTS) {
+      let oldestPhone = '';
+      let oldestTime = Infinity;
+      for (const [p, c] of stateContexts.entries()) {
+        if (c.timestamp < oldestTime) {
+          oldestTime = c.timestamp;
+          oldestPhone = p;
+        }
+      }
+      if (oldestPhone) stateContexts.delete(oldestPhone);
+    }
+
     const now = Date.now();
     context = {
       currentState: ConversationState.IDLE,
@@ -110,33 +124,50 @@ export function getStateContext(phone: string): StateContext {
 
 /**
  * Actualizar estado con tracking de transiciones
+ * Supports two call signatures:
+ *   updateState(phone, ConversationState.X, { ...updates })
+ *   updateState(phone, { ...partialUpdates })  // keeps current state
  */
 export function updateState(
   phone: string,
-  newState: ConversationState,
+  newStateOrUpdates: ConversationState | Partial<StateContext>,
   updates?: Partial<StateContext>
 ): void {
   const context = getStateContext(phone);
   const previousState = context.currentState;
 
-  context.previousState = previousState;
-  context.currentState = newState;
-  context.timestamp = Date.now();
-  context.stateTransitions++;
-  context.retryCount = 0; // Reset retry count on state change
+  // Detect which overload is being used
+  if (typeof newStateOrUpdates === 'string' && Object.values(ConversationState).includes(newStateOrUpdates as ConversationState)) {
+    // Called as updateState(phone, ConversationState.X, updates?)
+    context.previousState = previousState;
+    context.currentState = newStateOrUpdates as ConversationState;
+    context.timestamp = Date.now();
+    context.stateTransitions++;
+    context.retryCount = 0;
 
-  if (updates) {
-    Object.assign(context, updates);
+    if (updates) {
+      Object.assign(context, updates);
+    }
+
+    stateLogger.info({
+      phone,
+      from: previousState,
+      to: newStateOrUpdates,
+      transitions: context.stateTransitions
+    }, 'State transition');
+  } else if (typeof newStateOrUpdates === 'object') {
+    // Called as updateState(phone, { partialUpdates }) — no state change
+    context.timestamp = Date.now();
+    Object.assign(context, newStateOrUpdates);
+
+    stateLogger.debug({
+      phone,
+      state: context.currentState,
+      updatedKeys: Object.keys(newStateOrUpdates)
+    }, 'State context updated (no transition)');
   }
 
   stateContexts.set(phone, context);
-
-  stateLogger.info({
-    phone,
-    from: previousState,
-    to: newState,
-    transitions: context.stateTransitions
-  }, 'State transition');
 }
 
 /**

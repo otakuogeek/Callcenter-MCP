@@ -4,8 +4,197 @@ import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import WhatsAppAI from '../services/WhatsAppAIService';
 import MCPTools from '../services/MCPToolsClient';
 import WhatsAppConnection, { whatsappEvents } from '../services/WhatsAppConnection';
+import { normalizeIncomingText } from '../utils/whatsappUtils';
 
 const router = Router();
+
+// ============================================================================
+// RATE LIMITING POR NÚMERO DE TELÉFONO
+// ============================================================================
+
+interface RateLimitEntry {
+  count: number;
+  firstRequest: number;
+  lastRequest: number;
+  blocked: boolean;
+  blockedUntil?: number;
+}
+
+const rateLimitMap = new Map<string, RateLimitEntry>();
+
+// Configuración de rate limiting
+const RATE_LIMIT_WINDOW_MS = 60_000;      // 1 minuto
+const RATE_LIMIT_MAX_REQUESTS = 20;        // máximo 20 mensajes por minuto
+const RATE_LIMIT_BLOCK_DURATION_MS = 300_000; // bloqueo de 5 minutos
+const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000; // limpiar cada minuto
+
+/**
+ * Verificar rate limit para un número de teléfono
+ * @returns true si está permitido, false si está bloqueado
+ */
+function checkRateLimit(phone: string): { allowed: boolean; reason?: string; retryAfter?: number } {
+  const now = Date.now();
+  const entry = rateLimitMap.get(phone);
+  
+  // Si no hay entrada, crear una nueva
+  if (!entry) {
+    rateLimitMap.set(phone, {
+      count: 1,
+      firstRequest: now,
+      lastRequest: now,
+      blocked: false
+    });
+    return { allowed: true };
+  }
+  
+  // Si está bloqueado, verificar si ya pasó el tiempo
+  if (entry.blocked && entry.blockedUntil) {
+    if (now < entry.blockedUntil) {
+      const retryAfter = Math.ceil((entry.blockedUntil - now) / 1000);
+      return { 
+        allowed: false, 
+        reason: `Rate limit excedido. Intenta de nuevo en ${retryAfter} segundos.`,
+        retryAfter 
+      };
+    }
+    // Desbloquear y resetear
+    entry.blocked = false;
+    entry.blockedUntil = undefined;
+    entry.count = 1;
+    entry.firstRequest = now;
+    entry.lastRequest = now;
+    return { allowed: true };
+  }
+  
+  // Si la ventana expiró, resetear contador
+  if (now - entry.firstRequest > RATE_LIMIT_WINDOW_MS) {
+    entry.count = 1;
+    entry.firstRequest = now;
+    entry.lastRequest = now;
+    return { allowed: true };
+  }
+  
+  // Incrementar contador
+  entry.count++;
+  entry.lastRequest = now;
+  
+  // Verificar si excedió el límite
+  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+    entry.blocked = true;
+    entry.blockedUntil = now + RATE_LIMIT_BLOCK_DURATION_MS;
+    console.warn(`[RateLimit] Número ${phone} bloqueado por exceder ${RATE_LIMIT_MAX_REQUESTS} mensajes/minuto`);
+    return { 
+      allowed: false, 
+      reason: `Has enviado demasiados mensajes. Espera 5 minutos antes de continuar.`,
+      retryAfter: RATE_LIMIT_BLOCK_DURATION_MS / 1000
+    };
+  }
+  
+  return { allowed: true };
+}
+
+// normalizeIncomingText importada desde ../utils/whatsappUtils
+
+const MAX_RATE_LIMIT_ENTRIES = 10000; // Límite máximo de entradas en el mapa
+
+// Limpiar entradas antiguas del rate limit periódicamente
+const rateLimitCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  const expiredCutoff = now - RATE_LIMIT_WINDOW_MS * 2;
+  
+  for (const [phone, entry] of rateLimitMap.entries()) {
+    // Eliminar entradas inactivas por más de 2 ventanas
+    if (entry.lastRequest < expiredCutoff && !entry.blocked) {
+      rateLimitMap.delete(phone);
+    }
+    // Eliminar bloqueos expirados
+    if (entry.blocked && entry.blockedUntil && now > entry.blockedUntil) {
+      rateLimitMap.delete(phone);
+    }
+  }
+  // Si aún hay demasiadas entradas, eliminar las más antiguas
+  if (rateLimitMap.size > MAX_RATE_LIMIT_ENTRIES) {
+    const sorted = Array.from(rateLimitMap.entries())
+      .sort((a, b) => a[1].lastRequest - b[1].lastRequest);
+    const toRemove = sorted.slice(0, rateLimitMap.size - MAX_RATE_LIMIT_ENTRIES);
+    for (const [phone] of toRemove) {
+      rateLimitMap.delete(phone);
+    }
+  }
+}, RATE_LIMIT_CLEANUP_INTERVAL_MS);
+if (rateLimitCleanupTimer.unref) rateLimitCleanupTimer.unref();
+
+// ============================================================================
+// MÉTRICAS DE FALLOS POR INTENT
+// ============================================================================
+
+interface IntentMetric {
+  total: number;
+  success: number;
+  failed: number;
+  avgResponseTimeMs: number;
+  lastError?: string;
+  lastErrorTime?: number;
+}
+
+const intentMetrics = new Map<string, IntentMetric>();
+const globalMetrics = {
+  totalRequests: 0,
+  totalFailures: 0,
+  rateLimitBlocks: 0,
+  normalizedMessages: 0,
+  startTime: Date.now()
+};
+
+/**
+ * Registrar métrica de un intent procesado
+ */
+function recordIntentMetric(intent: string, success: boolean, responseTimeMs: number, error?: string): void {
+  const metric = intentMetrics.get(intent) || {
+    total: 0,
+    success: 0,
+    failed: 0,
+    avgResponseTimeMs: 0
+  };
+  
+  metric.total++;
+  if (success) {
+    metric.success++;
+  } else {
+    metric.failed++;
+    metric.lastError = error;
+    metric.lastErrorTime = Date.now();
+    globalMetrics.totalFailures++;
+  }
+  
+  // Calcular promedio móvil del tiempo de respuesta
+  metric.avgResponseTimeMs = Math.round(
+    (metric.avgResponseTimeMs * (metric.total - 1) + responseTimeMs) / metric.total
+  );
+  
+  intentMetrics.set(intent, metric);
+  globalMetrics.totalRequests++;
+}
+
+/**
+ * Obtener métricas de intents
+ */
+function getIntentMetrics(): { intents: Record<string, IntentMetric>; global: typeof globalMetrics } {
+  const intents: Record<string, IntentMetric> = {};
+  for (const [intent, metric] of intentMetrics.entries()) {
+    intents[intent] = { ...metric };
+  }
+  
+  return {
+    intents,
+    global: {
+      ...globalMetrics,
+      uptimeSeconds: Math.round((Date.now() - globalMetrics.startTime) / 1000),
+      activeRateLimits: rateLimitMap.size,
+      blockedNumbers: Array.from(rateLimitMap.values()).filter(e => e.blocked).length
+    } as any
+  };
+}
 
 // ============================================================================
 // INTERFACES
@@ -288,6 +477,46 @@ router.post('/connect', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Error conectando'
+    });
+  }
+});
+
+/**
+ * POST /api/whatsapp/force-restart
+ * Forzar reinicio completo: limpia sesión, resetea intentos e inicia nueva conexión
+ */
+router.post('/force-restart', async (req: Request, res: Response) => {
+  try {
+    console.log('[WhatsApp] Forzando reinicio completo...');
+    
+    // 1. Desconectar si hay socket activo
+    try {
+      await WhatsAppConnection.disconnect();
+    } catch (e) {
+      // Ignorar error de desconexión
+    }
+    
+    // 2. Resetear contador de intentos
+    WhatsAppConnection.resetReconnectAttempts();
+    
+    // 3. Esperar un momento para que se limpie
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // 4. Iniciar nueva conexión
+    const result = await WhatsAppConnection.startConnection();
+    
+    res.json({
+      success: result.success,
+      data: {
+        ...WhatsAppConnection.getStatus(),
+        message: 'Reconexión forzada iniciada'
+      }
+    });
+  } catch (error: any) {
+    console.error('Error en force-restart:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Error reiniciando conexión'
     });
   }
 });
@@ -1118,27 +1347,56 @@ router.get('/voice-config', async (req: Request, res: Response) => {
  */
 router.post('/webhook', async (req: Request, res: Response) => {
   try {
-    const { from, body, messageId, profileName, mediaUrl, mediaType } = req.body;
+    const { from, body: rawBody, messageId, profileName, mediaUrl, mediaType } = req.body;
 
-    if (!from || !body) {
+    if (!from || !rawBody) {
       res.status(400).json({ success: false, error: 'Datos incompletos' });
       return;
     }
 
+    // Aplicar rate limiting
+    const rateLimitResult = checkRateLimit(from);
+    if (!rateLimitResult.allowed) {
+      console.warn(`[WhatsApp Webhook] Rate limit para ${from}: ${rateLimitResult.reason}`);
+      globalMetrics.rateLimitBlocks++;
+      res.status(429).json({ 
+        success: false, 
+        error: rateLimitResult.reason,
+        retryAfter: rateLimitResult.retryAfter
+      });
+      return;
+    }
+
+    // Normalizar texto entrante
+    const body = normalizeIncomingText(rawBody);
+    if (body !== rawBody) {
+      globalMetrics.normalizedMessages++;
+    }
+    
     console.log(`[WhatsApp Webhook] Mensaje de ${from}: ${body.substring(0, 100)}...`);
 
     // Procesar mensaje con IA (Valeria)
     let aiResponse: string | null = null;
     const autoReply = process.env.WHATSAPP_AUTO_REPLY === 'true';
+    const aiStartTime = Date.now();
 
     if (autoReply && WhatsAppAI.isConfigured()) {
       try {
         const result = await WhatsAppAI.processMessage(body, from, []);
+        const aiDuration = Date.now() - aiStartTime;
+        
         if (result.success && result.response) {
           aiResponse = result.response;
+          // Registrar métrica de éxito
+          recordIntentMetric(result.intent || 'unknown', true, aiDuration);
+        } else {
+          // Registrar métrica de fallo
+          recordIntentMetric(result.intent || 'unknown', false, aiDuration, result.error);
         }
         console.log(`[WhatsApp Webhook] Respuesta IA generada: ${aiResponse?.substring(0, 100)}...`);
-      } catch (aiError) {
+      } catch (aiError: any) {
+        const aiDuration = Date.now() - aiStartTime;
+        recordIntentMetric('error', false, aiDuration, aiError.message);
         console.error('[WhatsApp Webhook] Error en IA:', aiError);
       }
     } else {
@@ -1196,6 +1454,22 @@ router.post('/chat', async (req: Request, res: Response) => {
       return;
     }
 
+    // Aplicar rate limiting (excepto para teléfonos de prueba)
+    if (!phone.startsWith('test-')) {
+      const rateLimitResult = checkRateLimit(phone);
+      if (!rateLimitResult.allowed) {
+        res.status(429).json({ 
+          success: false, 
+          error: rateLimitResult.reason,
+          retryAfter: rateLimitResult.retryAfter
+        });
+        return;
+      }
+    }
+
+    // Normalizar mensaje entrante
+    const normalizedMessage = normalizeIncomingText(message);
+
     if (!WhatsAppAI.isConfigured()) {
       res.status(503).json({
         success: false,
@@ -1205,7 +1479,7 @@ router.post('/chat', async (req: Request, res: Response) => {
     }
 
     const startTime = Date.now();
-    const result = await WhatsAppAI.processMessage(message, phone, []);
+    const result = await WhatsAppAI.processMessage(normalizedMessage, phone, []);
     const responseTime = Date.now() - startTime;
 
     res.json({
@@ -1214,7 +1488,8 @@ router.post('/chat', async (req: Request, res: Response) => {
         response: result.response,
         toolCalls: result.toolCalls || [],
         responseTimeMs: responseTime,
-        phone
+        phone,
+        normalizedInput: normalizedMessage !== message // indicar si se normalizó
       }
     });
   } catch (error: any) {
@@ -1277,6 +1552,54 @@ router.get('/ai-status', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Error obteniendo estado de IA'
+    });
+  }
+});
+
+/**
+ * GET /api/whatsapp/metrics
+ * Obtener métricas detalladas del sistema WhatsApp
+ */
+router.get('/metrics', async (req: Request, res: Response) => {
+  try {
+    const metrics = getIntentMetrics();
+    
+    // Calcular estadísticas adicionales
+    const intentStats = Object.entries(metrics.intents).map(([intent, data]) => ({
+      intent,
+      ...data,
+      successRate: data.total > 0 ? Math.round((data.success / data.total) * 100) : 0
+    }));
+    
+    // Ordenar por número de fallos (descendente)
+    intentStats.sort((a, b) => b.failed - a.failed);
+    
+    res.json({
+      success: true,
+      data: {
+        global: metrics.global,
+        intents: intentStats,
+        rateLimiting: {
+          activeEntries: rateLimitMap.size,
+          blockedNumbers: Array.from(rateLimitMap.entries())
+            .filter(([_, e]) => e.blocked)
+            .map(([phone, e]) => ({
+              phone: phone.substring(0, 6) + '****', // Enmascarar número
+              blockedUntil: e.blockedUntil ? new Date(e.blockedUntil).toISOString() : null,
+              messageCount: e.count
+            })),
+          config: {
+            windowMs: RATE_LIMIT_WINDOW_MS,
+            maxRequests: RATE_LIMIT_MAX_REQUESTS,
+            blockDurationMs: RATE_LIMIT_BLOCK_DURATION_MS
+          }
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Error obteniendo métricas'
     });
   }
 });

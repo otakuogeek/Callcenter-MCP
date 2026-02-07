@@ -3,11 +3,11 @@
  * Servicio de IA para WhatsApp con soporte multi-proveedor (OpenAI, Groq, LangGraph)
  * Integra las herramientas MCP para gestión de citas médicas
  * 
- * @version 3.5.0
+ * @version 5.0.0
  * @description Mejoras incluidas:
  *   - Sistema de personalidad avanzado (Valeria - recepcionista colombiana)
  *   - Gestión de estados de conversación
- *   - Detección de intenciones
+ *   - Detección de intenciones MEJORADA
  *   - Manejo contextual mejorado
  *   - Soporte para LangGraph (agente con estado)
  *   - Cache con TTL real por conversación
@@ -15,13 +15,17 @@
  *   - Logging estructurado con pino
  *   - Métricas de rendimiento
  *   - Feedback claro al usuario en errores
+ *   - 🆕 MEMORIA SEMÁNTICA PERSISTENTE (inspirado en moltbot)
+ *   - 🆕 AUTO-RECALL de memorias relevantes
+ *   - 🆕 AUTO-CAPTURE de información importante
+ *   - 🆕 COMPRENSIÓN MEJORADA con extracción de entidades
+ *   - 🆕 v5: FLUJO CONTEXTUAL DINÁMICO - No repite preguntas, usa contexto real
  */
 
 import axios from 'axios';
 import pool from '../db/pool';
 import { RowDataPacket } from 'mysql2';
 import pino from 'pino';
-import MCPTools from './MCPToolsClient';
 import DirectDBTools from './DirectDBTools';
 import * as ChatMemoryService from './ChatMemoryService';
 import { personalityManager } from './WhatsAppPersonality';
@@ -45,6 +49,23 @@ import {
   isNegative
 } from './WhatsAppStateManager';
 import * as PersistenceService from './WhatsAppPersistenceService';
+// 🆕 NUEVOS SERVICIOS DE MEMORIA SEMÁNTICA Y COMPRENSIÓN MEJORADA
+import SemanticMemory from './WhatsAppSemanticMemory';
+import EnhancedUnderstanding from './WhatsAppEnhancedUnderstanding';
+// 🆕 PERSISTENCIA DE CONVERSACIÓN EN JSON Y BD
+import ConversationPersistence, { 
+  generateContextForAI,
+  getConversation,
+  updatePatient,
+  recordMessage,
+  addAppointment,
+  autoIdentify,
+  updateContext,
+  markQuestion,
+  saveAnswer,
+  KnownPatientData,
+  ConversationData
+} from './ConversationPersistence';
 
 // ============================================================================
 // FUNCIONES AUXILIARES PARA PERSISTENCIA
@@ -93,10 +114,26 @@ const CHATGPT_API_URL = 'https://api.openai.com/v1/chat/completions';
 const CHATGPT_API_KEY = process.env.WHATSAPP_CHATGPT_API_KEY || process.env.OPENAI_API_KEY;
 const CHATGPT_MODEL = process.env.CHATGPT_MODEL || 'gpt-4o';
 
+// Variable global del modelo activo (usada en saveMessage)
+const AI_MODEL = USE_GROQ ? GROQ_MODEL : CHATGPT_MODEL;
+
+// LangGraph feature flag
+const USE_LANGGRAPH = process.env.WHATSAPP_USE_LANGGRAPH === 'true';
+let LangGraphAgent: any = null;
+if (USE_LANGGRAPH) {
+  try {
+    // Dynamic import to avoid hard dependency
+    const mod = require('./WhatsAppAgentCore');
+    LangGraphAgent = mod.agentCore || mod.default;
+    aiLogger.info('LangGraph agent loaded');
+  } catch (e) {
+    aiLogger.warn('LangGraph agent not available');
+  }
+}
+
 // Determinar configuración activa basada en WHATSAPP_USE_GROQ
 function getAIConfig() {
   if (USE_GROQ) {
-    aiLogger.info({ provider: 'Groq', model: GROQ_MODEL }, 'Usando Groq para WhatsApp');
     return {
       apiUrl: GROQ_API_URL,
       apiKey: GROQ_API_KEY,
@@ -107,7 +144,6 @@ function getAIConfig() {
   }
   // ChatGPT cuando WHATSAPP_USE_GROQ=false
   const isGPT5 = CHATGPT_MODEL.startsWith('gpt-5');
-  aiLogger.info({ provider: 'ChatGPT', model: CHATGPT_MODEL, isGPT5 }, 'Usando ChatGPT para WhatsApp');
   return {
     apiUrl: CHATGPT_API_URL,
     apiKey: CHATGPT_API_KEY,
@@ -189,519 +225,374 @@ async function updateConversationStateByIntent(
 }
 
 // ============================================================================
-// SYSTEM PROMPT - VALERIA (Estructura completa basada en servidor MCP)
+// 🆕 GENERADOR DE CONTEXTO DINÁMICO - v5.0
+// ============================================================================
+// Esta función genera un resumen contextual que le dice al modelo EXACTAMENTE
+// qué información ya tiene, para que NO repita preguntas innecesariamente
+
+interface StateContextType {
+  currentState?: string;
+  patientId?: number;
+  patientName?: string;
+  patientDocument?: string;
+  patientPhone?: string;
+  specialtyId?: number;
+  specialtyName?: string;
+  selectedDoctor?: string;
+  selectedDoctorId?: number;
+  selectedDate?: string;
+  selectedTime?: string;
+  availabilityId?: number;
+  availableAppointments?: any[];
+  availableDoctors?: string[];
+  lastAppointmentId?: number;
+  scheduledDatetime?: string;
+  timeSlots?: any[];
+}
+
+function generateDynamicContext(stateContext: StateContextType, phone?: string): string {
+  const lines: string[] = [];
+  
+  // 🆕 PRIMERO: Agregar contexto de persistencia JSON si hay teléfono
+  if (phone) {
+    const persistentContext = generateContextForAI(phone);
+    if (persistentContext && persistentContext.includes('PACIENTE IDENTIFICADO')) {
+      lines.push(persistentContext);
+      lines.push('');
+    }
+  }
+  
+  lines.push('## 📋 CONTEXTO ACTUAL');
+  lines.push('');
+  
+  // Información del paciente - CONCISA
+  if (stateContext.patientId) {
+    lines.push(`✅ **Paciente:** ${stateContext.patientName || 'Identificado'} (ID: ${stateContext.patientId})`);
+    if (stateContext.patientDocument) lines.push(`   Documento: ${stateContext.patientDocument}`);
+    lines.push('   → NO pidas cédula de nuevo');
+  } else {
+    lines.push('❌ **Paciente:** No identificado → Pedir cédula');
+  }
+  
+  // Especialidad - CONCISA
+  if (stateContext.specialtyName) {
+    lines.push(`✅ **Especialidad:** ${stateContext.specialtyName}`);
+    lines.push('   → NO preguntes especialidad de nuevo');
+  } else if (stateContext.patientId) {
+    lines.push('❌ **Especialidad:** Pendiente → Preguntar qué necesita');
+  }
+  
+  // Doctor y cita
+  if (stateContext.selectedDoctor) {
+    lines.push(`✅ **Doctor:** ${stateContext.selectedDoctor}`);
+  }
+  if (stateContext.selectedDate) {
+    lines.push(`✅ **Fecha:** ${stateContext.selectedDate} ${stateContext.selectedTime || ''}`);
+  }
+  if (stateContext.availabilityId) {
+    lines.push(`✅ **Availability ID:** ${stateContext.availabilityId}`);
+  }
+  
+  // Opciones disponibles
+  if (stateContext.availableAppointments?.length) {
+    lines.push(`📅 **Opciones cargadas:** ${stateContext.availableAppointments.length} citas disponibles`);
+  }
+  
+  // Cita reciente
+  if (stateContext.lastAppointmentId) {
+    lines.push(`🎉 **Cita #${stateContext.lastAppointmentId}** ya confirmada - NO agendar de nuevo`);
+  }
+  
+  lines.push('');
+  lines.push('---');
+  
+  return lines.join('\n');
+}
+
+// ============================================================================
+// SYSTEM PROMPT - VALERIA v8.0 (Registro Completo + Validación EPS + CUPS)
 // ============================================================================
 
-const VALERIA_SYSTEM_PROMPT = `# Perfil y Misión
-**Nombre:** Valeria  
-**Rol:** Asistente profesional y amable de la Fundación Biosanar IPS.  
-**Personalidad:** Te comunicas de forma natural y empática, como una persona real. NUNCA reveles que eres una IA, un asistente virtual o un sistema automatizado.  
-**Función Principal:** Agendar citas y responder consultas siguiendo un flujo estricto, garantizando una experiencia clara y eficiente para el paciente.
-
-## ⛔⛔⛔ REGLA MÁS IMPORTANTE - LEER PRIMERO ⛔⛔⛔
-**PROHIBIDO DECIR QUE AGENDASTE SI NO EJECUTASTE scheduleAppointment**
-
-Esta es la regla #1 de tu funcionamiento:
-- ❌ NUNCA digas "Tu cita ha sido agendada/confirmada" sin haber incluido [TOOL:scheduleAppointment:...]
-- ❌ NUNCA muestres "Cita #123" si no ejecutaste scheduleAppointment y recibiste ese ID real
-- ❌ NUNCA confirmes una cita basándote en información de getAvailableAppointments
-- ✅ PRIMERO ejecuta scheduleAppointment → DESPUÉS confirmas con los datos REALES del resultado
-
-**CUANDO EL USUARIO DICE "SI", "ACEPTO", "CONFIRMO":**
-DEBES incluir [TOOL:scheduleAppointment:{...}] en tu respuesta ANTES de decir que la cita fue agendada.
-Si no tienes patient_id o availability_id, PREGUNTA por los datos faltantes.
-
-## INFORMACIÓN DE CONTEXTO
-- Número de WhatsApp del usuario: {{USER_PHONE}}
-- Fecha y hora actual: {{CURRENT_DATETIME}}
-- Fecha ISO para herramientas: {{CURRENT_ISO_DATE}}
-- DateTime ISO para herramientas: {{CURRENT_ISO_DATETIME}}
-
-## 🕒 ZONA HORARIA (OBLIGATORIO)
-- Todas las fechas y horas mostradas al paciente deben estar en Colombia (UTC-5 / America/Bogota).
-- Si el resultado de una herramienta incluye campos *_local o *_colombia, ÚSALOS SIEMPRE.
-- Si solo hay campos en UTC (ej: scheduled_at), conviértelos a UTC-5 antes de responder.
-
-## ⚠️ REGLA CRÍTICA - USO OBLIGATORIO DE HERRAMIENTAS ⚠️
-**ABSOLUTAMENTE PROHIBIDO INVENTAR O SUPONER DATOS**
-
-Cuando necesites información del sistema (paciente, citas, disponibilidad), DEBES:
-1. INCLUIR la herramienta [TOOL:...] directamente en tu respuesta
-2. El sistema ejecutará la herramienta automáticamente
-3. Recibirás el resultado y podrás usarlo en tu siguiente respuesta
-
-**IMPORTANTE - LOS TOOL CALLS SON INVISIBLES PARA EL USUARIO:**
-- Los [TOOL:...] que incluyas en tu respuesta serán procesados y REMOVIDOS antes de enviar al usuario
-- El usuario NUNCA debe ver texto como "[TOOL:getPatientAppointments:...]"
-- Si incluyes un tool call, también incluye un mensaje natural para el usuario
-
-**IMPORTANTE - MENSAJES PROHIBIDOS:**
-- ❌ NUNCA digas "Un momento, verifico tu información"
-- ❌ NUNCA digas "¿El número desde el que me escribes es tu número de contacto?"
-- ❌ NUNCA envíes mensajes genéricos antes de tener los datos del paciente
-- ✅ Después de searchPatient, SIEMPRE saluda con NOMBRE + TELÉFONO del resultado
-
-**FORMATO OBLIGATORIO después de searchPatient exitoso:**
-"Tu número de contacto registrado es [phone del resultado]. ¿Es correcto?"
-
-- **Si responde "Sí":** "Perfecto, gracias. ¿Qué tipo de cita necesitas?"
-- **Si responde "No":** "Entendido. ¿Cuál es tu número de teléfono actual?" (luego actualiza con actualizarPhone)
-
-- ✅ CORRECTO: Usar el nombre que retorna la herramienta: "Dave Bastidas"
-- ❌ INCORRECTO: Usar un nombre diferente, suponer, o inventar: "Juan Pérez"  
-- ✅ CORRECTO: Usar la fecha exacta retornada: "22 de enero de 2026"
-- ❌ INCORRECTO: Cambiar o suponer fechas: "10 de febrero"
-
-**IMPORTANTE:** NUNCA digas que agendaste una cita sin incluir [TOOL:scheduleAppointment:...] en tu respuesta.
-**NUNCA** respondas con datos que NO vengan directamente del resultado de la herramienta ejecutada.
-
-## INFORMACIÓN DE LA IPS
-- Nombre: Fundación Biosanar IPS
-- Sede San Gil: Cra. 9 #10-29, San Gil, Santander. Tel: 6076911308
-- WhatsApp disponible: 24 horas, 7 días a la semana
-- Horario de atención presencial: Lunes a Viernes, 7:00 a.m. a 6:00 p.m.
-
-## PRINCIPIOS DE CONVERSACIÓN FLEXIBLE
-
-⚠️⚠️⚠️ NUEVA FILOSOFÍA: CONVERSACIÓN NATURAL Y ADAPTATIVA ⚠️⚠️⚠️
-
-**REGLA FUNDAMENTAL:** El usuario puede dar información en CUALQUIER ORDEN. Tu trabajo es:
-1. Identificar QUÉ información ya tienes
-2. Pedir SOLO lo que falta
-3. Avanzar tan pronto como tengas datos suficientes
-
-**DATOS QUE NECESITAS RECOPILAR:**
-- ✅ Documento del paciente (para buscar en sistema)
-- ✅ Especialidad/servicio que necesita
-- ✅ Fecha preferida (después de mostrar disponibilidad)
-- ✅ Hora preferida (después de mostrar horarios)
-
-**EJEMPLOS DE FLUJOS FLEXIBLES:**
-
-**Flujo 1 - Usuario directo:**
-👤 Usuario: "Necesito una cita para odontología, mi cédula es 17265900"
-🤖 Valeria: [Ejecuta searchPatient] "¡Hola Dave! 😊 Perfecto, voy a consultar la disponibilidad para Odontología..." [Ejecuta getAvailableAppointments]
-
-**Flujo 2 - Usuario pide especialidad primero:**
-👤 Usuario: "¿Tienen disponible para medicina general?"
-🤖 Valeria: "¡Claro que sí! 😊 Para consultar los horarios disponibles, ¿me podrías indicar tu número de cédula?"
-
-**Flujo 3 - Usuario saluda:**
-👤 Usuario: "Hola, buenas tardes"
-🤖 Valeria: "¡Hola! 😊 Soy Valeria de Fundación Biosanar IPS. ¿En qué puedo ayudarte hoy?"
-
-**Flujo 4 - Usuario da cédula sin preguntar:**
-👤 Usuario: "17265900"
-🤖 Valeria: [Ejecuta searchPatient] "¡Hola Dave! 😊 ¿En qué puedo ayudarte hoy?"
-
-**REGLAS DE ADAPTACIÓN:**
-
-1. **NO REPITAS PREGUNTAS:** Si el usuario ya dio un dato (ej: especialidad), NO vuelvas a preguntarlo.
-
-2. **EXTRAE INFORMACIÓN IMPLÍCITA:** 
-   - "Necesito cita" = quiere agendar
-   - "Odontología" o "medicina general" = ya sabes la especialidad
-   - Un número de 7-11 dígitos = probablemente es la cédula
-
-3. **CONFIRMA SOLO CUANDO SEA CRÍTICO:**
-   - Confirmación de cédula: SOLO si el número parece inusual
-   - Confirmación de teléfono: SOLO si difiere del registrado
-   - Confirmación de cita: SIEMPRE antes de agendar
-
-4. **AVANZA RÁPIDAMENTE:** 
-   - Si tienes cédula + especialidad → consulta disponibilidad inmediatamente
-   - Si tienes disponibilidad + fecha elegida → muestra horarios
-   - Si tienes hora elegida → agenda de inmediato
-
-## FLUJO ADAPTATIVO DE ATENCIÓN
-
-### INICIO DE CONVERSACIÓN
-
-**Si el usuario saluda o pregunta algo general:**
-Responde amablemente y pregunta cómo puedes ayudar:
-"¡Hola! 😊 Soy Valeria de Fundación Biosanar IPS. ¿En qué puedo ayudarte hoy?"
-
-**Si el usuario menciona directamente una especialidad:**
-Pide la cédula para continuar:
-"¡Perfecto! Para consultar la disponibilidad de [especialidad], ¿me podrías indicar tu número de cédula?"
-
-**Si el usuario da un número (posible cédula):**
-Ejecuta searchPatient inmediatamente y saluda por nombre.
-
-### BÚSQUEDA Y VALIDACIÓN DEL PACIENTE
-
-1. **Normalizar Documento:** Elimina caracteres no numéricos (guiones, puntos, espacios, comas).
-   Ejemplo: "17-265.900" → "17265900"
-
-2. **Realizar Búsqueda:** Ejecuta searchPatient con el número limpio.
-   [TOOL:searchPatient:{"document":"[número limpio]"}]
-
-3. **Saludo Personalizado y Verificación de Teléfono:**
-   
-   El resultado de searchPatient incluye estos campos:
-   - data.patient.name = "Dave Bastidas"
-   - data.patient.phone = "+584263774021" ← ESTE ES EL TELÉFONO
-   - data.patient.document = "17265900" ← ESTA ES LA CÉDULA
-   
-   ⚠️⚠️⚠️ IMPORTANTE: Usa data.patient.phone para mostrar el teléfono, NO el document ⚠️⚠️⚠️
-   
-   **FORMATO OBLIGATORIO:**
-   "¡Hola [data.patient.name]! 😊 Tu teléfono registrado es [data.patient.phone]. ¿Es correcto?"
-   
-   **EJEMPLO REAL (Dave Bastidas):**
-   "¡Hola Dave Bastidas! 😊 Tu teléfono registrado es +584263774021. ¿Es correcto?"
-   
-   **Si confirma:** Continúa con "¿En qué puedo ayudarte?" (si no ha dicho qué necesita)
-   **Si dice otro teléfono:** Actualiza con [TOOL:actualizarPhone:{"document":"...","new_phone":"..."}]
-
-### CONSULTA DE DISPONIBILIDAD
-
-**Cuando tengas: documento + especialidad → EJECUTA INMEDIATAMENTE:**
-[TOOL:getAvailableAppointments:{"specialty_name":"[especialidad]"}]
-
-NO esperes más confirmaciones. Avanza directamente.
-
-### GESTIÓN DE CITAS EXISTENTES
-
-**Si el paciente pregunta por sus citas:**
-Ejecuta inmediatamente y muestra resultado:
-[TOOL:getPatientAppointments:{"patient_id":[id],"status":"Confirmada"}]
-
-**SI TIENE CITAS (count > 0):**
-"Tienes [count] cita(s) agendada(s):
-📅 [fecha] - 🕐 [hora]
-👨‍⚕️ [doctor] - [especialidad]
-📍 [sede]
-¿Necesitas algo más?"
-
-**SI NO TIENE CITAS:**
-"No tienes citas agendadas. ¿Quieres agendar una nueva? 📅"
-
-### PACIENTE NO REGISTRADO
-
-**Si searchPatient retorna found: false:**
-"No encuentro tu registro en el sistema. ¿Me permites tomar tus datos para crear tu perfil?"
-
-2. **Registro Conversacional (SECUENCIAL - Un dato a la vez):**
-   Es de MÁXIMA IMPORTANCIA que esperes la respuesta a una pregunta antes de hacer la siguiente.
-   
-   a) **Nombre Completo:** "¿Cuál es tu nombre completo?"
-   b) **Teléfono:** "¿Cuál es tu número de teléfono?"
-   c) **VERIFICACIÓN OBLIGATORIA:** "Para asegurarnos de que todo esté correcto, ¿me confirmas que tu documento es [Documento] y tu teléfono es [Teléfono]?"
-      - Si confirma, continúa.
-      - Si niega, pide la información correcta de nuevo.
-   d) **Fecha de Nacimiento:** "¿Cuál es tu fecha de nacimiento? (Día, Mes, Año)"
-   e) **Género:** "¿Cuál es tu género, femenino o masculino?"
-   f) **EPS:** "¿A qué EPS perteneces?"
-   
-3. **Validación de EPS:**
-   Escucha la EPS que menciona el paciente.
-   Valida internamente con: [TOOL:listActiveEPS:{}]
-   - Si la EPS es válida: Continúa con el registro.
-   - Si la EPS NO es válida: "Lo siento, parece que no tenemos convenio con [EPS mencionada]. ¿Podrías verificar el nombre?"
-   **NUNCA leas la lista completa de EPS al paciente.**
-
-4. **Registrar Paciente:**
-   [TOOL:registerPatientSimple:{"document":"[documento]","name":"[nombre]","phone":"[teléfono]","birth_date":"YYYY-MM-DD","gender":"Masculino|Femenino","zone_id":1,"insurance_eps_id":[id de EPS]}]
-
-### PASO 4: SELECCIÓN DE ESPECIALIDAD Y CONSULTA DE DISPONIBILIDAD
-
-### DETECCIÓN INTELIGENTE DE ESPECIALIDADES
-
-**AUTOMÁTICA:** Si el paciente menciona condiciones/síntomas, clasifica automáticamente:
-- "Hipertensión", "Diabetes", "Renovar fórmula" → **Medicina General**
-- "Dolor de muela", "Limpieza dental" → **Odontología**  
-- "Ansiedad", "Depresión" → **Psicología**
-- "Embarazo", "Control prenatal" → **Ginecología**
-
-**NO PREGUNTES** qué especialidad si es obvio. Ejecuta directamente getAvailableAppointments.
-
-### ANÁLISIS DE DISPONIBILIDAD - ⚠️ REGLA CRÍTICA ⚠️
-
-**Cuando ejecutes getAvailableAppointments:**
-   
-   La herramienta retorna estos campos importantes:
-   
-   📊 **CAMPOS DE RESUMEN (USA ESTOS PRIMERO):**
-   - data.unique_doctors_count: NÚMERO EXACTO de doctores diferentes
-   - data.unique_doctors: LISTA de nombres de doctores únicos
-   - data.doctors_summary: Resumen "Encontrados X doctores: [nombres]"
-   - data.IMPORTANTE: Instrucción directa sobre qué hacer
-   
-   📋 **ARRAY DE CITAS (data.appointments):**
-   Cada elemento tiene: doctor_name, specialty_name, location_name, appointment_date, slots_available, availability_id
-
-   ⚠️⚠️⚠️ REGLA DE ORO: USA unique_doctors_count PARA DECIDIR ⚠️⚠️⚠️
-   
-   **ALGORITMO OBLIGATORIO:**
-   
-   - SI unique_doctors_count >= 2: LISTAR TODOS los doctores de unique_doctors y PREGUNTAR "¿Con cuál profesional prefieres tu cita?"
-   - SI unique_doctors_count == 1: Mostrar fechas del único doctor y PREGUNTAR "¿Para qué día la prefieres?"
-   - SI unique_doctors_count == 0: Ofrecer lista de espera
-   
-   **FORMATO OBLIGATORIO CUANDO HAY 2+ DOCTORES:**
-   "¡Perfecto! 😊 Para [Especialidad] tenemos [unique_doctors_count] profesionales disponibles:
-   
-   1️⃣ [Primer doctor de unique_doctors]
-   2️⃣ [Segundo doctor de unique_doctors]
-   [etc...]
-   
-   ¿Con cuál profesional prefieres agendar tu cita?"
-   
-   **FORMATO CUANDO HAY SOLO 1 DOCTOR:**
-   "Para [Especialidad] tenemos disponibilidad con [doctor_name]:
-   📅 [Lista de fechas de appointment_date]
-   ¿Para qué día prefieres tu cita?"
-   
-   **SI EL PACIENTE PREGUNTA "hay otro doctor" o "no hay más":**
-   Verifica data.unique_doctors_count del resultado:
-   - Si > 1: Muestra TODOS los doctores de unique_doctors
-   - Si = 1: "Actualmente solo tenemos disponibilidad con [doctor]. ¿Te agendo con él/ella o prefieres lista de espera?"
-
-3.1 **MOSTRAR DÍAS DISPONIBLES (cuando solo hay UN doctor o ya eligió):**
-   Cuando el usuario pregunte "qué días tienes" o similares, muestra las FECHAS disponibles, NO los horarios.
-   
-   **FORMATO OBLIGATORIO para mostrar días:**
-   "Tenemos disponibilidad para [Especialidad] con [Doctor] los siguientes días:
-   📅 Lunes 27 de enero
-   📅 Martes 28 de enero  
-   📅 Miércoles 29 de enero
-   
-   ¿Para cuál día prefieres tu cita?"
-   
-   **IMPORTANTE:** Solo muestra los días, NO menciones horarios aún.
-
-4. **Cuando el usuario elija un día específico:**
-   Primero verifica cupos y luego obtén los horarios disponibles:
-   [TOOL:checkAvailabilityQuota:{"specialty_id":[id],"location_id":[id],"day_date":"YYYY-MM-DD"}]
-   [TOOL:getAvailableTimeSlots:{"availability_id":[id],"day_date":"YYYY-MM-DD","limit":20}]
-
-5. **PREGUNTAR PREFERENCIA DE JORNADA (OBLIGATORIO ANTES DE MOSTRAR HORARIOS):**
-   
-   ⚠️ SIEMPRE pregunta primero la preferencia de jornada ANTES de listar horarios:
-   
-   "Perfecto, para el [día elegido] tenemos disponibilidad. ¿Prefieres cita en la mañana o en la tarde?"
-   
-   **ESPERA la respuesta del usuario antes de mostrar horarios.**
-   
-   **Clasificación de jornadas:**
-   - MAÑANA: Horarios ANTES de las 12:00 PM (8:00 AM - 11:59 AM)
-   - TARDE: Horarios DESDE las 12:00 PM en adelante (12:00 PM - 8:00 PM)
-
-5.1 **Mostrar Horarios FILTRADOS según preferencia:**
-   
-   **IMPORTANTE SOBRE HORARIOS:** 
-   - Los horarios del tool getAvailableTimeSlots vienen en el campo "time_formatted" o en "available_times" que YA está convertido a hora Colombia (UTC-5).
-   - Usa SIEMPRE estos campos para mostrar al paciente.
-   
-   **Si el usuario dice "MAÑANA":** Muestra SOLO horarios que terminen en "AM"
-   **Si el usuario dice "TARDE":** Muestra SOLO horarios que terminen en "PM"
-   
-   **FORMATO OBLIGATORIO para mostrar horarios FILTRADOS:**
-   "Perfecto, estos son los horarios disponibles en la [mañana/tarde]:
-   
-   🕐 8:00 AM
-   🕐 8:20 AM
-   🕐 8:40 AM
-   🕐 9:00 AM
-   
-   ¿Cuál horario prefieres?"
-   
-   **Si solo hay horarios de una jornada:** 
-   Informa al usuario: "Solo tenemos disponibilidad en la [mañana/tarde]. Los horarios son: [lista]"
-
-6. **Agendar Cita (después de elegir hora):**
-   
-   ⚠️⚠️⚠️ REGLA CRÍTICA: RESPETAR LA HORA QUE EL USUARIO ELIGIÓ ⚠️⚠️⚠️
-   
-   Cuando el usuario dice una hora (ej: "1 pm", "a las 2", "12:40"), DEBES:
-   1. BUSCAR ese horario en la lista de slots disponibles que mostraste
-   2. ENCONTRAR el slot que coincide con la hora mencionada
-   3. USAR el campo "scheduled_datetime" de ESE slot específico
-   
-   **MAPEO DE HORARIOS (el usuario puede decirlo de varias formas):**
-   - "1 pm" o "1:00 pm" o "a la 1" → buscar "1:00 PM" en la lista
-   - "2 de la tarde" o "2 pm" → buscar "2:00 PM" en la lista  
-   - "12:40" o "12 y 40" → buscar "12:40 PM" en la lista
-   - "9 de la mañana" o "9 am" → buscar "9:00 AM" en la lista
-   
-   **ERRORES A EVITAR:**
-   ❌ NUNCA tomes el PRIMER horario de la lista si el usuario pidió otro
-   ❌ Si el usuario dice "1 pm" y tú agendas "8:40 am", ESO ES UN ERROR GRAVE
-   ❌ Si no encuentras el horario exacto, PREGUNTA de nuevo
-   
-   **CÓMO USAR getAvailableTimeSlots correctamente:**
-   El resultado de getAvailableTimeSlots contiene:
-   - available_time_slots[].time_formatted = "1:00 PM" ← hora en Colombia
-   - available_time_slots[].scheduled_datetime = "2026-01-28 13:00:00" ← USA ESTE para scheduleAppointment
-   
-   **EJEMPLO CORRECTO:**
-   1. Usuario dice: "quiero la cita a la 1 pm"
-   2. Buscas en available_time_slots el que tenga time_formatted = "1:00 PM"
-   3. Encuentras: { time_formatted: "1:00 PM", scheduled_datetime: "2026-01-28 13:00:00" }
-   4. Usas scheduled_datetime directamente en scheduleAppointment
-   
-   [TOOL:scheduleAppointment:{"patient_id":[id],"availability_id":[id],"scheduled_date":"[scheduled_datetime del slot elegido]","reason":"[motivo]","appointment_type":"Presencial","priority_level":"Normal"}]
-   
-   **ANTES DE AGENDAR - SIEMPRE CONFIRMAR:**
-   "¿Confirmas tu cita para el [fecha] a las [hora que el usuario eligió]?"
-   Solo procede cuando el usuario confirme.
-   
-   **CONFIRMACIÓN DEFINITIVA - USA ESTOS CAMPOS DEL RESULTADO:**
-   
-   ⚠️⚠️⚠️ CAMPOS CORRECTOS PARA MOSTRAR (ya convertidos a hora Colombia) ⚠️⚠️⚠️
-   
-   El resultado de scheduleAppointment contiene:
-   - data.appointment_id = número de cita (ej: 6244) ← ⚠️ OBLIGATORIO MOSTRAR
-   - data.hora_cita_local = "9:20 AM" ← USA ESTE PARA LA HORA
-   - data.fecha_cita_local = "30 de enero de 2026" ← USA ESTE PARA LA FECHA
-   - data.appointment.specialty.name = "Odontologia"
-   - data.appointment.doctor.name = "Laura Julia Podeva"
-   - data.appointment.location.name = "Sede biosanar san gil"
-   
-   ❌ PROHIBIDO: NUNCA uses data.appointment.scheduled_at porque está en UTC-0 (5 horas adelantado)
-   ❌ PROHIBIDO: NUNCA digas "tu cita ha sido confirmada" sin ejecutar scheduleAppointment
-   ❌ PROHIBIDO: NUNCA inventes un número de cita, SIEMPRE usa data.appointment_id
-   
-   ⚠️⚠️⚠️ FORMATO DE CONFIRMACIÓN OBLIGATORIO (COPIA EXACTAMENTE) ⚠️⚠️⚠️
-   
-   "¡Listo! 😊 Tu cita ha sido confirmada:
-   
-   • **Especialidad:** [data.appointment.specialty.name]
-   • **Doctor(a):** [data.appointment.doctor.name]
-   • **Fecha:** [data.fecha_cita_local]
-   • **Hora:** [data.hora_cita_local]
-   • **Sede:** [data.appointment.location.name]
-   • **Cita #[data.appointment_id]**
-   
-   Si necesitas algo más en el futuro, no dudes en escribirme. ¡Que tengas un día hermoso! ✨"
-   
-   **IMPORTANTE:** SOLO muestra esta confirmación DESPUÉS de recibir el resultado exitoso de scheduleAppointment.
-   Si la herramienta falla, NO digas que la cita fue confirmada.
-
-⚠️⚠️⚠️ REGLA CRÍTICA DE AGENDAMIENTO ⚠️⚠️⚠️
-
-**NUNCA, BAJO NINGUNA CIRCUNSTANCIA, digas que una cita fue agendada/confirmada si NO has incluido [TOOL:scheduleAppointment:...] en tu respuesta actual.**
-
-**FLUJO OBLIGATORIO cuando el usuario confirma que quiere agendar:**
-
-1. **SI EL USUARIO DICE "SI", "PERFECTO", "ESTA BIEN", "CONFIRMO" después de mostrarte la fecha/hora:**
-   DEBES incluir en tu respuesta:
-   [TOOL:scheduleAppointment:{"patient_id":[ID REAL],"availability_id":[ID REAL],"scheduled_date":"[FECHA Y HORA REAL]","reason":"[MOTIVO]","appointment_type":"Presencial","priority_level":"Normal"}]
-
-2. **SI NO TIENES LOS IDs REALES (patient_id, availability_id):**
-   NO intentes agendar. En su lugar pregunta:
-   "Para confirmar tu cita necesito que me indiques tu número de cédula."
-   O vuelve a consultar la disponibilidad.
-
-3. **ERRORES QUE DEBES EVITAR:**
-   ❌ NUNCA uses "[id]" o "[ID]" como placeholder - SIEMPRE usa números reales
-   ❌ NUNCA digas "Tu cita ha sido confirmada" sin ejecutar scheduleAppointment
-   ❌ NUNCA inventes un appointment_id (como "Cita #[data.appointment_id]")
-   ❌ NUNCA asumas que la cita se agendó si no ejecutaste la herramienta
-
-4. **CUANDO RECIBES EL RESULTADO DE scheduleAppointment:**
-   - Si success: true → Ahora SÍ puedes confirmar la cita usando los datos del resultado
-   - Si success: false → Informa el problema y ofrece alternativas
-
-**6.5 Lista de Espera:**
-Si no hay cupos disponibles:
-"Por el momento no tenemos cupos disponibles para [Especialidad] a partir de mañana. ¿Quieres que te añada a nuestra lista de espera?"
-Si acepta:
-[TOOL:searchSpecialties:{"name":"[especialidad]"}]
-[TOOL:addToWaitingList:{"patient_id":[id],"specialty_id":[id],"priority_level":"Normal"}]
-"Te he agregado a la lista de espera. Te contactaremos cuando haya disponibilidad."
-
-## SELECCIÓN DE DOCTOR
-
-**Cuando el paciente elija un doctor específico:**
-1. USA el nombre exacto que proporcionó el usuario
-2. EJECUTA la herramienta para buscar disponibilidad de ESE doctor:
-   [TOOL:getAvailabilityByDoctor:{"doctor_name":"[nombre del doctor]","specialty_name":"[especialidad si la sabes]"}]
-
-3. MUESTRA sus fechas disponibles:
-   "Perfecto, con [doctor_name] tenemos disponibilidad los días:
-   📅 [lista de fechas formateadas]
-   ¿Para qué día prefieres tu cita?"
-
-**Patrones de selección de doctor:**
-- "con el doctor Oscar" → buscar Oscar
-- "prefiero con la doctora Claudia" → buscar Claudia  
-- "el primero" / "el 1" → usar el primer doctor de la lista mostrada
-- "el segundo" / "el 2" → usar el segundo doctor
-- "cualquiera" / "el que tenga más pronto" → elegir el doctor con fecha más cercana
-
-## MANEJO DE TIMEOUTS Y ERRORES
-
-**Si una herramienta tarda mucho o falla:**
-1. Informa al usuario: "Un momento, estoy verificando la información..."
-2. Si falla: "Disculpa, tuve un pequeño inconveniente. ¿Podrías repetirme [lo que necesitas]?"
-3. NO inventes datos si la herramienta falla
-4. Ofrece alternativa: "También puedes llamar al 6076911308 para atención directa."
-
-**Si el usuario no responde por más de 5 minutos (detectado por el sistema):**
-- El sistema enviará un recordatorio automático
-- No es necesario que tú lo hagas
-
-## REGLAS ADICIONALES
-
-**REGLA A: INFORMACIÓN GENERAL**
-Para preguntas que NO sean agendar cita (ubicación, servicios, etc.), usa tu conocimiento de la IPS.
-
-**REGLA B: GESTIÓN DE RUIDO/CONFUSIÓN**
-Si no entiendes el mensaje, pide amablemente que lo repitan: "Disculpa, no te entendí bien. ¿Podrías repetirlo, por favor?"
-
-**REGLA C: RESTRICCIÓN DE FECHAS**
-SOLO desde MAÑANA en adelante. SOLO Lunes a Viernes. NUNCA sábados ni domingos.
-
-**REGLA D: CITAS DOBLES (Para especialidades que lo permitan)**
-
-Algunas especialidades permiten "cita doble" (dos turnos consecutivos para procedimientos más largos).
-
-**CUÁNDO OFRECER CITA DOBLE:**
-- El paciente lo solicita explícitamente ("necesito cita doble", "quiero 2 cupos", "es un procedimiento largo")
-- La especialidad tiene allows_double_appointment = true (viene en searchSpecialties)
-
-**FLUJO PARA CITA DOBLE:**
-1. Cuando el paciente elija una hora, verifica si hay slot consecutivo:
-   [TOOL:checkConsecutiveSlots:{"availability_id":[id],"selected_time":"[hora en formato HH:MM]"}]
-
-2. Si consecutive_available = true:
-   Muestra: "Perfecto, puedo reservar 2 turnos consecutivos: [hora1] y [hora2]. ¿Confirmas la cita doble?"
-   
-3. Si el paciente confirma, usa:
-   [TOOL:scheduleDoubleAppointment:{"availability_id":[id],"patient_id":[id],"scheduled_time_1":"[hora1]","scheduled_time_2":"[hora2]","reason":"[motivo]"}]
-
-4. Si consecutive_available = false:
-   Informa: "Lo siento, no hay horarios consecutivos disponibles para esa hora. ¿Prefieres elegir otro horario o agendar una cita sencilla?"
-
-**REGLA E: LISTA DE ESPERA**
-
-Cuando NO hay cupos disponibles para una especialidad, ofrece lista de espera:
-
-**FLUJO:**
-1. Si getAvailableAppointments retorna vacío o sin cupos:
-   "Actualmente no tenemos disponibilidad para [Especialidad]. ¿Te gustaría que te agregue a la lista de espera? Te notificaremos cuando haya un cupo."
-
-2. Si el paciente acepta:
-   [TOOL:addToWaitingListDirect:{"patient_id":[id],"specialty_id":[id],"reason":"Consulta de [especialidad]"}]
-   
-3. Confirma: "Te he agregado a la lista de espera para [Especialidad]. Tu posición es #[queue_position]. Te contactaremos cuando haya disponibilidad."
-
-**CONSULTAR ESTADO DE LISTA DE ESPERA:**
-Si el paciente pregunta "¿cuál es mi posición?" o "¿estado de mi lista de espera?":
-[TOOL:getWaitingListPosition:{"patient_id":[id]}]
-Responde con la posición actual y especialidades en espera.
-
-## FORMATO DE RESPUESTA
-- Respuestas concisas e indistinguibles de un humano.
-- Emojis con moderación (1-2 por mensaje).
-- Horarios SIEMPRE en formato 12 horas (AM/PM).
-- NUNCA menciones cantidad de cupos disponibles.
-- SIEMPRE incluye [TOOL:...] cuando necesites ejecutar una acción.
-
-Fecha actual: {{CURRENT_DATETIME}} (ISO: {{CURRENT_ISO_DATE}})
+const VALERIA_SYSTEM_PROMPT = `# Valeria - Fundación Biosanar IPS
+
+Eres Valeria, asistente virtual de Fundación Biosanar IPS (San Gil, Santander).
+
+## 🎯 TU PERSONALIDAD
+- Amable, cálida y profesional
+- Respuestas CORTAS y DIRECTAS (máximo 3-4 líneas)
+- Usa emojis con moderación (1-2 por mensaje)
+- SIEMPRE usa el nombre del paciente cuando lo tengas
+- SOLO preséntate como "Valeria" en el PRIMER mensaje de la conversación
+
+## 📍 INFORMACIÓN BÁSICA
+- **Hoy:** {{CURRENT_DATETIME}}
+- **Sede:** Cra. 9 #10-29, San Gil
+- **Teléfono:** 6076911308
+
+## 📋 REGISTRO DE PACIENTES (CAMPOS COMPLETOS)
+
+### CAMPOS OBLIGATORIOS:
+1. **Cédula** (normalizada: sin puntos, espacios ni guiones)
+2. **Nombre completo**
+3. **Fecha de nacimiento** (formato DD/MM/AAAA, convertir a YYYY-MM-DD)
+4. **Teléfono** (10 dígitos)
+
+### CAMPOS OPCIONALES (IMPORTANTE):
+5. **EPS** - Pregunta: "¿Cuál es su EPS?" (MUY IMPORTANTE para validar especialidades)
+6. **Género** (M/F/Otro) - Pregunta: "¿Es usted masculino o femenino?"
+7. **Correo electrónico** - Pregunta: "¿Tiene correo electrónico?" (aceptar "no tengo")
+8. **Dirección** - Pregunta: "¿Cuál es su dirección?" (aceptar "no tengo")
+9. **Municipio** - Pregunta: "¿En qué municipio vive?" (aceptar "no tengo")
+
+### FLUJO DE REGISTRO:
+1. Solicita cédula → busca con searchPatient
+2. Si NO existe:
+   a. Solicita nombre completo
+   b. Solicita fecha de nacimiento (valida formato DD/MM/AAAA)
+   c. Solicita teléfono
+   d. Solicita EPS (RECOMIENDA proporcionarla: "Tener su EPS registrada nos ayuda a verificar qué especialidades están autorizadas")
+   e. Opcionalmente solicita: género, email, dirección, municipio
+   f. Confirma datos con el paciente
+   g. Llama a registerPatientSimple con TODOS los datos capturados
+3. Si SÍ existe: guarda patient_id y continúa
+
+## 🏥 VALIDACIÓN DE EPS Y ESPECIALIDADES
+
+### DESPUÉS DEL REGISTRO:
+1. **Si tiene EPS registrada:**
+   - Llama a getAuthorizedSpecialtiesForEPS(eps_id)
+   - Muestra SOLO las especialidades autorizadas
+   - Si no hay autorizadas: "Su EPS no tiene autorización para [especialidad]. ¿Desea ver otras opciones o registrarse en lista de espera?"
+
+2. **Si NO tiene EPS:**
+   - Muestra todas las especialidades disponibles
+   - Recomienda: "Si desea, puede actualizarnos su EPS para verificar autorizaciones"
+
+### EJEMPLO:
+Usuario: "Necesito medicina general"
+Valeria: [Si tiene EPS] "Veo que su EPS es Sanitas. Déjeme verificar..."
+         [Llama getAuthorizedSpecialtiesForEPS]
+         - Si autorizado: "Perfecto, medicina general está autorizada ✓"
+         - Si NO autorizado: "Su EPS no tiene autorización para medicina general. Puedo ofrecerle [otras opciones] o lista de espera"
+
+## 🩺 CÓDIGOS CUPS PARA ECOGRAFÍAS
+
+### SI LA ESPECIALIDAD REQUIERE CUPS (Ecografía):
+1. Solicita código CUPS: "Necesito el código CUPS que aparece en su orden médica (ejemplo: 881101)"
+2. Llama a getCUPSInfo(cups_code)
+3. **Si existe:** Confirma el nombre → "Perfecto, código 881101: Ecografía Abdominal Superior ✓"
+4. **Si NO existe:** Solicita nombre manualmente → "No encuentro ese código. ¿Cuál es el nombre del examen?"
+5. Pasa cups_code Y cups_manual_name al scheduleAppointment
+
+### EJEMPLO:
+Usuario: "Necesito ecografía"
+Valeria: "Con gusto. ¿Puede proporcionarme el código CUPS de su orden médica?"
+Usuario: "881101"
+Valeria: [Busca con getCUPSInfo] "Perfecto, corresponde a Ecografía Abdominal Superior ✓"
+
+## 👥 CITAS DOBLES (PROCEDIMIENTOS LARGOS)
+
+### PARA ECOGRAFÍAS U OTROS PROCEDIMIENTOS:
+1. Pregunta: "¿Necesita cita doble? (dos turnos consecutivos para exámenes largos)"
+2. **Si acepta:** pasa create_double_appointment=true al scheduleAppointment
+3. **Confirma ambas citas:** "Listo, le agendé dos citas consecutivas: 8:00 AM y 8:20 AM"
+
+### EJEMPLO:
+Valeria: "Para ecografías ofrecemos cita doble si el examen requiere más tiempo. ¿La necesita?"
+Usuario: "Sí"
+Valeria: [Agenda con create_double_appointment=true]
+         "Perfecto, le agendé dos turnos consecutivos: 8:00 AM y 8:20 AM con el/la Dr/a López"
+
+## ✅ CONFIRMACIÓN FINAL MEJORADA
+
+### AL CONFIRMAR CITA, MENCIONA:
+1. ✅ **Nombre del doctor** (ANTES de confirmar)
+2. ✅ **Fecha completa** (día de la semana + fecha)
+3. ✅ **Hora** (formato conversacional: 8:00 AM)
+4. ✅ **Sede/ubicación**
+5. ✅ **Especialidad**
+6. ✅ **Número de cita** (appointment_id)
+7. ✅ **Si es cita doble:** menciona ambos horarios
+8. ✅ **Si tiene CUPS:** menciona código y nombre del examen
+
+### EJEMPLO COMPLETO:
+"Perfecto [Nombre], su cita ha sido confirmada ✓
+
+📋 **Detalles:**
+- Doctor/a: Dr. Juan López
+- Fecha: Lunes 10 de febrero de 2025
+- Hora: 8:00 AM a 8:40 AM (cita doble)
+- Sede: Socorro
+- Especialidad: Ecografía
+- Examen: Ecografía Abdominal Superior (CUPS 881101)
+- Número de cita: #12345
+
+Le enviaremos recordatorios por WhatsApp 📱"
+
+## � FLUJO CORRECTO DE SELECCIÓN DE FECHA Y HORA
+
+### PASO 1: MOSTRAR FECHAS DISPONIBLES (SIN HORAS)
+Cuando consultes disponibilidad, muestra SOLO las fechas.
+Ejemplo: Tenemos disponible Martes 10, Miércoles 11, Jueves 12 de febrero. ¿Cuál te sirve?
+
+### PASO 2: USUARIO ELIGE UNA FECHA
+Cuando el usuario diga "martes 10", "para el martes", "el 10", "martes", etc:
+
+**ACCION OBLIGATORIA - LLAMAR getAvailableTimeSlots:**
+1. Identifica el availability_id de la fecha elegida
+2. DEBES llamar [TOOL:getAvailableTimeSlots:{"availability_id":XXX}]
+3. Muestra SOLO los horarios que retorne la herramienta
+
+**NUNCA INVENTES HORARIOS:**
+- NO digas "8:00 am" si la disponibilidad empieza a la 1:00 pm
+- NO digas "10:30 am" (las citas son cada 20 min: X:00, X:20, X:40)
+- SIEMPRE verifica el rango start_time a end_time
+
+Ejemplo CORRECTO:
+Usuario: para el martes
+Valeria: [TOOL:getAvailableTimeSlots:{"availability_id":857}]
+"Perfecto, para el martes 10 tenemos: 1:00 pm, 1:20 pm. Cual hora prefieres?"
+
+### PASO 3: USUARIO ELIGE HORA
+Cuando diga "2:00 pm", "a las 2", etc:
+1. Confirma fecha + hora + doctor
+2. Ejecuta scheduleAppointment inmediatamente
+
+## 🔄 CUANDO EL USUARIO RECHAZA UNA FECHA
+
+### SI DICE "NO", "NO PUEDO", "QUE OTRO DÍA TIENES", "OTRA FECHA":
+1. **ENTIENDE:** El usuario está RECHAZANDO la fecha ofrecida
+2. **NO ES:** Reagendar una cita existente
+3. **ACCIÓN:** Muestra automáticamente las SIGUIENTES opciones disponibles (solo fechas)
+
+### EJEMPLO CORRECTO:
+Valeria: "Tenemos el martes 10 de febrero ¿Te sirve?"
+Usuario: "no que otro día tienes"
+Valeria: [ENTIENDE: quiere ver otras opciones]
+         "Claro, también tenemos:
+         • Miércoles 11 de febrero
+         • Jueves 12 de febrero
+         ¿Cuál te viene mejor?"
+
+### FRASES QUE SIGNIFICAN SELECCIÓN DE FECHA:
+- "martes 10", "el martes", "martes"
+- "para el 10", "el 10 de febrero"
+- "miércoles", "jueves", "viernes"
+- "ese día", "esa fecha", "sí, el martes"
+
+**Cuando detectes estas frases:** NO preguntes de nuevo, muestra horarios directamente
+
+## ⛔⛔⛔ REGLAS CRÍTICAS - CERO INVENCIÓN ⛔⛔⛔
+
+### 🚫 PROHIBIDO ABSOLUTAMENTE:
+1. NUNCA inventes fechas, días, horarios, doctores o especialidades
+2. NUNCA calcules días de la semana (Lunes, Martes, etc.) - SOLO usa los datos
+3. NUNCA ofrezcas horarios inventados - SIEMPRE usa getAvailableTimeSlots
+4. NUNCA digas "8:00 am" o "10:30 am" sin llamar a getAvailableTimeSlots primero
+5. NUNCA uses horarios X:30 (solo existen X:00, X:20, X:40)
+4. NUNCA digas "Jueves 5 de febrero" si no está en los resultados
+5. NUNCA ofrezcas citas para HOY ({{CURRENT_DATETIME}})
+6. NUNCA uses "placeholders" en scheduleAppointment, usa valores REALES
+7. NUNCA confirmes una cita sin haber ejecutado scheduleAppointment
+8. NUNCA confundas "ver otras fechas" con "reagendar cita existente"
+
+### ✅ OBLIGATORIO:
+1. SIEMPRE usa EXACTAMENTE el valor de "appointment_date_formatted" de los resultados
+2. SIEMPRE usa EXACTAMENTE los valores de "start_time_formatted" o "available_times_formatted"
+3. SOLO muestra opciones que tengan slots_available > 0
+4. Si no tienes datos de herramientas, ejecuta getAvailableAppointments PRIMERO
+5. SIEMPRE ejecuta scheduleAppointment cuando tengas TODOS los datos necesarios
+6. SIEMPRE menciona el nombre del doctor en la confirmación final
+7. Si el usuario rechaza una fecha, muestra OTRAS opciones automáticamente
+
+### 📊 FORMATO DE DATOS QUE RECIBIRÁS:
+Los resultados de getAvailableAppointments incluyen:
+- appointment_date_formatted: "Martes 10 de febrero" (USAR TAL CUAL)
+- start_time_formatted: "8:00 AM" (USAR TAL CUAL)
+- slots_available: número de cupos (IGNORAR si es 0)
+- doctor_name: "Dra. Laura Julia Podeva" (USAR TAL CUAL)
+
+### ⚠️ VALIDACIÓN DE HORARIOS:
+Las citas son cada 20 minutos: 8:00, 8:20, 8:40, 9:00, 9:20, 9:40, 10:00, 10:20, 10:40...
+NUNCA ofrezcas: 8:30, 10:30, 11:30, etc. - ESTOS NO EXISTEN
+
+## 🤫 SILENT TOKEN
+Responde SOLO con [NO_REPLY] cuando:
+- Solo emojis sin texto
+- Spam o publicidad
+- Caracteres random
+- "ok" o "gracias" después de completar
+
+## 🔧 HERRAMIENTAS DISPONIBLES
+
+**Ver disponibilidad:**
+[TOOL:getAvailableAppointments:{"specialty_name":"Odontologia"}]
+
+**Buscar paciente:**
+[TOOL:searchPatient:{"document":"12345678"}]
+
+**Registrar paciente (COMPLETO):**
+[TOOL:registerPatientSimple:{"document":"12345678","name":"Juan Pérez","phone":"3001234567","eps_id":1,"birth_date":"1990-05-15","gender":"M","email":"juan@email.com","address":"Cra 10 #5-20","city":"San Gil"}]
+
+**Validar EPS:**
+[TOOL:getAuthorizedSpecialtiesForEPS:{"eps_id":1}]
+
+**Buscar CUPS:**
+[TOOL:getCUPSInfo:{"cups_code":"881101"}]
+
+**Agendar (CON CUPS Y CITA DOBLE):**
+[TOOL:scheduleAppointment:{"patient_id":1,"availability_id":2,"scheduled_date":"2026-02-10 13:00:00","reason":"Ecografía","cups_code":"881101","cups_manual_name":"Ecografía Renal","create_double_appointment":true}]
+
+## 💬 EJEMPLO CONVERSACIÓN COMPLETA
+
+**Usuario:** "Hola, necesito una cita"
+**Valeria:** "¡Hola! Soy Valeria de Biosanar 😊 ¿Cuál es su número de cédula?"
+
+**Usuario:** "12345678"
+**Valeria:** [searchPatient] "No lo encuentro registrado. ¿Cuál es su nombre completo?"
+
+**Usuario:** "Juan Pérez"
+**Valeria:** "Perfecto Juan. ¿Cuál es su fecha de nacimiento? (formato DD/MM/AAAA)"
+
+**Usuario:** "15/05/1990"
+**Valeria:** "Gracias. ¿Cuál es su teléfono?"
+
+**Usuario:** "3001234567"
+**Valeria:** "Último dato importante: ¿Cuál es su EPS? (Tener su EPS registrada nos ayuda a verificar autorizaciones)"
+
+**Usuario:** "Sanitas"
+**Valeria:** [registerPatientSimple con todos los datos]
+         [getAuthorizedSpecialtiesForEPS]
+         "Listo Juan, ya está registrado ✓ Para su EPS puedo agendar: Medicina General, Odontología, Psicología. ¿Cuál necesita?"
+
+**Usuario:** "Ecografía"
+**Valeria:** "Con gusto. Necesito el código CUPS de su orden médica (ejemplo: 881101)"
+
+**Usuario:** "881101"
+**Valeria:** [getCUPSInfo] "Perfecto, código 881101: Ecografía Abdominal Superior ✓
+         ¿Necesita cita doble? (dos turnos consecutivos)"
+
+**Usuario:** "Sí"
+**Valeria:** [getAvailableAppointments]
+         "Tenemos disponible con el Dr. López:
+         • Lunes 10 de febrero a las 8:00 AM
+         ¿Le agendo la cita doble?"
+
+**Usuario:** "Sí"
+**Valeria:** [scheduleAppointment con create_double_appointment=true y cups_code]
+         "Perfecto Juan, su cita ha sido confirmada ✓
+         
+         📋 Detalles:
+         - Doctor: Dr. Juan López
+         - Fecha: Lunes 10 de febrero de 2025
+         - Hora: 8:00 AM a 8:40 AM (cita doble)
+         - Sede: Socorro
+         - Examen: Ecografía Abdominal Superior (CUPS 881101)
+         - Número de cita: #12345
+         
+         Le enviaremos recordatorios 📱"
 `;
+
 
 // ============================================================================
 // INTERFACES
@@ -753,7 +644,7 @@ const MAX_CACHE_SIZE = 500; // Límite máximo de conversaciones en cache
 /**
  * Obtener o crear conversación con TTL (versión síncrona para cache en memoria)
  */
-function getConversation(phone: string): ConversationContext {
+function getOrCreateCachedConversation(phone: string): ConversationContext {
   const now = Date.now();
   const entry = conversationCache.get(phone);
 
@@ -837,7 +728,7 @@ async function getConversationWithMemory(phone: string): Promise<ConversationCon
     return newContext;
   } catch (error) {
     aiLogger.warn({ phone, error }, 'Failed to load memory from DB, using fresh context');
-    return getConversation(phone);
+    return getOrCreateCachedConversation(phone);
   }
 }
 
@@ -926,6 +817,7 @@ interface ProcessMessageResult {
   response?: string;
   toolCalls?: Array<{ name: string; result: string }>;
   error?: string;
+  intent?: string; // 🆕 Intent detectado para métricas
 }
 
 export async function processMessage(
@@ -933,7 +825,13 @@ export async function processMessage(
   phone: string,
   messageHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
 ): Promise<ProcessMessageResult> {
-  return processWhatsAppMessage(phone, message, messageHistory);
+  const result = await processWhatsAppMessage(phone, message, messageHistory);
+
+  if (result.response) {
+    result.response = limitEmojisPerLine(result.response, 1);
+  }
+
+  return result;
 }
 
 export async function processWhatsAppMessage(
@@ -949,6 +847,71 @@ export async function processWhatsAppMessage(
     // Limpiar el teléfono del formato WhatsApp
     const cleanPhone = phone.replace(/@.*/, '');
 
+    // Helpers: convertir fecha/hora UTC-0 a UTC-5 (Colombia) y formatear
+    const convertToColombiaTime = (dateStr: string, timeStr: string): { date: string; time: string } => {
+      if (!dateStr || !timeStr) return { date: dateStr, time: timeStr };
+
+      const [year, month, day] = dateStr.split('-').map(Number);
+      const [hours, minutes] = timeStr.split(':').map(Number);
+
+      const utcDate = new Date(Date.UTC(year, month - 1, day, hours, minutes));
+      utcDate.setUTCHours(utcDate.getUTCHours() - 5);
+
+      const colYear = utcDate.getUTCFullYear();
+      const colMonth = String(utcDate.getUTCMonth() + 1).padStart(2, '0');
+      const colDay = String(utcDate.getUTCDate()).padStart(2, '0');
+      const colHours = String(utcDate.getUTCHours()).padStart(2, '0');
+      const colMinutes = String(utcDate.getUTCMinutes()).padStart(2, '0');
+
+      return {
+        date: `${colYear}-${colMonth}-${colDay}`,
+        time: `${colHours}:${colMinutes}`
+      };
+    };
+
+    const formatDate = (dateStr: string): string => {
+      if (!dateStr) return 'Fecha pendiente';
+      const parts = dateStr.split('-');
+      if (parts.length !== 3) return dateStr;
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    };
+
+    const formatTime = (timeStr: string): string => {
+      if (!timeStr) return 'Hora pendiente';
+      const parts = timeStr.split(':');
+      if (parts.length < 2) return timeStr;
+      let hours = parseInt(parts[0], 10);
+      const minutes = parts[1];
+      const ampm = hours >= 12 ? 'p.m.' : 'a.m.';
+      hours = hours % 12;
+      hours = hours ? hours : 12;
+      return `${hours}:${minutes} ${ampm}`;
+    };
+
+    // ============================================================================
+    // 🆕 PASO 0.1: CARGAR/CREAR CONVERSACIÓN PERSISTENTE
+    // ============================================================================
+    
+    // Intentar identificar automáticamente al paciente por teléfono
+    const persistedConversation = await autoIdentify(cleanPhone);
+    
+    // Si el paciente fue identificado por teléfono, sincronizar con el estado
+    if (persistedConversation.isIdentified && persistedConversation.patient.patientId) {
+      const patient = persistedConversation.patient;
+      console.log(`[WhatsAppAI] 🔑 Paciente auto-identificado por teléfono: ${patient.fullName}`);
+      
+      // Sincronizar con el StateManager
+      const currentState = getStateContext(cleanPhone);
+      if (!currentState.patientId) {
+        updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, {
+          patientId: patient.patientId,
+          patientName: patient.fullName,
+          patientDocument: patient.documentNumber,
+          patientPhone: patient.phone
+        });
+      }
+    }
+
     // ============================================================================
     // PASO 0: SISTEMA DE PERSONALIDAD Y GESTIÓN DE CONVERSACIÓN
     // ============================================================================
@@ -960,9 +923,235 @@ export async function processWhatsAppMessage(
     // Obtener estado de la conversación para usarlo en todo el flujo
     let stateContext = getStateContext(cleanPhone);
     
-    // Detectar intención del usuario
-    const intent = personalityManager.detectIntent(message);
-    console.log(`[WhatsAppAI] 🎯 Intención detectada: ${intent} | Estado conversación: ${conversation.state}`);
+    // 🆕 ANÁLISIS DE INTENCIÓN MEJORADO CON EXTRACCIÓN DE ENTIDADES
+    const intentAnalysis = EnhancedUnderstanding.analyzeIntent(message);
+    const intent = intentAnalysis.primaryIntent;
+    const extractedEntities = intentAnalysis.entities;
+    
+    aiLogger.info({
+      phone: cleanPhone,
+      intent,
+      confidence: intentAnalysis.confidence,
+      entities: extractedEntities,
+      sentiment: intentAnalysis.sentiment,
+      urgency: intentAnalysis.urgency,
+      state: conversation.state
+    }, '🎯 Análisis de intención mejorado');
+    
+    // 🆕 CONSTRUIR CONTEXTO ENRIQUECIDO CON MEMORIA SEMÁNTICA
+    let enrichedContextPrompt = '';
+    try {
+      const enrichedContext = await EnhancedUnderstanding.buildEnrichedContext(cleanPhone, message);
+      if (enrichedContext) {
+        enrichedContextPrompt = EnhancedUnderstanding.generateContextPrompt(enrichedContext);
+        
+        // Si detectamos entidades importantes, usarlas para mejorar el flujo
+        if (enrichedContext.intentAnalysis.entities.document && !stateContext.patientDocument) {
+          aiLogger.info({ document: enrichedContext.intentAnalysis.entities.document }, '📄 Documento detectado en mensaje');
+        }
+        if (enrichedContext.intentAnalysis.entities.specialty) {
+          aiLogger.info({ specialty: enrichedContext.intentAnalysis.entities.specialty }, '🏥 Especialidad detectada en mensaje');
+          
+          // ⚠️ GUARDAR ESPECIALIDAD EN ESTADO PARA NO VOLVER A PREGUNTAR
+          const detectedSpecialty = enrichedContext.intentAnalysis.entities.specialty;
+          if (!stateContext.specialtyName) {
+            updateState(cleanPhone, {
+              specialtyName: detectedSpecialty
+            });
+            // 🆕 PERSISTIR ESPECIALIDAD EN CONVERSACIÓN JSON
+            await updateContext(cleanPhone, { 
+              state: 'specialty_selection', 
+              selectedSpecialty: detectedSpecialty 
+            });
+            await markQuestion(cleanPhone, 'especialidad');
+            await saveAnswer(cleanPhone, 'especialidad', detectedSpecialty);
+            aiLogger.info({ specialty: detectedSpecialty }, '✅ Especialidad guardada en estado y persistencia');
+            
+            // Actualizar stateContext para que esté disponible
+            stateContext = getStateContext(cleanPhone);
+          }
+        }
+      }
+    } catch (error) {
+      aiLogger.warn({ error }, 'Error construyendo contexto enriquecido');
+    }
+    
+    // ============================================================================
+    // PASO 0.41: CONSULTA AUTOMÁTICA DE DISPONIBILIDAD SI YA TENEMOS ESPECIALIDAD
+    // ============================================================================
+    // Si ya tenemos paciente Y especialidad, consultar disponibilidad automáticamente
+    
+    if (stateContext.patientId && stateContext.specialtyName && !stateContext.availableAppointments) {
+      console.log(`[WhatsAppAI] 🔄 PASO 0.41: Tenemos paciente (${stateContext.patientId}) y especialidad (${stateContext.specialtyName}), consultando disponibilidad...`);
+      
+      const availResult = await DirectDBTools.getAvailableAppointments({
+        specialty_name: stateContext.specialtyName
+      });
+      
+      if (availResult.success && availResult.data?.appointments?.length > 0) {
+        const appts = availResult.data.appointments;
+        const opciones = availResult.data.opciones_disponibles || [];
+        
+        // Extraer info del doctor (auto-seleccionar si solo hay uno)
+        const uniqueDoctors = [...new Set(appts.map((a: any) => a.doctor_name))];
+        const firstAppt = appts[0];
+        
+        // Guardar en estado con AWAITING_DATE (no AWAITING_DATE_SELECTION que no existe)
+        const stateUpdate: Record<string, any> = {
+          availableAppointments: appts,
+          specialtyId: firstAppt?.specialty_id
+        };
+        
+        // Auto-seleccionar doctor si solo hay uno disponible
+        if (uniqueDoctors.length === 1 && firstAppt) {
+          stateUpdate.selectedDoctor = firstAppt.doctor_name;
+          stateUpdate.selectedDoctorId = firstAppt.doctor_id;
+        }
+        
+        updateState(cleanPhone, ConversationState.AWAITING_DATE, stateUpdate);
+        
+        // Actualizar stateContext
+        stateContext = getStateContext(cleanPhone);
+        
+        const firstName = stateContext.patientName?.split(' ')[0] || '';
+        
+        // Mostrar SOLO FECHAS, luego cuando elija fecha mostrar horarios
+        const uniqueDates = [...new Set(appts.map((a: any) => a.appointment_date_formatted))].slice(0, 5);
+        
+        let response = `¡Perfecto${firstName ? ', ' + firstName : ''}! 📅\n\nPara ${stateContext.specialtyName} tenemos disponibilidad en:\n\n`;
+        uniqueDates.forEach((fecha: string, idx: number) => {
+          response += `${idx + 1}. ${fecha}\n`;
+        });
+        
+        response += `\n¿Cuál fecha te sirve? 😊`;
+        
+        executedTools.push({ name: 'getAvailableAppointments', result: `${appts.length} citas, ${uniqueDates.length} fechas` });
+        
+        return {
+          success: true,
+          response,
+          toolCalls: executedTools
+        };
+      } else {
+        // No hay disponibilidad
+        const firstName = stateContext.patientName?.split(' ')[0] || '';
+        return {
+          success: true,
+          response: `${firstName ? firstName + ', no' : 'No'} hay citas disponibles para ${stateContext.specialtyName} en este momento. 😔\n\n¿Te agrego a la lista de espera?`,
+          toolCalls: []
+        };
+      }
+    }
+    
+    console.log(`[WhatsAppAI] 🎯 Intención detectada: ${intent} (${Math.round(intentAnalysis.confidence * 100)}%) | Estado conversación: ${conversation.state}`);
+    
+    // ============================================================================
+    // PASO 0.4: BÚSQUEDA AUTOMÁTICA DE PACIENTE SI SE DETECTA CÉDULA
+    // ============================================================================
+    
+    // Detectar si el mensaje es principalmente un número de cédula (6-12 dígitos)
+    const cleanMessage = message.replace(/[.\-\s,]/g, ''); // Limpiar puntos, guiones, espacios, comas
+    const cedMatch = cleanMessage.match(/^(\d{6,12})$/);
+    
+    if (cedMatch && !stateContext.patientId) {
+      const document = cedMatch[1];
+      console.log(`[WhatsAppAI] 📄 Cédula detectada: ${document} - Ejecutando searchPatient automáticamente`);
+      
+      // Ejecutar searchPatient directamente
+      const searchResult = await DirectDBTools.searchPatient({ document });
+      
+      if (searchResult.success && searchResult.data?.found) {
+        const patient = searchResult.data.patient || searchResult.data.patients?.[0];
+        const patientName = patient?.full_name || patient?.name;
+        const patientPhone = patient?.phone || patient?.mobile || '';
+        const patientId = patient?.id;
+        const patientEps = patient?.eps_name || patient?.eps || '';
+        
+        // Guardar en estado
+        updateState(cleanPhone, ConversationState.AWAITING_PHONE_CONFIRMATION, {
+          patientId,
+          patientName,
+          patientDocument: document,
+          patientPhone
+        });
+        
+        // 🆕 PERSISTIR EN CONVERSACIÓN JSON
+        await updatePatient(cleanPhone, {
+          patientId,
+          fullName: patientName,
+          firstName: patientName?.split(' ')[0],
+          documentNumber: document,
+          phone: patientPhone,
+          eps: patientEps
+        });
+        await markQuestion(cleanPhone, 'cedula');
+        await markQuestion(cleanPhone, 'nombre');
+        await updateContext(cleanPhone, { state: 'identification' });
+        
+        // Persistir en sesión de memoria
+        if (patientId) {
+          updateSessionPatient(cleanPhone, patientId, patientName, document).catch(() => {});
+        }
+        
+        console.log(`[WhatsAppAI] ✓ Paciente encontrado y persistido: ${patientName} (ID: ${patientId})`);
+        
+        executedTools.push({ name: 'searchPatient', result: `Encontrado: ${patientName}` });
+        
+        // Preparar respuesta según si ya tenemos especialidad
+        if (stateContext.specialtyName) {
+          // Ya tenemos especialidad, buscar disponibilidad
+          console.log(`[WhatsAppAI] 🎯 Ya tenemos especialidad ${stateContext.specialtyName}, buscando disponibilidad...`);
+          
+          const availResult = await DirectDBTools.getAvailableAppointments({
+            specialty_name: stateContext.specialtyName
+          });
+          
+          if (availResult.success && availResult.data?.appointments?.length > 0) {
+            const appts = availResult.data.appointments;
+            updateState(cleanPhone, ConversationState.AWAITING_DOCTOR_SELECTION, {
+              availableAppointments: appts,
+              specialtyId: appts[0]?.specialty_id
+            });
+            
+            let response = `¡Hola ${patientName}! 😊\n\nPara ${stateContext.specialtyName} tenemos:\n\n`;
+            
+            appts.slice(0, 5).forEach((apt: any, idx: number) => {
+              const fecha = apt.appointment_date_formatted || apt.appointment_date;
+              const hora = apt.start_time_formatted || apt.start_time;
+              response += `${idx + 1}. ${apt.doctor_name} - ${fecha} a las ${hora}\n`;
+            });
+            
+            response += `\n¿Cuál te agendo?`;
+            
+            return { success: true, response, toolCalls: executedTools, intent: 'schedule' };
+          }
+        }
+        
+        // Sin especialidad, saludar por nombre y preguntar qué necesita
+        const firstName = patientName.split(' ')[0]; // Solo primer nombre para más cercanía
+        let response = `¡Hola ${firstName}! 😊 Ya te encontré en el sistema.\n\n¿Para qué especialidad necesitas la cita?`;
+        
+        return { success: true, response, toolCalls: executedTools, intent: 'identification' };
+        
+      } else {
+        // Paciente no encontrado
+        updateState(cleanPhone, ConversationState.AWAITING_PATIENT_DATA, {
+          patientDocument: document,
+          registrationPending: true
+        });
+        
+        console.log(`[WhatsAppAI] ⚠ Paciente con cédula ${document} no encontrado`);
+        
+        executedTools.push({ name: 'searchPatient', result: `No encontrado: ${document}` });
+        
+        return {
+          success: true,
+          response: `No te encuentro con cédula ${document}. 😊\n\nPara crearte un perfil, ¿cuál es tu nombre completo?`,
+          toolCalls: executedTools,
+          intent: 'registration'
+        };
+      }
+    }
     
     // ============================================================================
     // PASO 0.5: MANEJAR INTENCIONES ESPECIALES PRIMERO
@@ -970,56 +1159,202 @@ export async function processWhatsAppMessage(
     
     // Intención de consultar citas propias
     if (intent === 'check_appointment' && stateContext.patientId) {
-      console.log(`[WhatsAppAI] 📋 Consultando citas para paciente ${stateContext.patientId}`);
+      console.log(`[WhatsAppAI] 📋 Consultando citas y lista de espera para paciente ${stateContext.patientId}`);
+      
+      // Consultar citas confirmadas
       const appointmentsResult = await DirectDBTools.getPatientAppointments({ 
         patient_id: stateContext.patientId,
         status: 'Confirmada'
       });
       
+      // Consultar lista de espera
+      const waitingListResult = await DirectDBTools.getPatientWaitingList({ 
+        patient_id: stateContext.patientId
+      });
+      
+      let response = '';
+      
+      // Mostrar citas confirmadas
       if (appointmentsResult.success && appointmentsResult.data?.appointments?.length > 0) {
         const appts = appointmentsResult.data.appointments;
-        let response = `¡Claro! 📋 Tienes ${appts.length} cita(s) programada(s):\n\n`;
+        response += `📋 **Tienes ${appts.length} cita(s) programada(s):**\n\n`;
         appts.forEach((apt: any, idx: number) => {
-          response += `${idx + 1}. 📅 ${apt.scheduled_date || 'Fecha pendiente'}\n`;
-          response += `   🕐 ${apt.scheduled_time || 'Hora pendiente'}\n`;
+          // Convertir de UTC-0 a UTC-5 (Colombia)
+          const colombiaDateTime = convertToColombiaTime(apt.scheduled_date, apt.scheduled_time);
+          response += `${idx + 1}. 📅 ${formatDate(colombiaDateTime.date)}\n`;
+          response += `   🕐 ${formatTime(colombiaDateTime.time)}\n`;
           response += `   👨‍⚕️ ${apt.doctor_name || 'Por asignar'}\n`;
           response += `   🏥 ${apt.specialty_name}\n`;
-          response += `   📍 ${apt.location_name}\n\n`;
+          response += `   📍 ${apt.location_name}\n`;
+          if (apt.reason) response += `   📝 ${apt.reason}\n`;
+          response += `\n`;
         });
-        response += `¿Necesitas algo más? 😊`;
-        
-        return {
-          success: true,
-          response,
-          toolCalls: []
-        };
       } else {
-        return {
-          success: true,
-          response: "No tienes citas programadas actualmente 📅\n\n¿Te gustaría agendar una? Solo dime qué especialidad necesitas 😊",
-          toolCalls: []
-        };
+        response += `📅 No tienes citas programadas actualmente.\n\n`;
       }
-    }
-    
-    // Verificar si hay una respuesta rápida contextual
-    const quickResponse = personalityManager.generateContextualResponse(intent, cleanPhone);
-    if (quickResponse && (intent === 'greeting' || intent === 'thanks' || intent === 'goodbye' || intent === 'help' || intent === 'complaint' || intent === 'price_query' || intent === 'info')) {
-      // Agregar al historial de personalidad
-      personalityManager.addMessage(cleanPhone, 'user', message);
-      personalityManager.addMessage(cleanPhone, 'assistant', quickResponse);
       
-      // Actualizar contador de mensajes
-      await conversationManager.incrementMessageCount(cleanPhone, message);
+      // Mostrar lista de espera
+      if (waitingListResult.success && waitingListResult.data?.waiting_list?.length > 0) {
+        const waitingList = waitingListResult.data.waiting_list;
+        response += `⏳ **Lista de espera (${waitingList.length}):**\n\n`;
+        waitingList.forEach((item: any, idx: number) => {
+          response += `${idx + 1}. 🏥 ${item.specialty_name}\n`;
+          if (item.priority_level && item.priority_level !== 'Normal') {
+            response += `   ⚡ Prioridad: ${item.priority_level}\n`;
+          }
+          response += `\n`;
+        });
+      }
       
-      // Si es saludo, transicionar a estado greeting
-      if (intent === 'greeting') {
-        await conversationManager.transitionState(cleanPhone, 'greeting');
+      // Si no tiene nada
+      if ((!appointmentsResult.success || !appointmentsResult.data?.appointments?.length) &&
+          (!waitingListResult.success || !waitingListResult.data?.waiting_list?.length)) {
+        response = "No tienes citas programadas ni solicitudes en lista de espera actualmente 📅\n\n¿Te gustaría agendar una cita? Solo dime qué especialidad necesitas 😊";
+      } else {
+        response += `¿Necesitas algo más? 😊`;
       }
       
       return {
         success: true,
-        response: quickResponse,
+        response,
+        toolCalls: []
+      };
+    }
+
+    // Intención de cancelar cita
+    if (intent === 'cancel' && stateContext.patientId) {
+      console.log(`[WhatsAppAI] ❌ Iniciando cancelación para paciente ${stateContext.patientId}`);
+
+      const appointmentsResult = await DirectDBTools.getPatientAppointments({
+        patient_id: stateContext.patientId,
+        status: 'Confirmada'
+      });
+
+      if (!appointmentsResult.success || !appointmentsResult.data?.appointments?.length) {
+        return {
+          success: true,
+          response: 'No tienes citas confirmadas para cancelar en este momento. 📅\n\n¿Quieres agendar una nueva cita?',
+          toolCalls: []
+        };
+      }
+
+      const appts = appointmentsResult.data.appointments;
+      updateState(cleanPhone, ConversationState.CANCELING_APPOINTMENT, {
+        availableAppointments: appts
+      });
+
+      let response = '📋 Estas son tus citas confirmadas:\n\n';
+      appts.forEach((apt: any, idx: number) => {
+        const colombiaDateTime = convertToColombiaTime(apt.scheduled_date, apt.scheduled_time);
+        response += `${idx + 1}. 📅 ${formatDate(colombiaDateTime.date)}\n`;
+        response += `   🕐 ${formatTime(colombiaDateTime.time)}\n`;
+        response += `   👨‍⚕️ ${apt.doctor_name || 'Por asignar'}\n`;
+        response += `   🏥 ${apt.specialty_name}\n`;
+        response += `   📍 ${apt.location_name}\n\n`;
+      });
+
+      response += '¿Cuál cita deseas cancelar? Responde con el número.';
+
+      return {
+        success: true,
+        response,
+        toolCalls: []
+      };
+    }
+
+    // Intención de reagendar cita
+    if (intent === 'reschedule' && stateContext.patientId) {
+      console.log(`[WhatsAppAI] 🔄 Iniciando reagendamiento para paciente ${stateContext.patientId}`);
+
+      const appointmentsResult = await DirectDBTools.getPatientAppointments({
+        patient_id: stateContext.patientId,
+        status: 'Confirmada'
+      });
+
+      if (!appointmentsResult.success || !appointmentsResult.data?.appointments?.length) {
+        return {
+          success: true,
+          response: 'No tienes citas confirmadas para reagendar en este momento. 📅\n\n¿Quieres agendar una nueva cita?',
+          toolCalls: []
+        };
+      }
+
+      const appts = appointmentsResult.data.appointments;
+      updateState(cleanPhone, ConversationState.RESCHEDULING, {
+        availableAppointments: appts
+      });
+
+      let response = '📋 Estas son tus citas confirmadas:\n\n';
+      appts.forEach((apt: any, idx: number) => {
+        const colombiaDateTime = convertToColombiaTime(apt.scheduled_date, apt.scheduled_time);
+        response += `${idx + 1}. 📅 ${formatDate(colombiaDateTime.date)}\n`;
+        response += `   🕐 ${formatTime(colombiaDateTime.time)}\n`;
+        response += `   👨‍⚕️ ${apt.doctor_name || 'Por asignar'}\n`;
+        response += `   🏥 ${apt.specialty_name}\n`;
+        response += `   📍 ${apt.location_name}\n\n`;
+      });
+
+      response += '¿Cuál cita deseas reagendar? Responde con el número.';
+
+      return {
+        success: true,
+        response,
+        toolCalls: []
+      };
+    }
+    
+    // ============================================================================
+    // PASO 0.45: SALUDO INICIAL - SIEMPRE PEDIR CÉDULA PRIMERO
+    // ============================================================================
+    // Si es un saludo y no tenemos paciente identificado, pedir cédula de inmediato
+    
+    if (intent === 'greeting' && !stateContext.patientId) {
+      console.log('[WhatsAppAI] 👋 Saludo detectado sin paciente - Pidiendo cédula');
+      
+      // Actualizar estado a esperando documento
+      updateState(cleanPhone, ConversationState.AWAITING_DOCUMENT);
+      await conversationManager.transitionState(cleanPhone, 'greeting');
+      
+      return {
+        success: true,
+        response: "¡Hola! 😊 Soy Valeria de Fundación Biosanar IPS.\n\nPara atenderte mejor, ¿me compartes tu número de cédula?",
+        toolCalls: []
+      };
+    }
+    
+    // Si ya tenemos paciente, usar respuestas personalizadas con su nombre
+    if (intent === 'greeting' && stateContext.patientId && stateContext.patientName) {
+      console.log(`[WhatsAppAI] 👋 Saludo con paciente identificado: ${stateContext.patientName}`);
+      
+      return {
+        success: true,
+        response: `¡Hola ${stateContext.patientName}! 😊 Qué gusto saludarte.\n\n¿En qué puedo ayudarte hoy?`,
+        toolCalls: []
+      };
+    }
+    
+    // Para otras intenciones (thanks, goodbye, help), usar respuestas con nombre si lo tenemos
+    const quickResponse = personalityManager.generateContextualResponse(intent, cleanPhone);
+    if (quickResponse && (intent === 'thanks' || intent === 'goodbye' || intent === 'help' || intent === 'complaint' || intent === 'price_query' || intent === 'info')) {
+      // Personalizar con nombre si lo tenemos
+      let personalizedResponse = quickResponse;
+      if (stateContext.patientName) {
+        // Agregar nombre al inicio si no lo tiene
+        if (!quickResponse.includes(stateContext.patientName)) {
+          const firstName = stateContext.patientName.split(' ')[0];
+          if (intent === 'goodbye') {
+            personalizedResponse = quickResponse.replace('!', `, ${firstName}!`);
+          }
+        }
+      }
+      
+      personalityManager.addMessage(cleanPhone, 'user', message);
+      personalityManager.addMessage(cleanPhone, 'assistant', personalizedResponse);
+      await conversationManager.incrementMessageCount(cleanPhone, message);
+      
+      return {
+        success: true,
+        response: personalizedResponse,
         toolCalls: []
       };
     }
@@ -1029,6 +1364,424 @@ export async function processWhatsAppMessage(
     
     // Incrementar contador de mensajes
     await conversationManager.incrementMessageCount(cleanPhone, message);
+
+    // ============================================================================
+    // PASO 0.5: CONSULTA DIRECTA DE ESPECIALISTAS/DOCTORES (SIN REQUERIR CÉDULA)
+    // ============================================================================
+    // Cuando el usuario pregunta por especialistas, doctores o disponibilidad general,
+    // buscamos directamente en la BD sin pedir cédula primero
+    
+    const askingForSpecialists = /especiali|doctore?s?|médico|quiénes|quienes|cuáles|cuales|profesional|atiende|disponible/i.test(message);
+    const hasSpecialtyContext = stateContext.specialtyName || /odontolog|medicina|psicolog|nutrici|general/i.test(message);
+    
+    if (askingForSpecialists && hasSpecialtyContext) {
+      // Detectar especialidad del mensaje o usar la del contexto
+      let specialtyToSearch = stateContext.specialtyName;
+      
+      if (!specialtyToSearch) {
+        // Detectar especialidad del mensaje
+        if (/odontolog/i.test(message)) specialtyToSearch = 'Odontologia';
+        else if (/psicolog/i.test(message)) specialtyToSearch = 'Psicologia';
+        else if (/nutrici/i.test(message)) specialtyToSearch = 'Nutricion';
+        else if (/medicina.*general|general/i.test(message)) specialtyToSearch = 'Medicina General';
+      }
+      
+      if (specialtyToSearch) {
+        console.log(`[WhatsAppAI] 🔍 CONSULTA DIRECTA DE ESPECIALISTAS: ${specialtyToSearch}`);
+        
+        const availResult = await DirectDBTools.getAvailableAppointments({
+          specialty_name: specialtyToSearch
+        });
+        
+        if (availResult.success && availResult.data?.appointments?.length > 0) {
+          const appts = availResult.data.appointments;
+          
+          // Extraer doctores únicos
+          const doctorsMap = new Map<string, { name: string, dates: string[], location: string }>();
+          appts.forEach((apt: any) => {
+            const doctorName = apt.doctor_name;
+            if (!doctorsMap.has(doctorName)) {
+              doctorsMap.set(doctorName, {
+                name: doctorName,
+                dates: [],
+                location: apt.location_name || 'Sede San Gil'
+              });
+            }
+            const fecha = apt.appointment_date_formatted || apt.appointment_date;
+            if (!doctorsMap.get(doctorName)!.dates.includes(fecha)) {
+              doctorsMap.get(doctorName)!.dates.push(fecha);
+            }
+          });
+          
+          // Guardar especialidad en estado
+          updateState(cleanPhone, ConversationState.AWAITING_DOCTOR_SELECTION, {
+            specialtyName: specialtyToSearch,
+            availableAppointments: appts,
+            availableDoctors: Array.from(doctorsMap.keys())
+          });
+          
+          // Construir respuesta con doctores disponibles
+          let response = `Para ${specialtyToSearch} tenemos:\n\n`;
+          
+          doctorsMap.forEach((info, doctorName) => {
+            response += `👨‍⚕️ **${doctorName}**\n`;
+            response += `   📍 ${info.location}\n`;
+            response += `   📅 ${info.dates.slice(0, 3).join(', ')}${info.dates.length > 3 ? '...' : ''}\n\n`;
+          });
+          
+          response += `¿Con cuál doctor prefieres tu cita? 😊`;
+          
+          // Si no tenemos paciente identificado, agregar nota
+          if (!stateContext.patientId) {
+            response += `\n\n_Cuando elijas, te pediré tu cédula para agendar._`;
+          }
+          
+          return {
+            success: true,
+            response,
+            toolCalls: [{ name: 'getAvailableAppointments', result: `${appts.length} citas, ${doctorsMap.size} doctores` }]
+          };
+        } else {
+          return {
+            success: true,
+            response: `No hay especialistas disponibles para ${specialtyToSearch} en este momento. 😔\n\n¿Te agrego a la lista de espera?`,
+            toolCalls: []
+          };
+        }
+      }
+    }
+
+    // ============================================================================
+    // PASO 0.6: EJECUCIÓN AUTOMÁTICA DE getAvailableAppointments
+    // ============================================================================
+    // Si el usuario pide disponibilidad y ya tenemos la especialidad,
+    // ejecutamos la herramienta DIRECTAMENTE sin pasar por el modelo AI
+    // Esto EVITA que el modelo invente datos
+    
+    const availabilityKeywords = /disponib|opciones|citas|agenda|horarios|cuando|qué hay|que hay|muestr/i;
+    const wantsAvailability = availabilityKeywords.test(message) || intent === 'availability' || intent === 'schedule';
+    
+    if (wantsAvailability && stateContext.specialtyName && stateContext.patientId) {
+      console.log(`[WhatsAppAI] 🔍 EJECUCIÓN AUTOMÁTICA: Buscando disponibilidad para ${stateContext.specialtyName}`);
+      
+      const availResult = await DirectDBTools.getAvailableAppointments({
+        specialty_name: stateContext.specialtyName
+      });
+      
+      if (availResult.success && availResult.data?.appointments?.length > 0) {
+        const appts = availResult.data.appointments;
+        const uniqueDoctors = availResult.data.unique_doctors || [];
+        
+        // Guardar en estado
+        updateState(cleanPhone, ConversationState.AWAITING_DOCTOR_SELECTION, {
+          availableAppointments: appts,
+          availableDoctors: uniqueDoctors,
+          specialtyId: appts[0]?.specialty_id
+        });
+        
+        // Obtener nombre del paciente para personalizar
+        const firstName = stateContext.patientName?.split(' ')[0] || '';
+        const greeting = firstName ? `${firstName}, para` : 'Para';
+        
+        // Construir respuesta PERSONALIZADA
+        let response = `${greeting} ${stateContext.specialtyName} tenemos:\n\n`;
+        
+        // Mostrar máximo 5 opciones de forma compacta
+        const shownAppts = appts.slice(0, 5);
+        shownAppts.forEach((apt: any, idx: number) => {
+          const fecha = apt.appointment_date_formatted || apt.date || apt.appointment_date;
+          const hora = apt.start_time_formatted || apt.start_time;
+          const doctor = apt.doctor_name;
+          
+          response += `${idx + 1}. ${doctor} - ${fecha} a las ${hora}\n`;
+        });
+        
+        response += `\n¿Cuál te agendo${firstName ? `, ${firstName}` : ''}? 😊`;
+        
+        executedTools.push({ name: 'getAvailableAppointments', result: `${appts.length} citas encontradas` });
+        
+        return {
+          success: true,
+          response,
+          toolCalls: executedTools
+        };
+      } else {
+        // No hay disponibilidad - personalizar con nombre
+        const firstName = stateContext.patientName?.split(' ')[0] || '';
+        return {
+          success: true,
+          response: `${firstName ? firstName + ', no' : 'No'} hay citas disponibles para ${stateContext.specialtyName} en este momento. 😔\n\n¿Te agrego a la lista de espera?`,
+          toolCalls: []
+        };
+      }
+    }
+
+    // ============================================================================
+    // PASO 0.7: DETECCIÓN AUTOMÁTICA DE FECHA Y BÚSQUEDA DE SLOTS REALES
+    // ============================================================================
+    // Cuando el usuario menciona una fecha (día de la semana o fecha numérica),
+    // buscamos automáticamente los slots reales para evitar que la IA invente horarios.
+    
+    const userWantsDate = /(?:el\s+)?(?:día\s+)?(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)(?:\s+(\d{1,2}))?/i.test(message) ||
+                          /(?:el\s+)?(\d{1,2})\s*(?:de\s+)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i.test(message);
+    
+    console.log(`[WhatsAppAI] 📅 PASO 0.7 CHECK: message="${message}", userWantsDate=${userWantsDate}, specialtyName=${stateContext.specialtyName}, patientId=${stateContext.patientId}`);
+    
+    // Si el usuario menciona una fecha Y tenemos especialidad (patientId ya no es requerido)
+    if (userWantsDate && stateContext.specialtyName) {
+      console.log(`[WhatsAppAI] 📅 DETECCIÓN DE FECHA: Usuario mencionó una fecha, buscando slots reales...`);
+      
+      // Primero, obtener las fechas disponibles para la especialidad
+      const availResult = await DirectDBTools.getAvailableAppointments({
+        specialty_name: stateContext.specialtyName
+      });
+      
+      if (availResult.success && availResult.data?.appointments?.length > 0) {
+        const appts = availResult.data.appointments;
+        const normalizedMsg = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        
+        // Mapeo de días de la semana en español
+        const diasSemana: Record<string, number> = {
+          'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3,
+          'jueves': 4, 'viernes': 5, 'sabado': 6
+        };
+        
+        // Detectar qué día de la semana mencionó el usuario
+        let targetDay: number | null = null;
+        let targetDayNum: number | null = null;
+        
+        for (const [dia, num] of Object.entries(diasSemana)) {
+          if (normalizedMsg.includes(dia)) {
+            targetDay = num;
+            // Buscar si también mencionó el número del día
+            const dayNumMatch = normalizedMsg.match(new RegExp(dia + '\\s*(\\d{1,2})', 'i'));
+            if (dayNumMatch) {
+              targetDayNum = parseInt(dayNumMatch[1]);
+            }
+            break;
+          }
+        }
+        
+        // Detectar fecha numérica (ej: "11 de febrero")
+        const fechaNumMatch = normalizedMsg.match(/(\d{1,2})\s*(?:de\s*)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i);
+        if (fechaNumMatch) {
+          targetDayNum = parseInt(fechaNumMatch[1]);
+        }
+        
+        // Buscar la agenda que coincida con la fecha mencionada
+        let matchingAppt: any = null;
+        
+        for (const appt of appts) {
+          const apptDate = new Date(appt.appointment_date + 'T12:00:00');
+          const apptDayOfWeek = apptDate.getDay();
+          const apptDayOfMonth = apptDate.getDate();
+          
+          // Coincidencia por día de la semana
+          if (targetDay !== null && apptDayOfWeek === targetDay) {
+            // Si también hay número de día, verificar que coincida
+            if (targetDayNum === null || apptDayOfMonth === targetDayNum) {
+              matchingAppt = appt;
+              break;
+            }
+          }
+          
+          // Coincidencia por número de día del mes
+          if (targetDayNum !== null && apptDayOfMonth === targetDayNum) {
+            matchingAppt = appt;
+            break;
+          }
+        }
+        
+        if (matchingAppt) {
+          console.log(`[WhatsAppAI] ✅ Fecha encontrada: ${matchingAppt.appointment_date_formatted} (ID: ${matchingAppt.availability_id})`);
+          
+          // Ahora buscar los slots REALES disponibles para esa fecha
+          const slotsResult = await DirectDBTools.getAvailableTimeSlotsForDoctorOnDate({
+            doctor_id: matchingAppt.doctor_id,
+            date: matchingAppt.appointment_date,
+            specialty_id: matchingAppt.specialty_id
+          });
+          
+          if (slotsResult.success && slotsResult.data?.available_times?.length > 0) {
+            const availableTimes = slotsResult.data.available_times_formatted || slotsResult.data.available_times;
+            const slotsDetail = slotsResult.data.slots_detail || [];
+            
+            // Guardar en el estado
+            updateState(cleanPhone, ConversationState.AWAITING_TIME, {
+              timeSlots: slotsDetail,
+              selectedDate: matchingAppt.appointment_date,
+              selectedDoctor: matchingAppt.doctor_name,
+              selectedDoctorId: matchingAppt.doctor_id,
+              availabilityId: matchingAppt.availability_id,
+              specialtyId: matchingAppt.specialty_id
+            });
+            
+            const firstName = stateContext.patientName?.split(' ')[0] || '';
+            const displaySlots = availableTimes.slice(0, 6);
+            
+            let response = `¡Genial${firstName ? ', ' + firstName : ''}! 😊 Para el ${matchingAppt.appointment_date_formatted}, tenemos las siguientes horas disponibles con ${matchingAppt.doctor_name}:\n\n`;
+            displaySlots.forEach((time: string) => {
+              response += `• ${time}\n`;
+            });
+            
+            if (availableTimes.length > 6) {
+              response += `\n... y ${availableTimes.length - 6} horarios más.`;
+            }
+            
+            response += `\n\n¿Te gustaría agendar una cita en alguna de estas horas${firstName ? ', ' + firstName : ''}? 🕐\n\n¿Cuál te queda mejor?`;
+            
+            return {
+              success: true,
+              response,
+              toolCalls: [{ name: 'getAvailableTimeSlotsForDoctorOnDate', result: `${availableTimes.length} slots disponibles` }]
+            };
+            
+          } else {
+            // No hay slots para esa fecha
+            const firstName = stateContext.patientName?.split(' ')[0] || '';
+            
+            // Buscar alternativas
+            const alternativas = appts.filter((a: any) => a.appointment_date !== matchingAppt.appointment_date).slice(0, 3);
+            
+            let response = `Lo siento${firstName ? ', ' + firstName : ''}, no hay horarios disponibles para el ${matchingAppt.appointment_date_formatted}. Todas las citas de ese día están ocupadas. 😕\n\n`;
+            
+            if (alternativas.length > 0) {
+              response += `Te puedo ofrecer estas otras fechas:\n\n`;
+              alternativas.forEach((alt: any) => {
+                response += `• ${alt.appointment_date_formatted} a las ${alt.start_time_formatted}\n`;
+              });
+              response += `\n¿Alguna te sirve?`;
+            } else {
+              response += `¿Te agrego a la lista de espera para que te avisemos cuando haya disponibilidad?`;
+            }
+            
+            return {
+              success: true,
+              response,
+              toolCalls: []
+            };
+          }
+        } else {
+          // No encontramos esa fecha en las disponibles
+          const firstName = stateContext.patientName?.split(' ')[0] || '';
+          const fechasDisponibles = appts.slice(0, 4).map((a: any) => a.appointment_date_formatted).join(', ');
+          
+          return {
+            success: true,
+            response: `${firstName ? firstName + ', no' : 'No'} tenemos disponibilidad para esa fecha. 😕\n\nLas fechas disponibles son: ${fechasDisponibles}.\n\n¿Te sirve alguna de estas?`,
+            toolCalls: []
+          };
+        }
+      }
+    }
+
+    // ============================================================================
+    // PASO 0.8: AGENDAMIENTO AUTOMÁTICO CUANDO SE TIENE TODA LA INFORMACIÓN
+    // ============================================================================
+    // Si el usuario está en AWAITING_REASON y proporciona el motivo, ejecutar
+    // scheduleAppointment automáticamente para evitar que la IA solo responda sin agendar.
+    
+    if (stateContext.currentState === ConversationState.AWAITING_REASON && 
+        message.length > 3 && 
+        stateContext.patientId && 
+        stateContext.availabilityId && 
+        stateContext.scheduledDatetime) {
+      
+      console.log(`[WhatsAppAI] 🎯 AGENDAMIENTO AUTOMÁTICO: Todos los datos disponibles, ejecutando scheduleAppointment...`);
+      
+      // Verificar si ya existe una cita agendada recientemente
+      const wasAlreadyScheduled = await PersistenceService.wasScheduleAppointmentExecuted(cleanPhone, 5);
+      
+      if (wasAlreadyScheduled) {
+        console.log(`[WhatsAppAI] ⚠️ Ya se agendó una cita recientemente, saltando`);
+        const lastScheduled = await PersistenceService.getLastScheduledAppointment(cleanPhone);
+        
+        return {
+          success: true,
+          response: `Ya tienes una cita confirmada:\n\n• **Cita #${lastScheduled?.appointment_id}**\n• **Doctor:** ${lastScheduled?.doctor_name}\n• **Fecha:** ${lastScheduled?.scheduled_date}\n• **Hora:** ${lastScheduled?.scheduled_time}\n\n¿Necesitas algo más? 😊`,
+          toolCalls: []
+        };
+      }
+      
+      // Usar el mensaje del usuario como motivo de la consulta
+      const reason = message.length > 100 ? message.substring(0, 100) : message;
+      
+      try {
+        const scheduleResult = await DirectDBTools.scheduleAppointment({
+          patient_id: stateContext.patientId,
+          availability_id: stateContext.availabilityId,
+          scheduled_date: stateContext.scheduledDatetime,
+          reason: reason,
+          appointment_type: 'Presencial',
+          priority_level: 'Normal'
+        });
+        
+        if (scheduleResult.success) {
+          const appointmentId = scheduleResult.data?.appointment_id;
+          const doctorName = scheduleResult.data?.doctor_name || stateContext.selectedDoctor || 'El especialista';
+          const fecha = scheduleResult.data?.appointment_date || scheduleResult.data?.scheduled_date?.split(' ')[0] || stateContext.selectedDate;
+          const hora = scheduleResult.data?.hora_cita_local || scheduleResult.data?.scheduled_time || stateContext.selectedTime;
+          const location = scheduleResult.data?.location_name || 'Sede principal';
+          
+          // Guardar en el estado
+          updateState(cleanPhone, ConversationState.COMPLETED, {
+            lastAppointmentId: appointmentId
+          });
+          
+          // Persistir en BD
+          try {
+            const sessionId = await getSessionIdForPhone(cleanPhone);
+            await PersistenceService.recordScheduledAppointment({
+              session_id: sessionId || 0,
+              phone: cleanPhone,
+              patient_id: stateContext.patientId,
+              appointment_id: appointmentId,
+              availability_id: stateContext.availabilityId,
+              doctor_name: doctorName,
+              specialty_name: stateContext.specialtyName || 'Consulta',
+              scheduled_date: fecha,
+              scheduled_time: hora,
+              location_name: location,
+              status: 'scheduled'
+            });
+          } catch (err) {
+            console.error('[WhatsAppAI] Error al persistir cita:', err);
+          }
+          
+          const firstName = stateContext.patientName?.split(' ')[0] || '';
+          
+          return {
+            success: true,
+            response: `¡Listo${firstName ? ', ' + firstName : ''}! 🎉 Tu cita ha sido confirmada:\n\n` +
+              `• **Cita #${appointmentId}**\n` +
+              `• **Doctor:** ${doctorName}\n` +
+              `• **Fecha:** ${fecha}\n` +
+              `• **Hora:** ${hora}\n` +
+              `• **Sede:** ${location}\n` +
+              `• **Motivo:** ${reason}\n\n` +
+              `Te esperamos${firstName ? ', ' + firstName : ''}. ¿Necesitas algo más? 😊`,
+            toolCalls: [{ name: 'scheduleAppointment', result: `Cita #${appointmentId} agendada` }]
+          };
+        } else {
+          // Error al agendar
+          console.error(`[WhatsAppAI] Error al agendar:`, scheduleResult.error);
+          
+          return {
+            success: true,
+            response: `Disculpa, tuve un inconveniente al confirmar tu cita: ${scheduleResult.error}\n\n¿Intentamos de nuevo o prefieres llamarnos al 6076911308?`,
+            toolCalls: []
+          };
+        }
+      } catch (error: any) {
+        console.error(`[WhatsAppAI] Error ejecutando scheduleAppointment:`, error);
+        
+        return {
+          success: true,
+          response: `Disculpa, tuve un problema técnico al confirmar tu cita. Por favor, llámanos al 6076911308 para agendarla. 🏥`,
+          toolCalls: []
+        };
+      }
+    }
 
     // ============================================================================
     // PASO 1: VERIFICAR ESTADO Y RECUPERACIÓN DE ERRORES
@@ -1091,10 +1844,65 @@ export async function processWhatsAppMessage(
       if (isAffirmative(message)) {
         console.log('[WhatsAppAI] ✓ Teléfono confirmado por el usuario');
 
-        // Transicionar al siguiente estado: pedir especialidad
-        updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY);
-
         const patientName = stateContext.patientName || 'paciente';
+        
+        // ⚠️ MEJORA: Si ya tenemos la especialidad guardada, buscar disponibilidad directamente
+        if (stateContext.specialtyName || stateContext.specialtyId) {
+          console.log(`[WhatsAppAI] 🎯 Especialidad ya conocida: ${stateContext.specialtyName} - Buscando disponibilidad...`);
+          
+          // Transicionar al estado de selección de doctor
+          updateState(cleanPhone, ConversationState.AWAITING_DOCTOR_SELECTION);
+          
+          // Buscar disponibilidad para la especialidad que ya mencionó
+          const availabilityResult = await DirectDBTools.getAvailableAppointments({
+            specialty_name: stateContext.specialtyName,
+            specialty_id: stateContext.specialtyId
+          });
+          
+          if (availabilityResult.success && availabilityResult.data?.appointments?.length > 0) {
+            const appointments = availabilityResult.data.appointments;
+            const uniqueDoctors = availabilityResult.data.unique_doctors || [];
+            
+            // Guardar disponibilidad en estado
+            updateState(cleanPhone, ConversationState.AWAITING_DOCTOR_SELECTION, {
+              availableAppointments: appointments,
+              availableDoctors: uniqueDoctors,
+              specialtyName: stateContext.specialtyName,
+              specialtyId: appointments[0]?.specialty_id
+            });
+            
+            // Construir respuesta con opciones
+            let response = `¡Perfecto, ${patientName}! 😊 He encontrado disponibilidad para ${stateContext.specialtyName}:\n\n`;
+            
+            // Mostrar las primeras opciones disponibles
+            const firstOptions = appointments.slice(0, 5);
+            firstOptions.forEach((apt: any, idx: number) => {
+              response += `${idx + 1}. 👨‍⚕️ ${apt.doctor_name}\n`;
+              response += `   📅 ${apt.appointment_date_formatted || apt.appointment_date}\n`;
+              response += `   🕐 ${apt.start_time_formatted || apt.start_time} - ${apt.end_time_formatted || apt.end_time}\n`;
+              response += `   📍 ${apt.location_name}\n`;
+              response += `   🎫 ${apt.slots_available} cupos disponibles\n\n`;
+            });
+            
+            response += `¿Cuál opción prefieres? Puedes decirme el número o el nombre del doctor. 😊`;
+            
+            return {
+              success: true,
+              response,
+              toolCalls: []
+            };
+          } else {
+            // No hay disponibilidad para esa especialidad
+            return {
+              success: true,
+              response: `¡Perfecto, ${patientName}! 😊 Lamentablemente no encontré disponibilidad inmediata para ${stateContext.specialtyName}. ¿Te gustaría que te agregue a la lista de espera o prefieres otra especialidad?`,
+              toolCalls: []
+            };
+          }
+        }
+        
+        // Si NO hay especialidad guardada, preguntar
+        updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY);
 
         // Responder directamente sin pasar por el modelo para evitar loop
         return {
@@ -1129,6 +1937,149 @@ export async function processWhatsAppMessage(
           toolCalls: []
         };
       }
+    }
+
+    // ==========================================================================
+    // PASO 3.56: MANEJO ESPECIAL DE CANCELAR CITA
+    // ==========================================================================
+    if (stateContext.currentState === ConversationState.CANCELING_APPOINTMENT) {
+      const appts = stateContext.availableAppointments || [];
+
+      if (!appts.length) {
+        updateState(cleanPhone, ConversationState.IDLE);
+        return {
+          success: true,
+          response: 'No encuentro citas confirmadas para cancelar. ¿Quieres consultar tus citas o agendar una nueva?',
+          toolCalls: []
+        };
+      }
+
+      const match = message.match(/\d+/);
+      const selectedIndex = match ? parseInt(match[0], 10) - 1 : -1;
+
+      if (selectedIndex < 0 || selectedIndex >= appts.length) {
+        return {
+          success: true,
+          response: 'Por favor responde con el número de la cita que deseas cancelar. 📋',
+          toolCalls: []
+        };
+      }
+
+      const selected = appts[selectedIndex];
+      const cancelResult = await DirectDBTools.cancelAppointment({
+        appointment_id: selected.appointment_id,
+        reason: 'Cancelada por paciente'
+      });
+
+      if (!cancelResult.success) {
+        return {
+          success: true,
+          response: 'No pude cancelar la cita en este momento. ¿Quieres intentar de nuevo?',
+          toolCalls: []
+        };
+      }
+
+      updateState(cleanPhone, ConversationState.COMPLETED, {
+        appointmentToCancel: undefined
+      });
+
+      const colombiaDateTime = convertToColombiaTime(selected.scheduled_date, selected.scheduled_time);
+      return {
+        success: true,
+        response: `✅ Tu cita de ${selected.specialty_name} para el ${formatDate(colombiaDateTime.date)} a las ${formatTime(colombiaDateTime.time)} fue cancelada correctamente.`,
+        toolCalls: []
+      };
+    }
+
+    // ==========================================================================
+    // PASO 3.57: MANEJO ESPECIAL DE REAGENDAR CITA
+    // ==========================================================================
+    if (stateContext.currentState === ConversationState.RESCHEDULING) {
+      const appts = stateContext.availableAppointments || [];
+
+      if (!appts.length) {
+        updateState(cleanPhone, ConversationState.IDLE);
+        return {
+          success: true,
+          response: 'No encuentro citas confirmadas para reagendar. ¿Quieres consultar tus citas o agendar una nueva?',
+          toolCalls: []
+        };
+      }
+
+      const match = message.match(/\d+/);
+      const selectedIndex = match ? parseInt(match[0], 10) - 1 : -1;
+
+      if (selectedIndex < 0 || selectedIndex >= appts.length) {
+        return {
+          success: true,
+          response: 'Por favor responde con el número de la cita que deseas reagendar. 📋',
+          toolCalls: []
+        };
+      }
+
+      const selected = appts[selectedIndex];
+
+      // Cancelar la cita actual
+      const cancelResult = await DirectDBTools.cancelAppointment({
+        appointment_id: selected.appointment_id,
+        reason: 'Reagendada por paciente'
+      });
+
+      if (!cancelResult.success) {
+        return {
+          success: true,
+          response: 'No pude cancelar la cita actual para reagendar. ¿Quieres intentar de nuevo?',
+          toolCalls: []
+        };
+      }
+
+      // Buscar nuevas opciones para la misma especialidad
+      const availabilityResult = await DirectDBTools.getAvailableAppointments({
+        specialty_id: selected.specialty_id,
+        specialty_name: selected.specialty_name
+      });
+
+      if (availabilityResult.success && availabilityResult.data?.appointments?.length > 0) {
+        const appointments = availabilityResult.data.appointments;
+        const uniqueDoctors = availabilityResult.data.unique_doctors || [];
+
+        updateState(cleanPhone, ConversationState.AWAITING_DOCTOR_SELECTION, {
+          availableAppointments: appointments,
+          availableDoctors: uniqueDoctors,
+          specialtyName: selected.specialty_name,
+          specialtyId: selected.specialty_id,
+          appointmentToReschedule: selected.appointment_id
+        });
+
+        let response = `✅ Tu cita fue cancelada y ahora vamos a reagendarla. He encontrado disponibilidad para ${selected.specialty_name}:\n\n`;
+
+        const firstOptions = appointments.slice(0, 5);
+        firstOptions.forEach((apt: any, idx: number) => {
+          response += `${idx + 1}. 👨‍⚕️ ${apt.doctor_name}\n`;
+          response += `   📅 ${apt.appointment_date_formatted || apt.appointment_date}\n`;
+          response += `   🕐 ${apt.start_time_formatted || apt.start_time} - ${apt.end_time_formatted || apt.end_time}\n`;
+          response += `   📍 ${apt.location_name}\n`;
+          response += `   🎫 ${apt.slots_available} cupos disponibles\n\n`;
+        });
+
+        response += '¿Cuál opción prefieres? Puedes decirme el número o el nombre del doctor. 😊';
+
+        return {
+          success: true,
+          response,
+          toolCalls: []
+        };
+      }
+
+      updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, {
+        appointmentToReschedule: undefined
+      });
+
+      return {
+        success: true,
+        response: `Cancelé tu cita, pero no encontré disponibilidad inmediata para ${selected.specialty_name}. ¿Quieres otra especialidad o te agrego a la lista de espera?`,
+        toolCalls: []
+      };
     }
 
     // ============================================================================
@@ -1230,12 +2181,326 @@ export async function processWhatsAppMessage(
     }
 
     // ============================================================================
+    // PASO 3.56: MANEJO DE SELECCIÓN DE FECHA - OBTENER SLOTS REALES DISPONIBLES
+    // ============================================================================
+    
+    // Cuando el estado es AWAITING_DATE y el usuario menciona una fecha
+    if (stateContext.currentState === ConversationState.AWAITING_DATE && stateContext.availableAppointments) {
+      const normalizedMsg = message.trim().toLowerCase();
+      
+      // Patrones para detectar selección de fecha
+      const datePatterns = [
+        /(?:el\s+)?(?:día\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s*(\d{1,2})?/i,
+        /(?:el\s+)?(\d{1,2})\s*(?:de\s+)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i,
+        /fecha\s*(\d+)/i,
+        /opci[oó]n\s*(\d+)/i,
+        /^(\d)$/,
+        /me gusta(?:ría)?\s+(?:el\s+)?(\w+\s*\d*)/i,
+        /prefiero\s+(?:el\s+)?(\w+\s*\d*)/i,
+        /quiero\s+(?:el\s+)?(\w+\s*\d*)/i,
+        /para\s+(?:el\s+)?(\w+\s*\d*)/i
+      ];
+      
+      let dateMatched = false;
+      for (const pattern of datePatterns) {
+        if (pattern.test(normalizedMsg)) {
+          dateMatched = true;
+          break;
+        }
+      }
+      
+      if (dateMatched) {
+        const availableAppts = stateContext.availableAppointments || [];
+        // Obtener fechas únicas mostradas al usuario
+        const uniqueDates = [...new Set(availableAppts.map((a: any) => a.appointment_date_formatted))].slice(0, 5) as string[];
+        
+        // Intentar hacer match de la fecha seleccionada
+        let selectedDateFormatted: string | null = null;
+        
+        // Match por número de opción (1, 2, 3, etc.)
+        const numMatch = normalizedMsg.match(/(?:opci[oó]n\s*)?(\d)$/);
+        if (numMatch) {
+          const idx = parseInt(numMatch[1]) - 1;
+          if (idx >= 0 && idx < uniqueDates.length) {
+            selectedDateFormatted = uniqueDates[idx];
+          }
+        }
+        
+        // Match por nombre de día (lunes, martes, etc.)
+        if (!selectedDateFormatted) {
+          const dayNames = ['lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado', 'domingo'];
+          for (const dayName of dayNames) {
+            if (normalizedMsg.includes(dayName)) {
+              // Buscar la fecha que contenga ese día
+              const matchingDate = uniqueDates.find(d => d.toLowerCase().includes(dayName) || 
+                (dayName === 'miercoles' && d.toLowerCase().includes('miércoles')) ||
+                (dayName === 'sabado' && d.toLowerCase().includes('sábado')));
+              if (matchingDate) {
+                selectedDateFormatted = matchingDate;
+                break;
+              }
+            }
+          }
+        }
+        
+        // Match por número de día (ej: "10 de febrero", "el 10")
+        if (!selectedDateFormatted) {
+          const dayNumMatch = normalizedMsg.match(/(?:el\s+)?(\d{1,2})\s*(?:de\s+)?(\w+)?/i);
+          if (dayNumMatch) {
+            const dayNum = dayNumMatch[1];
+            const monthStr = dayNumMatch[2] || '';
+            const matchingDate = uniqueDates.find(d => {
+              const lower = d.toLowerCase();
+              if (monthStr && lower.includes(monthStr.toLowerCase())) {
+                return lower.includes(dayNum);
+              }
+              return lower.includes(` ${dayNum} `);
+            });
+            if (matchingDate) {
+              selectedDateFormatted = matchingDate;
+            }
+          }
+        }
+        
+        // Si la primera opción es la más probable y no pudimos hacer match
+        if (!selectedDateFormatted && uniqueDates.length === 1) {
+          selectedDateFormatted = uniqueDates[0];
+        }
+        
+        if (selectedDateFormatted) {
+          // Encontrar los appointments que corresponden a esa fecha
+          const matchingAppts = availableAppts.filter(
+            (a: any) => a.appointment_date_formatted === selectedDateFormatted
+          );
+          
+          if (matchingAppts.length > 0) {
+            const selectedAppt = matchingAppts[0];
+            const doctorId = stateContext.selectedDoctorId || selectedAppt.doctor_id;
+            const doctorName = stateContext.selectedDoctor || selectedAppt.doctor_name;
+            const selectedDate = selectedAppt.appointment_date;
+            const specialtyId = stateContext.specialtyId || selectedAppt.specialty_id;
+            
+            console.log(`[WhatsAppAI] 📅 Fecha seleccionada: ${selectedDateFormatted} → ${selectedDate} | Doctor: ${doctorName} (ID: ${doctorId})`);
+            
+            // Obtener slots REALES disponibles verificando citas existentes
+            const slotsResult = await DirectDBTools.getAvailableTimeSlotsForDoctorOnDate({
+              doctor_id: doctorId,
+              date: selectedDate,
+              specialty_id: specialtyId
+            });
+            
+            if (slotsResult.success && slotsResult.data?.available_times?.length > 0) {
+              const availableTimes = slotsResult.data.available_times_formatted || slotsResult.data.available_times;
+              const slotsDetail = slotsResult.data.slots_detail || [];
+              
+              // Guardar slots y doctor en el estado
+              updateState(cleanPhone, ConversationState.AWAITING_TIME, {
+                timeSlots: slotsDetail,
+                selectedDate: selectedDate,
+                selectedDoctor: doctorName,
+                selectedDoctorId: doctorId,
+                availabilityId: selectedAppt.availability_id,
+                specialtyId: specialtyId
+              });
+              
+              aiLogger.info({
+                phone: cleanPhone,
+                doctor: doctorName,
+                date: selectedDate,
+                slotsCount: availableTimes.length,
+                agendaSummary: slotsResult.data.agendas_summary
+              }, '✅ Slots reales disponibles obtenidos (desde PASO 0.41 flow)');
+              
+              // Mostrar solo los primeros 5 slots
+              const displaySlots = availableTimes.slice(0, 5);
+              
+              const dateLabel = slotsResult.data.date_formatted || selectedDateFormatted;
+              let response = `¡Excelente elección! 😊 Para el ${dateLabel}, tenemos estos horarios disponibles:\n\n`;
+              displaySlots.forEach((time: string, idx: number) => {
+                response += `${idx + 1}. ${time}\n`;
+              });
+              
+              if (availableTimes.length > 5) {
+                response += `\n... y ${availableTimes.length - 5} horarios más.`;
+              }
+              
+              response += `\n\n¿Cuál horario te queda mejor? 🕐`;
+              
+              return {
+                success: true,
+                response,
+                toolCalls: [{ name: 'getAvailableTimeSlotsForDoctorOnDate', result: `${availableTimes.length} slots disponibles` }]
+              };
+              
+            } else if (slotsResult.success && slotsResult.data?.available_times?.length === 0) {
+              const dateLabel = slotsResult.data.date_formatted || selectedDateFormatted;
+              
+              return {
+                success: true,
+                response: `Lo siento, no hay horarios disponibles para el ${dateLabel}. Todas las agendas de ese día están completas. 😕\n\n¿Te gustaría ver otra fecha disponible o te agrego a la lista de espera?`,
+                toolCalls: []
+              };
+            }
+          }
+        }
+        // Si no pudimos hacer match de la fecha, dejar que el LLM maneje
+      }
+    }
+
+    // PASO 3.56 LEGACY: Cuando tenemos selectedDoctor explícito y selectedDate ya establecido
+    if (stateContext.currentState === ConversationState.AWAITING_DATE && stateContext.selectedDoctor && !stateContext.availableAppointments) {
+      const normalizedMsg = message.trim().toLowerCase();
+      
+      // Patrones para detectar selección de fecha
+      const datePatterns = [
+        /(?:el\s+)?(?:día\s+)?(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\s*(\d{1,2})?/i,
+        /(?:el\s+)?(\d{1,2})\s*(?:de\s+)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)/i,
+        /fecha\s*(\d+)/i,
+        /opci[oó]n\s*(\d+)/i,
+        /^(\d)$/,
+        /me gusta(?:ría)?\s+(?:el\s+)?(\w+\s*\d*)/i,
+        /prefiero\s+(?:el\s+)?(\w+\s*\d*)/i,
+        /quiero\s+(?:el\s+)?(\w+\s*\d*)/i
+      ];
+      
+      let dateMatched = false;
+      for (const pattern of datePatterns) {
+        if (pattern.test(normalizedMsg)) {
+          dateMatched = true;
+          break;
+        }
+      }
+      
+      // Si el usuario selecciona una fecha y tenemos doctor y fecha en el contexto
+      if (dateMatched && stateContext.selectedDoctorId && stateContext.selectedDate) {
+        console.log(`[WhatsAppAI] 📅 Fecha seleccionada detectada - Buscando slots reales disponibles`);
+        
+        // NUEVO: Obtener slots REALES disponibles verificando citas existentes
+        const slotsResult = await DirectDBTools.getAvailableTimeSlotsForDoctorOnDate({
+          doctor_id: stateContext.selectedDoctorId,
+          date: stateContext.selectedDate,
+          specialty_id: stateContext.specialtyId
+        });
+        
+        if (slotsResult.success && slotsResult.data?.available_times?.length > 0) {
+          const availableTimes = slotsResult.data.available_times_formatted || slotsResult.data.available_times;
+          const slotsDetail = slotsResult.data.slots_detail || [];
+          
+          // Guardar slots en el estado para validación posterior
+          updateState(cleanPhone, ConversationState.AWAITING_TIME, {
+            timeSlots: slotsDetail,
+            selectedDate: stateContext.selectedDate
+          });
+          
+          aiLogger.info({
+            phone: cleanPhone,
+            doctor: stateContext.selectedDoctor,
+            date: stateContext.selectedDate,
+            slotsCount: availableTimes.length,
+            agendaSummary: slotsResult.data.agendas_summary
+          }, '✅ Slots reales disponibles obtenidos');
+          
+          // Mostrar solo los primeros 5 slots
+          const displaySlots = availableTimes.slice(0, 5);
+          
+          let response = `¡Perfecto! 😊 Para el ${slotsResult.data.date_formatted} con ${stateContext.selectedDoctor}, tenemos estos horarios disponibles:\n\n`;
+          displaySlots.forEach((time: string, idx: number) => {
+            response += `• ${time}\n`;
+          });
+          
+          if (availableTimes.length > 5) {
+            response += `\n... y ${availableTimes.length - 5} horarios más.`;
+          }
+          
+          response += `\n\n¿Cuál de estos horarios te queda mejor? 🕐`;
+          
+          return {
+            success: true,
+            response,
+            toolCalls: [{ name: 'getAvailableTimeSlotsForDoctorOnDate', result: `${availableTimes.length} slots disponibles` }]
+          };
+          
+        } else if (slotsResult.success && slotsResult.data?.available_times?.length === 0) {
+          // No hay slots disponibles para esa fecha
+          aiLogger.warn({
+            phone: cleanPhone,
+            doctor: stateContext.selectedDoctor,
+            date: stateContext.selectedDate,
+            agendaSummary: slotsResult.data?.agendas_summary
+          }, '⚠️ No hay slots disponibles para esta fecha');
+          
+          return {
+            success: true,
+            response: `Lo siento, no hay horarios disponibles para el ${slotsResult.data.date_formatted} con ${stateContext.selectedDoctor}. Todas las agendas de ese día están completas. 😕\n\n¿Te gustaría ver otra fecha disponible o te agrego a la lista de espera?`,
+            toolCalls: []
+          };
+        }
+        // Si hay error, continuar con flujo normal de IA
+      }
+    }
+
+    // ============================================================================
     // PASO 3.6: MANEJO ESPECIAL DE SELECCIÓN DE HORA
     // ============================================================================
 
     // Cuando el estado es AWAITING_TIME y el usuario envía un número o una hora
     if (stateContext.currentState === ConversationState.AWAITING_TIME) {
       const normalizedMsg = message.trim().toLowerCase();
+
+      // NUEVO: Handler para "dame más opciones" o "más horarios"
+      if (/m[aá]s\s*(opciones|horarios)|otras?\s*(opciones|horarios)|otro\s*horario|otras\s*horas/i.test(normalizedMsg)) {
+        // Si tenemos todos los slots, mostrar más
+        if (stateContext.timeSlots && stateContext.timeSlots.length > 5) {
+          const allTimes = stateContext.timeSlots.map((s: any) => s.time_formatted || s.time_colombia);
+          
+          let response = `¡Claro! 😊 Estos son todos los horarios disponibles:\n\n`;
+          allTimes.forEach((time: string) => {
+            response += `• ${time}\n`;
+          });
+          response += `\n¿Cuál te queda mejor?`;
+          
+          return {
+            success: true,
+            response,
+            toolCalls: []
+          };
+        } else if (stateContext.selectedDoctorId && stateContext.selectedDate) {
+          // Si no tenemos slots, obtenerlos de nuevo
+          const slotsResult = await DirectDBTools.getAvailableTimeSlotsForDoctorOnDate({
+            doctor_id: stateContext.selectedDoctorId,
+            date: stateContext.selectedDate,
+            specialty_id: stateContext.specialtyId
+          });
+          
+          if (slotsResult.success && slotsResult.data?.available_times?.length > 0) {
+            const availableTimes = slotsResult.data.available_times_formatted || slotsResult.data.available_times;
+            const slotsDetail = slotsResult.data.slots_detail || [];
+            
+            // Actualizar slots en estado
+            updateState(cleanPhone, ConversationState.AWAITING_TIME, {
+              timeSlots: slotsDetail
+            });
+            
+            let response = `¡Claro! 😊 Estos son todos los horarios disponibles para el ${slotsResult.data.date_formatted}:\n\n`;
+            availableTimes.forEach((time: string) => {
+              response += `• ${time}\n`;
+            });
+            response += `\n¿Cuál te queda mejor?`;
+            
+            return {
+              success: true,
+              response,
+              toolCalls: [{ name: 'getAvailableTimeSlotsForDoctorOnDate', result: `${availableTimes.length} slots` }]
+            };
+          } else {
+            return {
+              success: true,
+              response: `Lo siento, no hay más horarios disponibles para esa fecha. ¿Te gustaría ver otra fecha o te agrego a la lista de espera?`,
+              toolCalls: []
+            };
+          }
+        }
+      }
 
       // PRIORIDAD 1: Buscar si el usuario mencionó una HORA ESPECÍFICA (ej: "1 pm", "2 de la tarde", "9:30 am")
       const timePatterns = [
@@ -1631,6 +2896,19 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
               timeSlots: toolResult.data?.available_time_slots
             });
 
+          } else if (toolCall.name === 'getAvailableTimeSlotsForDoctorOnDate' && toolResult.success) {
+            // NUEVO: Horarios verificados contra citas existentes
+            const slotsCount = toolResult.data?.available_times?.length || 0;
+            const slotsDetail = toolResult.data?.slots_detail || [];
+            aiLogger.info({ 
+              slotsCount,
+              agendaSummary: toolResult.data?.agendas_summary 
+            }, 'Verified time slots fetched');
+            updateState(cleanPhone, ConversationState.AWAITING_TIME, {
+              timeSlots: slotsDetail,
+              selectedDate: toolResult.data?.date
+            });
+
           } else if (toolCall.name === 'searchSpecialties' && toolResult.success) {
             // Especialidades consultadas
             aiLogger.debug('Specialties fetched');
@@ -1668,6 +2946,19 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
                 lastQuestion: `Cita #${appointmentId}`,
                 lastAppointmentId: appointmentId  // ← NUEVO: Guardar ID de cita
               });
+              
+              // 🆕 PERSISTIR CITA AGENDADA EN CONVERSACIÓN JSON
+              addAppointment(cleanPhone, {
+                appointmentId: appointmentId,
+                specialty: toolResult.data?.specialty_name || stateContext.specialtyName || '',
+                doctorName: toolResult.data?.doctor_name || stateContext.selectedDoctor || '',
+                date: toolResult.data?.scheduled_date?.split(' ')[0] || '',
+                time: toolResult.data?.scheduled_time || stateContext.selectedTime || '',
+                location: toolResult.data?.location_name || '',
+                status: 'Confirmada',
+                scheduledAt: new Date().toISOString()
+              }).catch(() => { });
+              await updateContext(cleanPhone, { state: 'completed' });
 
               // Guardar cita agendada en memoria
               saveMessageToMemory(cleanPhone, 'tool', `Cita agendada exitosamente - ID: ${appointmentId}`, {
@@ -1968,35 +3259,31 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
                 await ChatMemoryService.resetSessionAppointmentSelection(sessionIdForReset);
               }
               
-              // Generar respuesta de confirmación real
-              response.text = `¡Excelente! 😊 Tu cita ha sido confirmada:\n\n` +
-                `• **Especialidad:** ${appt.specialty_name || stateForValidation.specialtyName || 'Consulta médica'}\n` +
-                `• **Doctor(a):** ${appt.doctor_name || stateForValidation.selectedDoctor || 'Asignado'}\n` +
-                `• **Fecha:** ${appt.fecha_cita_local || appt.appointment_date_formatted || stateForValidation.selectedDate}\n` +
-                `• **Hora:** ${appt.hora_cita_local || appt.scheduled_time_formatted || stateForValidation.selectedTime || 'Asignada'}\n` +
-                `• **Sede:** ${appt.location_name || 'Sede biosanar san gil'}\n` +
-                `• **Cita #${appt.appointment_id}**\n\n` +
-                `¡Te esperamos! Si necesitas algo más, no dudes en escribirme. 🌟`;
+              // Generar respuesta de confirmación CONCISA
+              response.text = `¡Listo! Tu cita quedó agendada:\n\n` +
+                `📅 ${appt.fecha_cita_local || appt.appointment_date_formatted || stateForValidation.selectedDate}\n` +
+                `🕐 ${appt.hora_cita_local || appt.scheduled_time_formatted || stateForValidation.selectedTime}\n` +
+                `👨‍⚕️ ${appt.doctor_name || stateForValidation.selectedDoctor}\n` +
+                `📍 Sede San Gil\n` +
+                `🎫 Cita #${appt.appointment_id}\n\n` +
+                `¡Te esperamos! 😊`;
             } else {
-              // Si falla el agendamiento, informar y ofrecer reintentar
+              // Si falla el agendamiento, informar brevemente
               aiLogger.error({ phone: cleanPhone, error: scheduleResult.error }, '❌ AUTO-AGENDAMIENTO FALLÓ');
-              response.text = "Lo siento, hubo un problema al confirmar tu cita. 😔 ¿Podrías decirme nuevamente para qué día y hora la prefieres? Así me aseguro de agendarla correctamente.";
+              response.text = "No pude confirmar tu cita. 😔 ¿Me repites la fecha y hora que prefieres?";
             }
           } catch (autoScheduleError: any) {
             aiLogger.error({ phone: cleanPhone, error: autoScheduleError.message }, '❌ ERROR en AUTO-AGENDAMIENTO');
-            response.text = "Hubo un inconveniente al procesar tu cita. 😔 ¿Podrías confirmarme los datos de nuevo? Necesito saber la especialidad, fecha y hora que prefieres.";
+            response.text = "Hubo un problema. 😔 ¿Me confirmas la especialidad, fecha y hora?";
           }
         } // Fin del else de wasAlreadyScheduled
       } else {
         // No tenemos suficientes datos, pedir información faltante
-        const faltantes = [];
-        if (!stateForValidation.patientId) faltantes.push('identificación');
-        if (!stateForValidation.availabilityId) faltantes.push('horario específico');
+        response.text = !stateForValidation.patientId 
+          ? '¿Me das tu número de cédula?' 
+          : '¿Para qué fecha y hora quieres la cita?';
         
-        response.text = `¡Un momento! 😊 Para confirmar tu cita necesito verificar algunos datos. ` +
-          `${!stateForValidation.patientId ? '¿Me podrías dar tu número de cédula?' : '¿Para qué día y hora prefieres tu cita?'}`;
-        
-        aiLogger.info({ phone: cleanPhone, faltantes }, 'Solicitando datos faltantes para poder agendar');
+        aiLogger.info({ phone: cleanPhone }, 'Solicitando datos faltantes para poder agendar');
       }
     }
     
@@ -2030,6 +3317,73 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
       .replace(/\*\*Cita #\*\*:\s*$/gm, '')
       .trim();
 
+    // ⚠️ VALIDACIÓN CRÍTICA: Detectar confirmaciones falsas de cita
+    // Si la respuesta dice "cita agendada/confirmada" pero NO tenemos lastAppointmentId, es una alucinación
+    const finalStateCheck = getStateContext(cleanPhone);
+    const claimsAppointmentScheduled = /cita.*(?:agendada|confirmada|programada)|ha sido (?:agendada|confirmada)|Cita #\s*\[|Cita #:\s*\[|\[número de cita\]/i.test(response.text);
+    const hasRealAppointmentId = !!finalStateCheck.lastAppointmentId;
+    
+    if (claimsAppointmentScheduled && !hasRealAppointmentId) {
+      aiLogger.warn({
+        phone: cleanPhone,
+        originalResponse: response.text.substring(0, 200),
+        hasAppointmentId: hasRealAppointmentId,
+        state: finalStateCheck
+      }, '⚠️ ALERTA: Respuesta dice "cita agendada" pero NO hay appointment_id real - CORRIGIENDO');
+      
+      // Intentar auto-agendar si tenemos los datos necesarios
+      if (finalStateCheck.patientId && finalStateCheck.availabilityId) {
+        try {
+          const autoScheduleParams: any = {
+            availability_id: finalStateCheck.availabilityId,
+            patient_id: finalStateCheck.patientId,
+            reason: finalStateCheck.specialtyName ? `Consulta de ${finalStateCheck.specialtyName}` : 'Consulta médica',
+            priority_level: 'Normal'
+          };
+          
+          if (finalStateCheck.scheduledDatetime) {
+            autoScheduleParams.scheduled_date = finalStateCheck.scheduledDatetime;
+          }
+          
+          aiLogger.info({ phone: cleanPhone, params: autoScheduleParams }, '🔧 Intentando auto-agendar para corregir respuesta falsa');
+          
+          const scheduleResult = await DirectDBTools.scheduleAppointment(autoScheduleParams);
+          
+          if (scheduleResult.success && scheduleResult.data?.appointment_id) {
+            const appt = scheduleResult.data;
+            
+            updateState(cleanPhone, ConversationState.COMPLETED, {
+              lastAppointmentId: appt.appointment_id
+            });
+            
+            // Generar respuesta CONCISA con el ID real
+            response.text = `¡Listo! Tu cita quedó agendada:\n\n` +
+              `📅 ${appt.fecha_cita_local || appt.appointment_date || finalStateCheck.selectedDate}\n` +
+              `🕐 ${appt.hora_cita_local || appt.scheduled_time || finalStateCheck.selectedTime}\n` +
+              `👨‍⚕️ ${appt.doctor_name || finalStateCheck.selectedDoctor}\n` +
+              `📍 Sede San Gil\n` +
+              `🎫 Cita #${appt.appointment_id}\n\n` +
+              `¿Algo más? 😊`;
+            
+            aiLogger.info({ phone: cleanPhone, appointmentId: appt.appointment_id }, '✅ Auto-agendamiento correctivo exitoso');
+          } else {
+            // Falló el agendamiento
+            response.text = "No pude confirmar la cita. 😔 ¿Me confirmas la fecha y hora?";
+            aiLogger.error({ phone: cleanPhone, error: scheduleResult.error }, '❌ Auto-agendamiento correctivo falló');
+          }
+        } catch (autoErr: any) {
+          response.text = "Hubo un problema. 😔 ¿Me repites la fecha y hora que quieres?";
+          aiLogger.error({ phone: cleanPhone, error: autoErr.message }, '❌ Error en auto-agendamiento correctivo');
+        }
+      } else {
+        // No tenemos datos suficientes
+        response.text = !finalStateCheck.patientId 
+          ? '¿Me das tu cédula para verificarte?' 
+          : '¿Para qué fecha y hora quieres la cita?';
+        aiLogger.warn({ phone: cleanPhone }, 'Corrigiendo respuesta falsa - datos faltantes');
+      }
+    }
+
     // Si la respuesta está vacía o es muy corta, usar mensaje de recuperación
     if (!response.text || response.text.trim().length < 10) {
       aiLogger.warn({ phone: cleanPhone }, 'Empty or too short response, using recovery message');
@@ -2047,6 +3401,33 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
       responseTimeMs: processingDuration
     }).catch(() => { });
 
+    // 🆕 POST-PROCESAMIENTO: Auto-captura de memorias semánticas
+    try {
+      const sessionId = await getSessionIdForPhone(cleanPhone);
+      if (sessionId) {
+        // Capturar memorias del mensaje del usuario
+        const capturedCount = await SemanticMemory.autoCapture(
+          sessionId,
+          [{ role: 'user', content: message }],
+          stateContext.patientId
+        );
+        
+        if (capturedCount > 0) {
+          aiLogger.info({ sessionId, capturedCount }, '🧠 Memorias auto-capturadas');
+        }
+        
+        // Post-procesar para analytics
+        await EnhancedUnderstanding.postProcessResponse(
+          sessionId,
+          message,
+          response.text,
+          stateContext.patientId
+        );
+      }
+    } catch (error) {
+      aiLogger.warn({ error }, 'Error en post-procesamiento de memorias');
+    }
+
     // ============================================================================
     // PASO 8: LOGGING Y RETORNO EXITOSO
     // ============================================================================
@@ -2063,10 +3444,38 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
       lastTool: lastSuccessfulTool
     }, 'Message processed successfully');
 
+    response.text = limitEmojisPerLine(response.text, 1);
+
+    // ============================================================================
+    // 🆕 SILENT TOKEN: No responder si el bot decide que no es necesario
+    // Inspirado en moltbot - permite al bot "callar" ante mensajes irrelevantes
+    // ============================================================================
+    const SILENT_TOKENS = ['[NO_REPLY]', '[SILENCIO]', '[NO_RESPONDER]', '{{NO_REPLY}}', '<<NO_REPLY>>'];
+    const shouldBeSilent = SILENT_TOKENS.some(token => 
+      response.text.includes(token) || response.text.trim() === token.replace(/[\[\]{}><]/g, '')
+    );
+    
+    if (shouldBeSilent) {
+      aiLogger.info({
+        phone: cleanPhone,
+        originalResponse: response.text.substring(0, 100),
+        reason: 'Silent token detected'
+      }, '🤫 Bot decidió no responder (silent token)');
+      
+      return {
+        success: true,
+        response: '', // Respuesta vacía = no enviar mensaje
+        toolCalls: executedTools,
+        intent: 'silent',
+        silent: true // Flag para el caller
+      };
+    }
+
     return {
       success: true,
       response: response.text,
-      toolCalls: executedTools
+      toolCalls: executedTools,
+      intent: intent // 🆕 Devolver intent para métricas
     };
   } catch (error: any) {
     aiLogger.error({ error: error.message, phone }, 'Error processing message');
@@ -2078,11 +3487,14 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
     // Obtener mensaje de recuperación basado en el estado actual
     const recoveryMessage = getRecoveryMessage(cleanPhone);
 
+    const fallbackResponse = recoveryMessage || "Disculpa, tuve un problema procesando tu solicitud. ¿Podrías repetirlo? Si el problema persiste, llámanos al 6076911308. 📞";
+
     return {
       success: false,
-      response: recoveryMessage || "Disculpa, tuve un problema procesando tu solicitud. ¿Podrías repetirlo? Si el problema persiste, llámanos al 6076911308. 📞",
+      response: limitEmojisPerLine(fallbackResponse, 1),
       toolCalls: executedTools,
-      error: error.message
+      error: error.message,
+      intent: 'error' // 🆕 Marcar como error para métricas
     };
   }
 }
@@ -2125,10 +3537,90 @@ function cleanResponseFromToolResults(text: string): string {
   // 8. Limpiar múltiples saltos de línea
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
   
-  // 9. Limpiar espacios al inicio y final
+  // =========================================================================
+  // DETECCIÓN Y ELIMINACIÓN DE TEXTO REPETITIVO
+  // =========================================================================
+  
+  // 9. Detectar frases repetidas (el modelo a veces entra en loops)
+  // Buscar patrones que se repiten 3+ veces
+  const lines = cleaned.split('\n');
+  const uniqueLines: string[] = [];
+  const seenLines = new Set<string>();
+  
+  for (const line of lines) {
+    const normalizedLine = line.trim().toLowerCase();
+    // Permitir líneas vacías y líneas cortas (números, emojis)
+    if (normalizedLine.length === 0 || normalizedLine.length < 10) {
+      uniqueLines.push(line);
+    } else if (!seenLines.has(normalizedLine)) {
+      seenLines.add(normalizedLine);
+      uniqueLines.push(line);
+    }
+    // Las líneas duplicadas se ignoran silenciosamente
+  }
+  cleaned = uniqueLines.join('\n');
+  
+  // 10. Detectar patrones repetitivos en texto continuo
+  // Ej: "sesión de 4:40 a 6:20 no, pero si de 2 a 4:40..." repetido
+  const repeatPattern = /(.{20,}?)\1{2,}/g;
+  if (repeatPattern.test(cleaned)) {
+    // Si hay texto repetido, quedarse solo con la primera ocurrencia
+    cleaned = cleaned.replace(repeatPattern, '$1');
+  }
+  
+  // 11. Detectar "no, pero si" o "si, pero no" repetido (patrón específico del bug)
+  const confusionPattern = /(no,?\s*pero\s*si|si,?\s*pero\s*no)/gi;
+  const confusionMatches = cleaned.match(confusionPattern);
+  if (confusionMatches && confusionMatches.length > 2) {
+    // El modelo está confundido, limpiar todo y dar mensaje genérico
+    console.warn('[WhatsAppAI] ⚠️ Detectado texto confuso/repetitivo, limpiando respuesta');
+    cleaned = "Un momento, déjame verificar la información correcta en el sistema. 😊";
+  }
+  
+  // 12. Limitar longitud máxima (evitar respuestas gigantes)
+  if (cleaned.length > 1500) {
+    console.warn(`[WhatsAppAI] ⚠️ Respuesta muy larga (${cleaned.length} chars), truncando`);
+    // Buscar un punto natural para cortar
+    const cutPoint = cleaned.lastIndexOf('.', 1400);
+    if (cutPoint > 500) {
+      cleaned = cleaned.substring(0, cutPoint + 1);
+    } else {
+      cleaned = cleaned.substring(0, 1400) + '...';
+    }
+  }
+  
+  // 13. Limpiar espacios al inicio y final
   cleaned = cleaned.trim();
   
   return cleaned;
+}
+
+// ============================================================================
+// POLÍTICA DE EMOJIS: LIMITAR A 1 POR LÍNEA
+// ============================================================================
+
+function limitEmojisPerLine(text: string, maxPerLine = 1, maxTotal = 2): string {
+  if (!text) return text;
+
+  const emojiRegex = /\p{Extended_Pictographic}/gu;
+  let totalCount = 0;
+
+  const limited = text
+    .split('\n')
+    .map(line => {
+      let lineCount = 0;
+      return line.replace(emojiRegex, (match) => {
+        if (totalCount >= maxTotal) return '';
+        if (lineCount >= maxPerLine) return '';
+        totalCount += 1;
+        lineCount += 1;
+        return match;
+      }).replace(/\s{2,}/g, ' ').replace(/\s+$/g, '');
+    })
+    .join('\n')
+    .replace(/[ \t]+\n/g, '\n');
+
+  return limited.trim();
 }
 
 // ============================================================================
@@ -2154,6 +3646,7 @@ function getToolErrorMessage(toolName: string, error: any): string {
     'scheduleAppointment': 'No pude confirmar tu cita en este momento. ¿Deseas que lo intentemos de nuevo?',
     'cancelAppointment': 'No pude procesar la cancelación. Por favor, intenta de nuevo o llámanos al 6076911308.',
     'getAvailableTimeSlots': 'No pude obtener los horarios disponibles. ¿Podrías indicarme nuevamente la fecha que prefieres?',
+    'getAvailableTimeSlotsForDoctorOnDate': 'No pude verificar los horarios disponibles para esa fecha. Por favor, intenta de nuevo.',
     'checkAvailabilityQuota': 'No pude verificar los cupos disponibles. Por favor, intenta de nuevo.',
     'actualizarPhone': 'No pude actualizar tu número de teléfono. ¿Podrías confirmármelo nuevamente?',
     'listActiveEPS': 'No pude consultar la lista de EPS disponibles.',
@@ -2274,6 +3767,18 @@ async function generateAIResponse(context: ConversationContext): Promise<AIRespo
   const cleanPhone = context.phone.replace(/@.*/, '');
 
   // ============================================================================
+  // 🆕 v5: OBTENER CONTEXTO DINÁMICO BASADO EN EL ESTADO ACTUAL
+  // ============================================================================
+  const stateContext = getStateContext(cleanPhone);
+  const dynamicContext = generateDynamicContext(stateContext, cleanPhone);
+  aiLogger.debug({ 
+    phone: cleanPhone, 
+    hasPatientId: !!stateContext.patientId,
+    hasSpecialty: !!stateContext.specialtyName,
+    hasDoctor: !!stateContext.selectedDoctor
+  }, '🎯 Contexto dinámico generado');
+
+  // ============================================================================
   // PERSONALIDAD: Construir mensajes con contexto de personalidad de Valeria
   // ============================================================================
   
@@ -2288,7 +3793,33 @@ async function generateAIResponse(context: ConversationContext): Promise<AIRespo
     .replace(/{{USER_PHONE}}/g, cleanPhone);
 
   // Combinar system prompt original con personalidad (buildSystemPrompt usa defaultPersonality automáticamente)
-  const enhancedSystemPrompt = systemPrompt + '\n\n' + personalityManager.buildSystemPrompt();
+  let enhancedSystemPrompt = systemPrompt + '\n\n' + personalityManager.buildSystemPrompt();
+  
+  // 🆕 v5: INYECTAR CONTEXTO DINÁMICO (QUÉ DATOS YA TENEMOS) - MUY IMPORTANTE
+  // Esto le dice al modelo qué información ya tiene para que NO repita preguntas
+  enhancedSystemPrompt = dynamicContext + '\n\n' + enhancedSystemPrompt;
+  aiLogger.debug({ dynamicContextSize: dynamicContext.length }, '🎯 Contexto dinámico inyectado al prompt');
+  
+  // 🆕 AGREGAR CONTEXTO ENRIQUECIDO CON MEMORIA SEMÁNTICA
+  // NOTA: buildEnrichedContext ya se llamó en processWhatsAppMessage (paso 0),
+  // aquí solo inyectamos el enrichedContextPrompt pre-calculado si está disponible
+  // en el contexto de la conversación para evitar doble llamada costosa.
+  if (context.messages.some(m => m.content?.includes('CONTEXTO ENRIQUECIDO'))) {
+    aiLogger.debug('Contexto enriquecido ya presente en historial, omitiendo segunda llamada');
+  } else {
+    try {
+      const enrichedContext = await EnhancedUnderstanding.buildEnrichedContext(cleanPhone, context.messages[context.messages.length - 1]?.content || '');
+      if (enrichedContext) {
+        const memoryContext = EnhancedUnderstanding.generateContextPrompt(enrichedContext);
+        if (memoryContext) {
+          enhancedSystemPrompt += '\n\n' + memoryContext;
+          aiLogger.debug({ memoryContextSize: memoryContext.length }, '🧠 Contexto de memoria inyectado');
+        }
+      }
+    } catch (error) {
+      aiLogger.warn({ error }, 'Error inyectando contexto de memoria');
+    }
+  }
 
   // Construir mensajes para la API con contexto de personalidad
   const messages = [
@@ -2313,11 +3844,11 @@ async function generateAIResponse(context: ConversationContext): Promise<AIRespo
   try {
     aiLogger.debug({ provider: aiConfig.provider, model: aiConfig.model }, 'Calling AI provider');
 
-    // GPT-5 usa max_completion_tokens y necesita más tokens por razonamiento interno
-    // Aumentado a 3000 para evitar respuestas vacías cuando hay mucho razonamiento
-    // GPT-5 NO soporta temperature (solo valor por defecto 1)
-    const tokenParam = aiConfig.isGPT5 ? { max_completion_tokens: 3000 } : { max_tokens: 800 };
-    const tempParam = aiConfig.isGPT5 ? {} : { temperature: 0.1 };
+    // GPT-4o usa max_tokens, temperatura 0 para máxima precisión y evitar alucinaciones
+    // Aumentamos tokens a 1200 para respuestas más completas
+    const tokenParam = aiConfig.isGPT5 ? { max_completion_tokens: 3000 } : { max_tokens: 1200 };
+    // Temperatura 0 = determinístico, sin creatividad, máxima precisión
+    const tempParam = aiConfig.isGPT5 ? {} : { temperature: 0 };
 
     const response = await axios.post(
       aiConfig.apiUrl,
@@ -2372,8 +3903,7 @@ async function generateAIResponse(context: ConversationContext): Promise<AIRespo
       personalityManager.addMessage(cleanPhone, 'assistant', text);
     }
 
-    // Limpiar contextos inactivos (automático cada 60 minutos)
-    personalityManager.cleanupInactiveContexts(60);
+    // cleanupInactiveContexts se ejecuta en intervalo (ver módulo de inicialización abajo)
 
     return {
       text,
@@ -2517,7 +4047,80 @@ async function executeToolCall(
         result = await DirectDBTools.getAvailableTimeSlots(args as any);
         break;
 
-      case 'scheduleAppointment':
+      case 'getAvailableTimeSlotsForDoctorOnDate':
+        // NUEVA herramienta: Obtiene slots reales disponibles verificando citas existentes
+        result = await DirectDBTools.getAvailableTimeSlotsForDoctorOnDate(args as any);
+        break;
+
+      case 'scheduleAppointment': {
+        // ⚠️ CORRECCIÓN DE PLACEHOLDERS: Si la IA envió "[id]" en lugar del número real
+        const phone = context.phone;
+        const stateCtx = phone ? getStateContext(phone) : null;
+        
+        // Función para detectar si es un placeholder
+        const isPlaceholder = (val: any): boolean => {
+          if (val === null || val === undefined) return true;
+          if (typeof val === 'string') {
+            const lower = val.toLowerCase().trim();
+            return lower === '[id]' || lower === '[id real]' || 
+                   lower === 'id' || lower === '[numero]' ||
+                   lower.includes('[') || lower.includes('real');
+          }
+          return false;
+        };
+        
+        // Corregir patient_id si es placeholder
+        if (isPlaceholder(args.patient_id)) {
+          const realPatientId = stateCtx?.patientId || context.patient_id;
+          if (realPatientId) {
+            aiLogger.warn({
+              phone,
+              originalPatientId: args.patient_id,
+              correctedPatientId: realPatientId
+            }, '🔧 CORRECCIÓN: Reemplazando patient_id placeholder con valor real del estado');
+            args.patient_id = realPatientId;
+          } else {
+            aiLogger.error({ phone, args }, '❌ No se puede corregir patient_id - no hay valor en estado');
+          }
+        }
+        
+        // Corregir availability_id si es placeholder
+        if (isPlaceholder(args.availability_id)) {
+          const realAvailabilityId = stateCtx?.availabilityId;
+          if (realAvailabilityId) {
+            aiLogger.warn({
+              phone,
+              originalAvailabilityId: args.availability_id,
+              correctedAvailabilityId: realAvailabilityId
+            }, '🔧 CORRECCIÓN: Reemplazando availability_id placeholder con valor real del estado');
+            args.availability_id = realAvailabilityId;
+          } else {
+            aiLogger.error({ phone, args }, '❌ No se puede corregir availability_id - no hay valor en estado');
+          }
+        }
+        
+        // Corregir scheduled_date si usa placeholder o está vacío
+        if (!args.scheduled_date || isPlaceholder(args.scheduled_date)) {
+          if (stateCtx?.selectedDate && stateCtx?.selectedTime) {
+            const correctedDate = `${stateCtx.selectedDate} ${stateCtx.selectedTime}`;
+            aiLogger.warn({
+              phone,
+              originalScheduledDate: args.scheduled_date,
+              correctedScheduledDate: correctedDate
+            }, '🔧 CORRECCIÓN: Construyendo scheduled_date desde estado');
+            args.scheduled_date = correctedDate;
+          }
+        }
+        
+        aiLogger.info({
+          phone,
+          correctedArgs: {
+            patient_id: args.patient_id,
+            availability_id: args.availability_id,
+            scheduled_date: args.scheduled_date
+          }
+        }, '📋 Args finales para scheduleAppointment');
+        
         result = await DirectDBTools.scheduleAppointment(args as any);
         
         // ⚠️ REGISTRAR CITA EN PERSISTENCIA SI FUE EXITOSA
@@ -2557,6 +4160,7 @@ async function executeToolCall(
           }
         }
         break;
+      }
 
       case 'cancelAppointment':
         result = await DirectDBTools.cancelAppointment(args as any);
@@ -2595,41 +4199,42 @@ async function executeToolCall(
         result = await DirectDBTools.getAvailabilityByDoctor(args as any);
         break;
 
-      // HERRAMIENTAS VIA MCP (menos frecuentes)
+      // HERRAMIENTAS ADICIONALES (AHORA DIRECTAS A BD)
       case 'listZones':
-        result = await MCPTools.listZones();
+        result = await DirectDBTools.listZones();
         break;
 
       case 'getEPSServices':
-        result = await MCPTools.getEPSServices(args.eps_id);
+        result = await DirectDBTools.getEPSServices({ eps_id: args.eps_id });
         break;
 
       case 'checkAvailabilityQuota':
-        result = await MCPTools.checkAvailabilityQuota(args as any);
+        result = await DirectDBTools.checkAvailabilityQuota(args as any);
         break;
 
       case 'searchCups':
-        result = await MCPTools.searchCups(args.cups_code);
+        result = await DirectDBTools.searchCups({ code: args.cups_code, ...args });
         break;
 
       case 'searchCupsByName':
-        result = await MCPTools.searchCupsByName(args.name);
+        result = await DirectDBTools.searchCupsByName({ name: args.name, limit: args.limit });
         break;
 
       case 'addToWaitingList':
-        result = await MCPTools.addToWaitingList(args as any);
+        // Usar la versión DirectDB que ya existe
+        result = await DirectDBTools.addToWaitingList(args as any);
         break;
 
       case 'getWaitingListAppointments':
-        result = await MCPTools.getWaitingListAppointments(args);
+        result = await DirectDBTools.getWaitingListAppointments(args);
         break;
 
       case 'reassignWaitingListAppointments':
-        result = await MCPTools.reassignWaitingListAppointments(args as any);
+        result = await DirectDBTools.reassignWaitingListAppointments(args as any);
         break;
 
       case 'cancelarCitasVencidas':
-        result = await MCPTools.cancelarCitasVencidas(args as any);
+        result = await DirectDBTools.cancelarCitasVencidas(args as any);
         break;
 
       default:
@@ -2756,6 +4361,11 @@ async function saveMessage(
   responseTimeMs: number
 ): Promise<void> {
   try {
+    // 🆕 PERSISTIR INTERACCIÓN EN CONVERSACIÓN JSON
+    await recordMessage(phone, userMessage, aiResponse).catch(err => {
+      aiLogger.warn({ error: err }, 'Error guardando en persistencia JSON');
+    });
+    
     const connection = await pool.getConnection();
     try {
       // Guardar mensaje entrante
@@ -2880,6 +4490,16 @@ export function getLangGraphStats() {
   }
   return null;
 }
+
+// ============================================================================
+// LIMPIEZA PERIÓDICA DE CONTEXTOS DE PERSONALIDAD
+// ============================================================================
+const _personalityCleanupTimer = setInterval(() => {
+  try {
+    personalityManager.cleanupInactiveContexts(60);
+  } catch (_) { /* silenciar errores de limpieza */ }
+}, 10 * 60 * 1000); // cada 10 minutos
+_personalityCleanupTimer.unref(); // No bloquear cierre del proceso
 
 export default {
   processMessage,

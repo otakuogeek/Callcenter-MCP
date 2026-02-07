@@ -2,13 +2,16 @@
  * WhatsApp Connection Service usando Baileys
  * Maneja la conexión real a WhatsApp Web con QR code
  * 
- * @version 2.0.0
+ * @version 2.2.0
  * @description Incluye mejoras:
  *   - Backoff exponencial para reconexiones
  *   - Notificaciones al admin cuando falla reconexión
  *   - Métricas Prometheus integradas
  *   - Logging estructurado con pino
  *   - Fallback mejorado para transcripción de audio
+ *   - 🆕 Normalización de texto entrante (caracteres invisibles)
+ *   - 🆕 Message debouncing (agrupa mensajes rápidos) - inspirado en moltbot
+ *   - 🆕 Response chunking inteligente - inspirado en moltbot
  */
 
 import makeWASocket, {
@@ -29,6 +32,13 @@ import { EventEmitter } from 'events';
 import pino from 'pino';
 import pool from '../db/pool';
 import { ResultSetHeader } from 'mysql2';
+
+// 🆕 Importar servicios de debouncing y chunking
+import { messageDebouncer, IncomingMessage } from './WhatsAppMessageDebouncer';
+import { chunkResponse, needsChunking } from './WhatsAppResponseChunker';
+import { normalizeIncomingText } from '../utils/whatsappUtils';
+
+// normalizeIncomingText importada desde ../utils/whatsappUtils
 
 // ============================================================================
 // LOGGER ESTRUCTURADO
@@ -190,7 +200,7 @@ async function notifyAdminConnectionFailure(reason: string): Promise<void> {
     // Insertar notificación en BD para que el dashboard la muestre
     await pool.execute(`
       INSERT INTO wa_messages (session_id, message_id, from_number, to_number, body, direction, status, metadata)
-      VALUES (?, ?, 'SYSTEM', 'ADMIN', ?, 'system', 'alert', ?)
+      VALUES (?, ?, 'SYSTEM', 'ADMIN', ?, 'outbound', 'failed', ?)
     `, [
       connectionState.sessionId,
       `alert_${Date.now()}`,
@@ -231,6 +241,12 @@ export async function startConnection(): Promise<{ success: boolean; message: st
         message: connectionState.status === 'qr_pending' ? 'Esperando escaneo de QR' : 'Conexión en progreso',
         qrCode: connectionState.qrCodeImage || undefined
       };
+    }
+
+    // Resetear intentos de reconexión para conexión manual
+    if (connectionState.reconnectAttempts > 0) {
+      waLogger.info({ previousAttempts: connectionState.reconnectAttempts }, 'Resetting reconnect attempts for manual connection');
+      connectionState.reconnectAttempts = 0;
     }
 
     // Crear directorio de auth si no existe
@@ -292,7 +308,7 @@ async function connectToWhatsApp(): Promise<void> {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger)
       },
-      printQRInTerminal: true, // También mostrar en terminal
+      printQRInTerminal: false, // Deprecated en Baileys recientes, usamos connection.update
       logger,
       browser: ['Biosanar IPS', 'Chrome', '120.0.0'],
       generateHighQualityLinkPreview: false,
@@ -405,12 +421,54 @@ async function connectToWhatsApp(): Promise<void> {
     // Guardar credenciales cuando se actualicen
     socket.ev.on('creds.update', saveCreds);
 
-    // Manejar mensajes entrantes
+    // Manejar mensajes entrantes CON DEBOUNCING
     socket.ev.on('messages.upsert', async (m) => {
       if (m.type === 'notify') {
         for (const msg of m.messages) {
           if (!msg.key.fromMe && msg.message) {
-            await handleIncomingMessage(msg, socket);
+            // 🆕 Usar debouncer para agrupar mensajes rápidos
+            const from = msg.key.remoteJid;
+            if (!from) continue;
+            
+            const phoneNumber = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
+            
+            // Extraer texto del mensaje para el debouncer
+            const messageContent = msg.message;
+            let body = '';
+            
+            if (messageContent?.conversation) {
+              body = messageContent.conversation;
+            } else if (messageContent?.extendedTextMessage?.text) {
+              body = messageContent.extendedTextMessage.text;
+            } else if (messageContent?.imageMessage?.caption) {
+              body = messageContent.imageMessage.caption;
+            } else if (messageContent?.audioMessage) {
+              // Audio se procesa inmediatamente (sin debounce)
+              await handleIncomingMessage(msg, socket);
+              continue;
+            }
+            
+            if (!body.trim()) {
+              waLogger.debug({ from }, 'Message without text (possibly unsupported media)');
+              continue;
+            }
+            
+            // Normalizar y agregar al debouncer
+            body = normalizeIncomingText(body);
+            
+            const incomingMsg: IncomingMessage = {
+              phone: phoneNumber,
+              text: body,
+              timestamp: Date.now(),
+              messageId: msg.key?.id || `msg_${Date.now()}`,
+              profileName: msg.pushName || 'Usuario'
+            };
+            
+            // El debouncer llamará a handleDebouncedMessages cuando esté listo
+            messageDebouncer.addMessage(
+              incomingMsg, 
+              (messages) => handleDebouncedMessages(messages, socket)
+            );
           }
         }
       }
@@ -420,6 +478,43 @@ async function connectToWhatsApp(): Promise<void> {
     waLogger.error({ error }, 'Error in connectToWhatsApp');
     throw error;
   }
+}
+
+/**
+ * 🆕 Handler para mensajes agrupados por el debouncer
+ */
+async function handleDebouncedMessages(
+  messages: IncomingMessage[], 
+  socket: WASocket
+): Promise<void> {
+  if (messages.length === 0) return;
+  
+  const phone = messages[0].phone;
+  const profileName = messages[0].profileName;
+  
+  // Combinar todos los mensajes en uno solo
+  const combinedText = messages.map(m => m.text).join('\n');
+  
+  waLogger.info({
+    phone,
+    messagesCount: messages.length,
+    combinedLength: combinedText.length,
+    texts: messages.map(m => m.text.substring(0, 30))
+  }, '🔄 Processing debounced messages');
+  
+  // Crear un mensaje sintético para procesar
+  const syntheticMsg = {
+    key: {
+      remoteJid: `${phone}@s.whatsapp.net`,
+      id: messages[messages.length - 1].messageId
+    },
+    pushName: profileName,
+    message: {
+      conversation: combinedText
+    }
+  } as proto.IWebMessageInfo;
+  
+  await handleIncomingMessage(syntheticMsg, socket);
 }
 
 /**
@@ -474,6 +569,9 @@ async function handleIncomingMessage(msg: proto.IWebMessageInfo, socket: WASocke
       waLogger.debug({ from }, 'Message without text (possibly unsupported media)');
       return;
     }
+
+    // Normalizar texto entrante (eliminar caracteres invisibles)
+    body = normalizeIncomingText(body);
 
     const phoneNumber = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
     const pushName = msg.pushName || 'Usuario';
@@ -574,6 +672,7 @@ async function handleIncomingMessage(msg: proto.IWebMessageInfo, socket: WASocke
 /**
  * Flujo tradicional de IA (WhatsAppAI + TTS separado)
  * Usado como fallback cuando GPT Audio no está disponible
+ * 🆕 Ahora con chunking inteligente para respuestas largas
  */
 async function fallbackToStandardAIFlow(
   body: string, 
@@ -591,11 +690,28 @@ async function fallbackToStandardAIFlow(
   metrics.aiProcessingTimeTotal += aiDuration;
   metrics.aiProcessingCount++;
   
+  // 🆕 Verificar si es respuesta silenciosa (silent token)
+  if (result.success && (result as any).silent) {
+    waLogger.info({ to: phoneNumber }, '🤫 Silent response - not sending message');
+    return;
+  }
+  
   if (result.success && result.response) {
+    // 🆕 Aplicar chunking si la respuesta es muy larga
+    const responseChunks = needsChunking(result.response) 
+      ? chunkResponse(result.response, { mode: 'smart' }).chunks
+      : [result.response];
+    
+    waLogger.debug({ 
+      to: phoneNumber, 
+      responseLength: result.response.length,
+      chunksCount: responseChunks.length 
+    }, 'Response chunking applied');
+    
     if (shouldRespondWithVoice) {
-      // Responder con nota de voz (TTS tradicional)
+      // Responder con nota de voz (TTS tradicional) - solo primer chunk
       waLogger.info({ to: phoneNumber }, 'Responding with voice note (TTS flow)');
-      await sendVoiceNote(phoneNumber, result.response, false);
+      await sendVoiceNote(phoneNumber, responseChunks[0], false);
       
       // Guardar respuesta en BD
       await saveMessageToDB({
@@ -607,10 +723,18 @@ async function fallbackToStandardAIFlow(
         aiResponse: result.response
       });
     } else {
-      // Responder con texto
-      await sendMessage(phoneNumber, result.response);
+      // 🆕 Responder con texto usando chunking si hay múltiples chunks
+      for (let i = 0; i < responseChunks.length; i++) {
+        const chunk = responseChunks[i];
+        await sendMessage(phoneNumber, chunk);
+        
+        // Pequeño delay entre chunks para evitar spam
+        if (i < responseChunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
       
-      // Guardar respuesta en BD
+      // Guardar respuesta completa en BD
       await saveMessageToDB({
         messageId: `resp_${Date.now()}`,
         from: connectionState.phoneNumber || 'bot',
@@ -625,7 +749,8 @@ async function fallbackToStandardAIFlow(
       to: phoneNumber, 
       aiDuration,
       toolCalls: result.toolCalls?.length || 0,
-      responseType: shouldRespondWithVoice ? 'voice-tts' : 'text'
+      responseType: shouldRespondWithVoice ? 'voice-tts' : 'text',
+      chunksCount: responseChunks.length
     }, 'AI response sent (standard flow)');
   }
 }
@@ -1105,9 +1230,80 @@ async function autoReconnect(): Promise<void> {
   }
 }
 
+/**
+ * Health check periódico: verifica que el WebSocket de Baileys esté realmente activo.
+ * Si el status dice "connected" pero el socket está muerto, fuerza reconexión.
+ */
+const HEALTH_CHECK_INTERVAL_MS = 60_000; // cada 60 segundos
+let healthCheckTimer: NodeJS.Timeout | null = null;
+
+function startHealthCheck(): void {
+  if (healthCheckTimer) clearInterval(healthCheckTimer);
+  
+  healthCheckTimer = setInterval(async () => {
+    try {
+      // Solo verificar si se supone que estamos conectados
+      if (connectionState.status !== 'connected') return;
+      
+      const socket = connectionState.socket;
+      
+      // Verificar si el socket existe y el WebSocket interno está activo
+      const wsState = (socket as any)?.ws?.readyState;
+      const isSocketAlive = socket && (wsState === undefined || wsState === 1); // 1 = OPEN, undefined = Baileys internals vary
+      
+      if (!socket) {
+        waLogger.warn('⚠️ Health check: status=connected but socket is null. Forcing reconnection.');
+        connectionState.status = 'disconnected';
+        connectionState.lastError = null;
+        connectionState.reconnectAttempts = 0;
+        await startConnection();
+        return;
+      }
+      
+      // Intentar un "ping" ligero: verificar que podemos acceder al user info
+      try {
+        const user = socket.user;
+        if (!user?.id) {
+          waLogger.warn('⚠️ Health check: socket exists but user info is empty. Possible zombie connection.');
+          // Dar una oportunidad antes de reconectar - podría ser temporal
+        }
+      } catch (pingError) {
+        waLogger.warn({ error: pingError }, '⚠️ Health check: socket error on user access. Forcing reconnection.');
+        connectionState.status = 'disconnected';
+        connectionState.lastError = null;
+        connectionState.reconnectAttempts = 0;
+        try {
+          socket.end(undefined);
+        } catch (e) { /* ignore */ }
+        await startConnection();
+        return;
+      }
+      
+      // Verificar si el WebSocket subyacente está cerrado
+      if (wsState !== undefined && wsState !== 1) {
+        waLogger.warn({ wsState }, '⚠️ Health check: WebSocket not OPEN (state=' + wsState + '). Forcing reconnection.');
+        connectionState.status = 'disconnected';
+        connectionState.lastError = null;
+        connectionState.reconnectAttempts = 0;
+        try {
+          socket.end(undefined);
+        } catch (e) { /* ignore */ }
+        await startConnection();
+        return;
+      }
+      
+    } catch (error) {
+      waLogger.error({ error }, 'Error in health check');
+    }
+  }, HEALTH_CHECK_INTERVAL_MS);
+  
+  waLogger.info({ intervalMs: HEALTH_CHECK_INTERVAL_MS }, '🏥 WhatsApp health check started');
+}
+
 // Ejecutar auto-reconexión al cargar el módulo (con pequeño delay para que el servidor esté listo)
 setTimeout(() => {
   autoReconnect().catch(err => waLogger.error({ error: err }, 'Error starting auto-reconnect'));
+  startHealthCheck();
 }, 3000);
 
 // Exportar instancia singleton

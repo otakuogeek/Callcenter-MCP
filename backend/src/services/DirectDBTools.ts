@@ -298,7 +298,65 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
       const elapsed = Date.now() - startTime;
       logger.info({ elapsed, count: rows.length, args }, 'getAvailableAppointments completed');
 
-      // Agrupar por especialidad
+      // ============================================================================
+      // CALCULAR SLOTS ESPECÍFICOS DISPONIBLES PARA CADA AGENDA
+      // ============================================================================
+      
+      // Obtener todas las citas existentes para las availabilities
+      const availabilityIds = rows.map(r => r.availability_id);
+      let existingAppointments: RowDataPacket[] = [];
+      
+      if (availabilityIds.length > 0) {
+        const placeholders = availabilityIds.map(() => '?').join(',');
+        const [appts] = await connection.execute<RowDataPacket[]>(`
+          SELECT availability_id, TIME(scheduled_at) as scheduled_time
+          FROM appointments
+          WHERE availability_id IN (${placeholders}) AND status NOT IN ('Cancelada', 'Pendiente')
+        `, availabilityIds);
+        existingAppointments = appts;
+      }
+      
+      // Crear un Set de slots ocupados por availability_id
+      const occupiedSlots: { [key: number]: Set<string> } = {};
+      for (const appt of existingAppointments) {
+        if (!occupiedSlots[appt.availability_id]) {
+          occupiedSlots[appt.availability_id] = new Set();
+        }
+        // El scheduled_time viene en UTC
+        const timeStr = String(appt.scheduled_time).substring(0, 5);
+        occupiedSlots[appt.availability_id].add(timeStr);
+      }
+      
+      // Función para generar slots de una agenda
+      const generateSlots = (startTimeUTC: string, endTimeUTC: string, durationMinutes: number, occupiedSet: Set<string>) => {
+        const slots: Array<{time_colombia: string, time_formatted: string}> = [];
+        let currentTimeUTC = startTimeUTC + ':00';
+        const endTimeUTCFull = endTimeUTC + ':00';
+        
+        while (currentTimeUTC < endTimeUTCFull) {
+          const timeStrUTC = currentTimeUTC.substring(0, 5);
+          
+          // Verificar si este slot está ocupado (comparar en UTC)
+          if (!occupiedSet.has(timeStrUTC)) {
+            const timeColombiaStr = utcToColombiaTime(timeStrUTC);
+            slots.push({
+              time_colombia: timeColombiaStr,
+              time_formatted: formatColombiaTimeToAMPM(timeColombiaStr)
+            });
+          }
+          
+          // Avanzar al siguiente slot
+          const [hours, minutes] = timeStrUTC.split(':').map(Number);
+          const totalMinutes = hours * 60 + minutes + durationMinutes;
+          const newHours = Math.floor(totalMinutes / 60);
+          const newMinutes = totalMinutes % 60;
+          currentTimeUTC = `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
+        }
+        
+        return slots;
+      };
+      
+      // Agrupar por especialidad CON SLOTS REALES
       const bySpecialty: { [key: string]: any[] } = {};
       for (const row of rows) {
         const specName = row.specialty_name;
@@ -308,8 +366,15 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
         // Convertir horarios de UTC a Colombia
         const startTimeStr = typeof row.start_time === 'string' ? row.start_time : String(row.start_time);
         const endTimeStr = typeof row.end_time === 'string' ? row.end_time : String(row.end_time);
-        const startTimeColombia = utcToColombiaTime(startTimeStr.substring(0, 5));
-        const endTimeColombia = utcToColombiaTime(endTimeStr.substring(0, 5));
+        const startTimeUTC = startTimeStr.substring(0, 5);
+        const endTimeUTC = endTimeStr.substring(0, 5);
+        const startTimeColombia = utcToColombiaTime(startTimeUTC);
+        const endTimeColombia = utcToColombiaTime(endTimeUTC);
+        const durationMinutes = row.duration_minutes || 20;
+        
+        // Generar slots disponibles para esta agenda
+        const occupiedSet = occupiedSlots[row.availability_id] || new Set();
+        const availableSlots = generateSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
         
         bySpecialty[specName].push({
           availability_id: row.availability_id,
@@ -328,7 +393,10 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
           doctor_name: row.doctor_name,
           location_id: row.location_id,
           location_name: row.location_name,
-          waiting_list_count: row.waiting_list_count || 0
+          waiting_list_count: row.waiting_list_count || 0,
+          // ⭐ NUEVO: SLOTS ESPECÍFICOS DISPONIBLES
+          horarios_disponibles: availableSlots.map(s => s.time_formatted),
+          horarios_24h: availableSlots.map(s => s.time_colombia)
         });
       }
 
@@ -347,12 +415,57 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
 
       logger.info({ uniqueDoctorsCount: uniqueDoctors.length, doctors: uniqueDoctors }, 'getAvailableAppointments: unique doctors found');
 
+      // Generar lista simplificada para mostrar al usuario CON HORARIOS REALES
+      const opcionesParaMostrar = rows.map((r, index) => {
+        const startTimeStr = typeof r.start_time === 'string' ? r.start_time : String(r.start_time);
+        const endTimeStr = typeof r.end_time === 'string' ? r.end_time : String(r.end_time);
+        const startTimeUTC = startTimeStr.substring(0, 5);
+        const endTimeUTC = endTimeStr.substring(0, 5);
+        const startTimeColombia = utcToColombiaTime(startTimeUTC);
+        const durationMinutes = r.duration_minutes || 20;
+        
+        // Obtener los slots disponibles para esta agenda
+        const occupiedSet = occupiedSlots[r.availability_id] || new Set();
+        const availableSlots = generateSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
+        
+        return {
+          opcion: index + 1,
+          texto_para_mostrar: `${formatDateToSpanish(r.appointment_date)} - ${r.location_name}`,
+          availability_id: r.availability_id,
+          fecha: formatDateToSpanish(r.appointment_date),
+          fecha_iso: r.appointment_date,
+          hora_inicio: formatTimeToAMPM(startTimeColombia),
+          doctor: r.doctor_name,
+          doctor_id: r.doctor_id,
+          sede: r.location_name,
+          cupos: r.slots_available,
+          specialty_id: r.specialty_id,
+          // ⭐ HORARIOS EXACTOS DISPONIBLES - USA SOLO ESTOS
+          horarios_disponibles: availableSlots.map(s => s.time_formatted),
+          horarios_24h: availableSlots.map(s => s.time_colombia)
+        };
+      });
+
       return {
         success: true,
         data: {
+          // ⚠️ INSTRUCCIONES CRÍTICAS PARA LA IA - LEER PRIMERO
+          INSTRUCCIONES_CRITICAS: `⛔ REGLAS ABSOLUTAS DE HORARIOS:
+1. CADA OPCIÓN tiene un campo "horarios_disponibles" con los horarios EXACTOS
+2. SOLO puedes ofrecer los horarios listados en "horarios_disponibles" - NUNCA INVENTES OTROS
+3. Las citas son cada ${rows[0]?.duration_minutes || 20} minutos: X:00, X:20, X:40 - NUNCA X:30
+4. Si el paciente elige una fecha, muestra los "horarios_disponibles" de esa opción
+5. PROHIBIDO inventar horarios como 8:30, 10:30, 11:30 - NO EXISTEN`,
+          
+          EJEMPLO_USO: "Si el paciente dice 'Martes 10', busca la opción con esa fecha y ofrece sus 'horarios_disponibles'",
+          
           total: rows.length,
           unique_doctors_count: uniqueDoctors.length,
           unique_doctors: uniqueDoctors,
+          
+          // Lista con HORARIOS EXACTOS DISPONIBLES
+          opciones_disponibles: opcionesParaMostrar,
+          
           doctors_summary: doctorsSummary,
           IMPORTANTE: uniqueDoctors.length > 1 
             ? `⚠️ HAY ${uniqueDoctors.length} DOCTORES DISPONIBLES: ${uniqueDoctors.join(', ')}. ¡DEBES mostrar TODOS al paciente!`
@@ -362,8 +475,15 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
           appointments: rows.map(r => {
             const startTimeStr = typeof r.start_time === 'string' ? r.start_time : String(r.start_time);
             const endTimeStr = typeof r.end_time === 'string' ? r.end_time : String(r.end_time);
-            const startTimeColombia = utcToColombiaTime(startTimeStr.substring(0, 5));
-            const endTimeColombia = utcToColombiaTime(endTimeStr.substring(0, 5));
+            const startTimeUTC = startTimeStr.substring(0, 5);
+            const endTimeUTC = endTimeStr.substring(0, 5);
+            const startTimeColombia = utcToColombiaTime(startTimeUTC);
+            const endTimeColombia = utcToColombiaTime(endTimeUTC);
+            const durationMinutes = r.duration_minutes || 20;
+            
+            // Obtener los slots disponibles para esta agenda
+            const occupiedSet = occupiedSlots[r.availability_id] || new Set();
+            const availableSlots = generateSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
             
             return {
               availability_id: r.availability_id,
@@ -382,7 +502,10 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
               doctor_name: r.doctor_name,
               location_id: r.location_id,
               location_name: r.location_name,
-              waiting_list_count: r.waiting_list_count || 0
+              waiting_list_count: r.waiting_list_count || 0,
+              // ⭐ HORARIOS EXACTOS DISPONIBLES
+              horarios_disponibles: availableSlots.map(s => s.time_formatted),
+              horarios_24h: availableSlots.map(s => s.time_colombia)
             };
           })
         }
@@ -548,6 +671,265 @@ export async function getAvailableTimeSlots(args: {
 }
 
 // ============================================================================
+// HORARIOS DISPONIBLES PARA DOCTOR EN FECHA ESPECÍFICA
+// ============================================================================
+
+/**
+ * Obtiene TODOS los slots disponibles para un doctor en una fecha específica.
+ * Combina múltiples agendas del mismo día y verifica qué slots ya están ocupados.
+ * 
+ * IMPORTANTE: Esta función resuelve el problema de ofrecer slots ocupados
+ * cuando hay múltiples agendas del mismo doctor en un día.
+ */
+export async function getAvailableTimeSlotsForDoctorOnDate(args: {
+  doctor_id?: number;
+  doctor_name?: string;
+  date: string;  // Formato YYYY-MM-DD
+  specialty_id?: number;
+}): Promise<any> {
+  const startTime = Date.now();
+  
+  logger.info({ args }, 'getAvailableTimeSlotsForDoctorOnDate: fetching slots');
+
+  if (!args.date) {
+    return { success: false, error: 'La fecha es requerida' };
+  }
+
+  if (!args.doctor_id && !args.doctor_name) {
+    return { success: false, error: 'Se requiere doctor_id o doctor_name' };
+  }
+
+  try {
+    const connection = await pool.getConnection();
+    try {
+      // 1. Obtener todas las agendas del doctor en esa fecha
+      let whereClause = "WHERE DATE_FORMAT(a.date, '%Y-%m-%d') = ? AND a.status = 'Activa' AND (a.is_paused = 0 OR a.is_paused IS NULL)";
+      const params: any[] = [args.date];
+
+      if (args.doctor_id) {
+        whereClause += ' AND a.doctor_id = ?';
+        params.push(args.doctor_id);
+      } else if (args.doctor_name) {
+        whereClause += ' AND d.name LIKE ?';
+        params.push(`%${args.doctor_name}%`);
+      }
+
+      if (args.specialty_id) {
+        whereClause += ' AND a.specialty_id = ?';
+        params.push(args.specialty_id);
+      }
+
+      const [availRows] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          a.id AS availability_id,
+          DATE_FORMAT(a.date, '%Y-%m-%d') AS date,
+          a.start_time,
+          a.end_time,
+          a.capacity,
+          a.booked_slots,
+          a.duration_minutes,
+          a.specialty_id,
+          a.doctor_id,
+          a.location_id,
+          s.name AS specialty_name,
+          d.name AS doctor_name,
+          l.name AS location_name,
+          (a.capacity - a.booked_slots) AS slots_available
+        FROM availabilities a
+        JOIN specialties s ON a.specialty_id = s.id
+        JOIN doctors d ON a.doctor_id = d.id
+        JOIN locations l ON a.location_id = l.id
+        ${whereClause}
+        ORDER BY a.start_time ASC
+      `, params);
+
+      if (availRows.length === 0) {
+        return { 
+          success: true, 
+          data: {
+            available_times: [],
+            available_times_formatted: [],
+            message: 'No hay agendas disponibles para este doctor en esta fecha'
+          }
+        };
+      }
+
+      // 2. Para cada agenda, obtener slots ocupados
+      const allSlots: Array<{
+        time_colombia: string;
+        time_utc: string;
+        time_formatted: string;
+        availability_id: number;
+        specialty_name: string;
+        location_name: string;
+        scheduled_datetime: string;
+      }> = [];
+
+      let totalSlotsAvailable = 0;
+      const agendaSummary: Array<{
+        availability_id: number;
+        start_time: string;
+        end_time: string;
+        slots_available: number;
+        slots_total: number;
+        is_full: boolean;
+      }> = [];
+
+      for (const avail of availRows) {
+        const durationMinutes = avail.duration_minutes || 20;
+        
+        // Verificar si la agenda está llena ANTES de procesar
+        if (avail.slots_available <= 0) {
+          agendaSummary.push({
+            availability_id: avail.availability_id,
+            start_time: utcToColombiaTime(String(avail.start_time).substring(0, 5)),
+            end_time: utcToColombiaTime(String(avail.end_time).substring(0, 5)),
+            slots_available: 0,
+            slots_total: avail.capacity,
+            is_full: true
+          });
+          logger.info({ 
+            availability_id: avail.availability_id,
+            slots_available: avail.slots_available 
+          }, 'Agenda completa, saltando');
+          continue; // Saltar agendas completas
+        }
+
+        // Obtener citas existentes para esta agenda
+        const [existingAppts] = await connection.execute<RowDataPacket[]>(`
+          SELECT scheduled_at, duration_minutes
+          FROM appointments
+          WHERE availability_id = ? AND status NOT IN ('Cancelada', 'Pendiente')
+        `, [avail.availability_id]);
+
+        // Crear set de horarios ocupados
+        const bookedTimesUTC = new Set<string>();
+        for (const appt of existingAppts) {
+          let timeStr: string;
+          if (appt.scheduled_at instanceof Date) {
+            timeStr = appt.scheduled_at.toISOString().substring(11, 19);
+          } else {
+            const dateStr = String(appt.scheduled_at);
+            if (dateStr.includes('T')) {
+              timeStr = dateStr.split('T')[1].substring(0, 8);
+            } else if (dateStr.includes(' ')) {
+              timeStr = dateStr.split(' ')[1].substring(0, 8);
+            } else {
+              timeStr = dateStr;
+            }
+          }
+          bookedTimesUTC.add(timeStr);
+          bookedTimesUTC.add(timeStr.substring(0, 5) + ':00');
+        }
+
+        logger.debug({ 
+          availability_id: avail.availability_id,
+          bookedTimesCount: bookedTimesUTC.size,
+          bookedTimes: Array.from(bookedTimesUTC)
+        }, 'Horarios ocupados en esta agenda');
+
+        // Generar slots disponibles
+        const startTimeUTC = String(avail.start_time).substring(0, 5);
+        const endTimeUTC = String(avail.end_time).substring(0, 5);
+
+        let currentTimeUTC = startTimeUTC + ':00';
+        const endTimeUTCFull = endTimeUTC + ':00';
+        let slotsInThisAgenda = 0;
+
+        while (currentTimeUTC < endTimeUTCFull) {
+          const timeStrUTC = currentTimeUTC.substring(0, 5);
+          
+          // Verificar si este slot NO está ocupado
+          if (!bookedTimesUTC.has(currentTimeUTC) && !bookedTimesUTC.has(timeStrUTC + ':00')) {
+            const timeColombiaStr = utcToColombiaTime(timeStrUTC);
+            
+            allSlots.push({
+              time_colombia: timeColombiaStr,
+              time_utc: timeStrUTC,
+              time_formatted: formatColombiaTimeToAMPM(timeColombiaStr),
+              availability_id: avail.availability_id,
+              specialty_name: avail.specialty_name,
+              location_name: avail.location_name,
+              scheduled_datetime: `${avail.date} ${currentTimeUTC}`
+            });
+            slotsInThisAgenda++;
+            totalSlotsAvailable++;
+          }
+
+          // Avanzar al siguiente slot
+          const [hours, minutes] = timeStrUTC.split(':').map(Number);
+          const totalMinutes = hours * 60 + minutes + durationMinutes;
+          const newHours = Math.floor(totalMinutes / 60);
+          const newMinutes = totalMinutes % 60;
+          currentTimeUTC = `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
+        }
+
+        agendaSummary.push({
+          availability_id: avail.availability_id,
+          start_time: utcToColombiaTime(startTimeUTC),
+          end_time: utcToColombiaTime(endTimeUTC),
+          slots_available: slotsInThisAgenda,
+          slots_total: avail.capacity,
+          is_full: slotsInThisAgenda === 0
+        });
+      }
+
+      // Ordenar slots por hora
+      allSlots.sort((a, b) => a.time_colombia.localeCompare(b.time_colombia));
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ 
+        elapsed, 
+        totalSlots: allSlots.length,
+        agendasProcessed: availRows.length,
+        agendaSummary
+      }, 'getAvailableTimeSlotsForDoctorOnDate completed');
+
+      // Si no hay slots disponibles
+      if (allSlots.length === 0) {
+        return {
+          success: true,
+          data: {
+            available_times: [],
+            available_times_formatted: [],
+            total_slots_available: 0,
+            message: 'No hay horarios disponibles para este doctor en esta fecha. Todas las agendas están completas.',
+            agendas_summary: agendaSummary,
+            doctor_name: availRows[0]?.doctor_name,
+            date: args.date,
+            date_formatted: formatDateToSpanish(args.date)
+          }
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          doctor_name: availRows[0].doctor_name,
+          doctor_id: availRows[0].doctor_id,
+          specialty_name: availRows[0].specialty_name,
+          location_name: availRows[0].location_name,
+          date: args.date,
+          date_formatted: formatDateToSpanish(args.date),
+          total_slots_available: totalSlotsAvailable,
+          available_times: allSlots.map(s => s.time_colombia),
+          available_times_formatted: allSlots.map(s => s.time_formatted),
+          slots_detail: allSlots,
+          agendas_summary: agendaSummary,
+          timezone: 'America/Bogota',
+          note: 'Horarios verificados contra citas existentes. Solo se muestran slots realmente disponibles.'
+        }
+      };
+    } finally {
+      connection.release();
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, args, stack: error.stack }, 'getAvailableTimeSlotsForDoctorOnDate error');
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
 // AGENDAR CITA
 // ============================================================================
 
@@ -558,10 +940,13 @@ export async function scheduleAppointment(args: {
   scheduled_datetime?: string;
   reason?: string;
   priority_level?: string;
+  cups_code?: string;
+  cups_manual_name?: string;
+  create_double_appointment?: boolean;
 }): Promise<any> {
   const startTime = Date.now();
   
-  logger.info({ args }, 'scheduleAppointment: creating appointment');
+  logger.info({ args }, 'scheduleAppointment: creating appointment with extended options');
 
   try {
     const connection = await pool.getConnection();
@@ -654,12 +1039,33 @@ export async function scheduleAppointment(args: {
         ? avail.date.toISOString().split('T')[0]
         : String(avail.date).split('T')[0];
 
+      // Buscar CUPS si se proporcionó
+      let cups_id = null;
+      if (args.cups_code) {
+        const [cupsRows] = await connection.execute<RowDataPacket[]>(`
+          SELECT id FROM cups WHERE code = ? AND is_active = 1 LIMIT 1
+        `, [args.cups_code.trim()]);
+        
+        if (cupsRows.length > 0) {
+          cups_id = cupsRows[0].id;
+          logger.info({ cups_code: args.cups_code, cups_id }, 'CUPS found');
+        } else if (args.cups_manual_name) {
+          // Registrar CUPS manualmente si no existe
+          const [insertResult] = await connection.execute<ResultSetHeader>(`
+            INSERT INTO cups (code, name, is_active) 
+            VALUES (?, ?, 1)
+          `, [args.cups_code.trim(), args.cups_manual_name]);
+          cups_id = insertResult.insertId;
+          logger.info({ cups_code: args.cups_code, cups_id, manual: true }, 'CUPS registered manually');
+        }
+      }
+
       // Insertar cita usando scheduled_at (datetime completo)
       const [result] = await connection.execute<ResultSetHeader>(`
         INSERT INTO appointments 
         (patient_id, doctor_id, specialty_id, location_id, availability_id, 
-         scheduled_at, duration_minutes, reason, status, appointment_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente')
+         scheduled_at, duration_minutes, reason, cups_id, status, appointment_source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente')
       `, [
         args.patient_id,
         avail.doctor_id,
@@ -668,8 +1074,11 @@ export async function scheduleAppointment(args: {
         args.availability_id,
         `${dateStr} ${scheduledTime}`,
         duration,
-        args.reason || ''
+        args.reason || '',
+        cups_id
       ]);
+
+      const appointmentId = result.insertId;
 
       // Actualizar booked_slots
       await connection.execute(`
@@ -678,15 +1087,71 @@ export async function scheduleAppointment(args: {
         WHERE id = ?
       `, [args.availability_id]);
 
+      // Si se solicita cita doble, crear segunda cita consecutiva
+      let secondAppointmentId = null;
+      if (args.create_double_appointment) {
+        try {
+          // Calcular hora de la segunda cita (siguiente slot)
+          const [hours, minutes] = scheduledTime.split(':').map(Number);
+          const nextMinutes = minutes + duration;
+          const nextHours = hours + Math.floor(nextMinutes / 60);
+          const nextTime = `${String(nextHours).padStart(2, '0')}:${String(nextMinutes % 60).padStart(2, '0')}:00`;
+
+          // Verificar que aún hay cupos
+          const [checkSlots] = await connection.execute<RowDataPacket[]>(`
+            SELECT (capacity - booked_slots) AS slots_available 
+            FROM availabilities WHERE id = ?
+          `, [args.availability_id]);
+
+          if (checkSlots[0].slots_available > 0) {
+            const [secondResult] = await connection.execute<ResultSetHeader>(`
+              INSERT INTO appointments (
+                patient_id, doctor_id, specialty_id, location_id, availability_id,
+                scheduled_at, duration_minutes, reason, cups_id, status, appointment_source
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente')
+            `, [
+              args.patient_id,
+              avail.doctor_id,
+              avail.specialty_id,
+              avail.location_id,
+              args.availability_id,
+              `${dateStr} ${nextTime}`,
+              duration,
+              `${args.reason || ''} (cita doble)`,
+              cups_id
+            ]);
+
+            secondAppointmentId = secondResult.insertId;
+
+            // Actualizar booked_slots nuevamente
+            await connection.execute(`
+              UPDATE availabilities 
+              SET booked_slots = booked_slots + 1 
+              WHERE id = ?
+            `, [args.availability_id]);
+
+            logger.info({ secondAppointmentId, nextTime }, 'Second appointment created (double booking)');
+          } else {
+            logger.warn('Cannot create second appointment: no slots available');
+          }
+        } catch (doubleError: any) {
+          logger.error({ error: doubleError.message }, 'Error creating double appointment');
+          // No fallar toda la transacción, la primera cita ya está creada
+        }
+      }
+
       await connection.commit();
 
       const elapsed = Date.now() - startTime;
       logger.info({ 
-        appointmentId: result.insertId, 
+        appointmentId, 
+        secondAppointmentId,
         elapsed,
         patientId: args.patient_id,
-        scheduledTime
-      }, 'Appointment scheduled successfully');
+        scheduledTime,
+        isDouble: !!secondAppointmentId,
+        hasCUPS: !!cups_id
+      }, 'Appointment(s) scheduled successfully');
 
       // Obtener info del paciente
       const [patientRows] = await connection.execute<RowDataPacket[]>(`
@@ -695,10 +1160,23 @@ export async function scheduleAppointment(args: {
 
       const patient = patientRows[0] || {};
 
+      // Obtener info de CUPS si existe
+      let cupsInfo = null;
+      if (cups_id) {
+        const [cupsData] = await connection.execute<RowDataPacket[]>(`
+          SELECT code, name FROM cups WHERE id = ?
+        `, [cups_id]);
+        if (cupsData.length > 0) {
+          cupsInfo = cupsData[0];
+        }
+      }
+
       return {
         success: true,
         data: {
-          appointment_id: result.insertId,
+          appointment_id: appointmentId,
+          second_appointment_id: secondAppointmentId,
+          is_double_appointment: !!secondAppointmentId,
           patient_name: patient.name,
           patient_phone: patient.phone,
           doctor_name: avail.doctor_name,
@@ -709,7 +1187,8 @@ export async function scheduleAppointment(args: {
           scheduled_at: `${dateStr} ${scheduledTime}`,
           duration_minutes: duration,
           reason: args.reason,
-          status: 'Confirmada'
+          status: 'Confirmada',
+          cups_info: cupsInfo
         }
       };
     } catch (error: any) {
@@ -733,6 +1212,12 @@ export async function registerPatientSimple(args: {
   name: string;
   phone?: string;
   eps_id?: number;
+  birth_date?: string;
+  gender?: string;
+  email?: string;
+  address?: string;
+  city?: string;
+  zone_id?: string;
 }): Promise<any> {
   const startTime = Date.now();
   const document = args.document?.toString().replace(/\D/g, '');
@@ -741,7 +1226,7 @@ export async function registerPatientSimple(args: {
     return { success: false, error: 'Documento y nombre son requeridos' };
   }
 
-  logger.info({ document, name: args.name }, 'registerPatientSimple: registering patient');
+  logger.info({ document, name: args.name }, 'registerPatientSimple: registering patient with extended fields');
 
   try {
     const connection = await pool.getConnection();
@@ -759,18 +1244,47 @@ export async function registerPatientSimple(args: {
         };
       }
 
-      // Insertar nuevo paciente
+      // Buscar municipality_id si se proporcionó city
+      let municipality_id = null;
+      if (args.city && args.city.trim() !== '') {
+        const [municipalities] = await connection.execute<RowDataPacket[]>(`
+          SELECT id FROM municipalities WHERE name LIKE ? LIMIT 1
+        `, [`%${args.city.trim()}%`]);
+        municipality_id = municipalities[0]?.id || null;
+        if (municipality_id) {
+          logger.info({ city: args.city, municipality_id }, 'Municipality found');
+        }
+      }
+
+      // Convertir zone_id de string a int
+      const zone_id_int = args.zone_id && args.zone_id !== '' ? parseInt(args.zone_id) : null;
+
+      // Insertar nuevo paciente con todos los campos
       const [result] = await connection.execute<ResultSetHeader>(`
-        INSERT INTO patients (document, name, phone, insurance_eps_id, status)
-        VALUES (?, ?, ?, ?, 'Activo')
-      `, [document, args.name, args.phone || null, args.eps_id || null]);
+        INSERT INTO patients (
+          document, document_type_id, name, birth_date, gender,
+          phone, email, address, municipality_id, insurance_eps_id,
+          zone_id, status, created_at
+        ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Activo', NOW())
+      `, [
+        document,
+        args.birth_date || null,
+        args.gender || 'No especificado',
+        args.phone || null,
+        args.email || null,
+        args.address || null,
+        municipality_id,
+        args.eps_id || null,
+        zone_id_int
+      ]);
 
       const elapsed = Date.now() - startTime;
       logger.info({ 
         patientId: result.insertId, 
         elapsed,
-        document
-      }, 'Patient registered successfully');
+        document,
+        fieldsProvided: Object.keys(args).length
+      }, 'Patient registered successfully with extended data');
 
       return {
         success: true,
@@ -779,7 +1293,11 @@ export async function registerPatientSimple(args: {
           document: document,
           name: args.name,
           phone: args.phone,
-          eps_id: args.eps_id
+          eps_id: args.eps_id,
+          birth_date: args.birth_date,
+          gender: args.gender,
+          email: args.email,
+          municipality_id
         }
       };
     } finally {
@@ -830,6 +1348,182 @@ export async function listActiveEPS(): Promise<any> {
     }
   } catch (error: any) {
     logger.error({ error: error.message, stack: error.stack }, 'listActiveEPS error');
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
+// OBTENER ESPECIALIDADES AUTORIZADAS POR EPS
+// ============================================================================
+
+export async function getAuthorizedSpecialtiesForEPS(args: {
+  eps_id: number;
+}): Promise<any> {
+  const startTime = Date.now();
+  const { eps_id } = args;
+  
+  logger.info({ eps_id }, 'getAuthorizedSpecialtiesForEPS: fetching authorized specialties');
+
+  try {
+    const connection = await pool.getConnection();
+    try {
+      // Obtener nombre de la EPS
+      const [epsRows] = await connection.execute<RowDataPacket[]>(`
+        SELECT name FROM eps WHERE id = ?
+      `, [eps_id]);
+
+      if (epsRows.length === 0) {
+        return { success: false, error: 'EPS no encontrada' };
+      }
+
+      // Obtener especialidades autorizadas
+      const [rows] = await connection.execute<RowDataPacket[]>(`
+        SELECT DISTINCT 
+          s.id AS specialty_id,
+          s.name AS specialty_name
+        FROM specialties s
+        INNER JOIN eps_specialty_locations esl ON s.id = esl.specialty_id
+        WHERE esl.eps_id = ? AND esl.is_active = 1
+        ORDER BY s.name
+      `, [eps_id]);
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: rows.length, eps_id }, 'getAuthorizedSpecialtiesForEPS completed');
+
+      return {
+        success: true,
+        eps_id,
+        eps_name: epsRows[0].name,
+        authorized_specialties: rows,
+        total: rows.length,
+        message: rows.length > 0 
+          ? `Encontradas ${rows.length} especialidades autorizadas`
+          : 'No hay especialidades autorizadas para esta EPS'
+      };
+    } finally {
+      connection.release();
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, args, stack: error.stack }, 'getAuthorizedSpecialtiesForEPS error');
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
+// OBTENER SEDES AUTORIZADAS PARA PACIENTE
+// ============================================================================
+
+export async function getAuthorizedLocationsForPatient(args: {
+  eps_id: number;
+  specialty_id: number;
+  zone_id?: number;
+}): Promise<any> {
+  const startTime = Date.now();
+  const { eps_id, specialty_id, zone_id } = args;
+  
+  logger.info({ eps_id, specialty_id, zone_id }, 'getAuthorizedLocationsForPatient: fetching locations');
+
+  try {
+    const connection = await pool.getConnection();
+    try {
+      let query = `
+        SELECT DISTINCT 
+          l.id AS location_id,
+          l.name AS location_name,
+          l.zone_id,
+          l.address
+        FROM locations l
+        INNER JOIN eps_specialty_locations esl 
+          ON l.id = esl.location_id
+        WHERE esl.eps_id = ? 
+          AND esl.specialty_id = ?
+          AND esl.is_active = 1
+      `;
+      
+      const params: any[] = [eps_id, specialty_id];
+      
+      if (zone_id) {
+        query += ` AND l.zone_id = ?`;
+        params.push(zone_id);
+      }
+      
+      query += ` ORDER BY l.name`;
+      
+      const [rows] = await connection.execute<RowDataPacket[]>(query, params);
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: rows.length }, 'getAuthorizedLocationsForPatient completed');
+
+      return {
+        success: true,
+        locations: rows,
+        total: rows.length,
+        message: rows.length > 0
+          ? `Encontradas ${rows.length} sedes autorizadas`
+          : 'No hay sedes autorizadas para esta combinación'
+      };
+    } finally {
+      connection.release();
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, args, stack: error.stack }, 'getAuthorizedLocationsForPatient error');
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
+// OBTENER INFORMACIÓN DE CÓDIGO CUPS
+// ============================================================================
+
+export async function getCUPSInfo(args: {
+  cups_code: string;
+}): Promise<any> {
+  const startTime = Date.now();
+  const cups_code = args.cups_code?.toString().trim();
+  
+  if (!cups_code) {
+    return { success: false, error: 'Código CUPS es requerido' };
+  }
+
+  logger.info({ cups_code }, 'getCUPSInfo: fetching CUPS information');
+
+  try {
+    const connection = await pool.getConnection();
+    try {
+      const [rows] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          id AS cups_id,
+          code AS cups_code,
+          name AS cups_name,
+          description
+        FROM cups
+        WHERE code = ? AND is_active = 1
+        LIMIT 1
+      `, [cups_code]);
+
+      const elapsed = Date.now() - startTime;
+
+      if (rows.length === 0) {
+        logger.info({ elapsed, cups_code }, 'CUPS not found');
+        return {
+          success: false,
+          error: 'Código CUPS no encontrado',
+          cups_code,
+          suggestion: 'Proporcione el nombre del examen para registrarlo manualmente'
+        };
+      }
+
+      logger.info({ elapsed, cups_id: rows[0].cups_id }, 'getCUPSInfo completed');
+
+      return {
+        success: true,
+        cups_data: rows[0]
+      };
+    } finally {
+      connection.release();
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, args, stack: error.stack }, 'getCUPSInfo error');
     return { success: false, error: error.message };
   }
 }
@@ -929,12 +1623,13 @@ export async function getPatientAppointments(args: {
       let sql = `
         SELECT 
           a.id AS appointment_id,
-          a.scheduled_date,
-          a.scheduled_time,
-          a.end_time,
+          a.specialty_id,
+          DATE_FORMAT(a.scheduled_at, '%Y-%m-%d') AS scheduled_date,
+          DATE_FORMAT(a.scheduled_at, '%H:%i') AS scheduled_time,
+          DATE_FORMAT(DATE_ADD(a.scheduled_at, INTERVAL a.duration_minutes MINUTE), '%H:%i') AS end_time,
           a.status,
           a.reason,
-          a.source,
+          'whatsapp' AS source,
           s.name AS specialty_name,
           d.name AS doctor_name,
           l.name AS location_name
@@ -951,7 +1646,7 @@ export async function getPatientAppointments(args: {
         params.push(args.status);
       }
 
-      sql += ' ORDER BY a.scheduled_date DESC, a.scheduled_time DESC LIMIT 20';
+      sql += ' ORDER BY a.scheduled_at DESC LIMIT 20';
 
       const [rows] = await connection.execute<RowDataPacket[]>(sql, params);
 
@@ -964,6 +1659,7 @@ export async function getPatientAppointments(args: {
           total: rows.length,
           appointments: rows.map(r => ({
             appointment_id: r.appointment_id,
+            specialty_id: r.specialty_id,
             scheduled_date: r.scheduled_date,
             scheduled_time: r.scheduled_time,
             end_time: r.end_time,
@@ -1018,7 +1714,7 @@ export async function cancelAppointment(args: {
 
       const appt = apptRows[0];
 
-      if (appt.status === 'cancelled') {
+      if (appt.status === 'Cancelada') {
         await connection.rollback();
         return { success: false, error: 'La cita ya está cancelada' };
       }
@@ -1026,9 +1722,8 @@ export async function cancelAppointment(args: {
       // Cancelar la cita
       await connection.execute(`
         UPDATE appointments 
-        SET status = 'cancelled', 
-            cancellation_reason = ?,
-            cancelled_at = NOW()
+        SET status = 'Cancelada', 
+            cancellation_reason = ?
         WHERE id = ?
       `, [args.reason || 'Cancelada por paciente', args.appointment_id]);
 
@@ -1054,8 +1749,8 @@ export async function cancelAppointment(args: {
         data: {
           appointment_id: args.appointment_id,
           patient_name: appt.patient_name,
-          scheduled_date: appt.scheduled_date,
-          status: 'cancelled',
+          scheduled_at: appt.scheduled_at,
+          status: 'Cancelada',
           message: 'Cita cancelada exitosamente'
         }
       };
@@ -1489,6 +2184,83 @@ export async function addToWaitingList(args: {
 }
 
 // ============================================================================
+// OBTENER LISTA DE ESPERA DEL PACIENTE
+// ============================================================================
+
+export async function getPatientWaitingList(args: { 
+  patient_id?: number; 
+  document?: string;
+}): Promise<any> {
+  const startTime = Date.now();
+  
+  logger.info({ args }, 'getPatientWaitingList: fetching patient waiting list');
+
+  try {
+    const connection = await pool.getConnection();
+    try {
+      let patientId = args.patient_id;
+
+      // Si no hay patient_id pero hay document, buscar el paciente
+      if (!patientId && args.document) {
+        const [patientRows] = await connection.execute<RowDataPacket[]>(`
+          SELECT id FROM patients WHERE document = ?
+        `, [args.document.replace(/\D/g, '')]);
+
+        if (patientRows.length === 0) {
+          return { success: false, error: 'Paciente no encontrado' };
+        }
+        patientId = patientRows[0].id;
+      }
+
+      if (!patientId) {
+        return { success: false, error: 'Se requiere patient_id o document' };
+      }
+
+      const sql = `
+        SELECT 
+          awl.id AS waiting_list_id,
+          awl.specialty_id,
+          awl.priority_level,
+          awl.reason,
+          awl.status,
+          awl.created_at,
+          s.name AS specialty_name
+        FROM appointments_waiting_list awl
+        JOIN specialties s ON awl.specialty_id = s.id
+        WHERE awl.patient_id = ? AND awl.status = 'pending'
+        ORDER BY awl.created_at DESC
+      `;
+
+      const [rows] = await connection.execute<RowDataPacket[]>(sql, [patientId]);
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: rows.length, patientId }, 'getPatientWaitingList completed');
+
+      return {
+        success: true,
+        data: {
+          total: rows.length,
+          waiting_list: rows.map(r => ({
+            waiting_list_id: r.waiting_list_id,
+            specialty_id: r.specialty_id,
+            specialty_name: r.specialty_name,
+            priority_level: r.priority_level,
+            reason: r.reason,
+            status: r.status,
+            created_at: r.created_at
+          }))
+        }
+      };
+    } finally {
+      connection.release();
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, args, stack: error.stack }, 'getPatientWaitingList error');
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
 // BUSCAR DISPONIBILIDAD POR DOCTOR
 // ============================================================================
 
@@ -1693,6 +2465,1008 @@ export async function getWaitingListPosition(args: {
 }
 
 // ============================================================================
+// FUNCIÓN: LISTAR ZONAS GEOGRÁFICAS
+// ============================================================================
+
+export async function listZones(): Promise<any> {
+  const startTime = Date.now();
+  logger.info('listZones called');
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      const [rows] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          id,
+          name,
+          description,
+          created_at
+        FROM zones 
+        ORDER BY name ASC
+      `);
+
+      const zonesList = rows.map(zone => ({
+        id: zone.id,
+        name: zone.name,
+        description: zone.description || '',
+        created_at: zone.created_at
+      }));
+
+      const displayList = zonesList.map(zone => zone.name).join(' o ');
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: zonesList.length }, 'listZones completed');
+
+      return {
+        success: true,
+        count: zonesList.length,
+        zones_list: zonesList,
+        display_list: displayList,
+        message: `Se encontraron ${zonesList.length} zonas disponibles`,
+        usage_note: 'Use el campo "id" como zone_id para registrar pacientes con registerPatientSimple (OBLIGATORIO)',
+        presentation_note: 'Al mencionar las zonas al paciente, use el campo "display_list" para una presentación más natural sin IDs'
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'listZones');
+}
+
+// ============================================================================
+// FUNCIÓN: OBTENER SERVICIOS AUTORIZADOS POR EPS
+// ============================================================================
+
+export async function getEPSServices(args: { eps_id: number }): Promise<any> {
+  const startTime = Date.now();
+  const { eps_id } = args;
+  logger.info({ eps_id }, 'getEPSServices called');
+
+  if (!eps_id) {
+    return {
+      success: false,
+      error: 'El parámetro eps_id es obligatorio',
+      usage: 'Proporcione el ID de la EPS para consultar sus servicios autorizados'
+    };
+  }
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      const [rows] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          a.id as authorization_id,
+          a.eps_id,
+          e.name as eps_name,
+          e.code as eps_code,
+          a.specialty_id,
+          s.name as specialty_name,
+          s.description as specialty_description,
+          a.location_id,
+          l.name as location_name,
+          l.address as location_address,
+          a.authorized,
+          a.authorization_date,
+          a.expiration_date,
+          a.max_monthly_appointments,
+          a.copay_percentage,
+          a.requires_prior_authorization,
+          a.notes,
+          a.created_at
+        FROM eps_specialty_location_authorizations a
+        INNER JOIN eps e ON a.eps_id = e.id
+        INNER JOIN specialties s ON a.specialty_id = s.id
+        INNER JOIN locations l ON a.location_id = l.id
+        WHERE a.eps_id = ?
+          AND a.authorized = 1
+          AND (a.expiration_date IS NULL OR a.expiration_date >= CURDATE())
+        ORDER BY s.name ASC, l.name ASC
+      `, [eps_id]);
+
+      const servicesList = rows.map(service => ({
+        authorization_id: service.authorization_id,
+        eps: {
+          id: service.eps_id,
+          name: service.eps_name,
+          code: service.eps_code
+        },
+        specialty: {
+          id: service.specialty_id,
+          name: service.specialty_name,
+          description: service.specialty_description || ''
+        },
+        location: {
+          id: service.location_id,
+          name: service.location_name,
+          address: service.location_address
+        },
+        authorization_details: {
+          max_monthly_appointments: service.max_monthly_appointments,
+          copay_percentage: parseFloat(service.copay_percentage),
+          requires_prior_authorization: service.requires_prior_authorization === 1,
+          notes: service.notes
+        }
+      }));
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: servicesList.length, eps_id }, 'getEPSServices completed');
+
+      return {
+        success: true,
+        count: servicesList.length,
+        services: servicesList,
+        message: servicesList.length > 0 
+          ? `Se encontraron ${servicesList.length} servicios autorizados para la EPS`
+          : 'No se encontraron servicios autorizados para esta EPS'
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'getEPSServices');
+}
+
+// ============================================================================
+// FUNCIÓN: VERIFICAR CUPOS DISPONIBLES POR ESPECIALIDAD/SEDE
+// ============================================================================
+
+export async function checkAvailabilityQuota(args: { 
+  specialty_id: number; 
+  location_id: number; 
+  day_date?: string 
+}): Promise<any> {
+  const startTime = Date.now();
+  const { specialty_id, location_id, day_date } = args;
+  logger.info({ specialty_id, location_id, day_date }, 'checkAvailabilityQuota called');
+
+  if (!specialty_id || !location_id) {
+    return {
+      success: false,
+      error: 'specialty_id y location_id son requeridos'
+    };
+  }
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      // 1. Obtener información de la especialidad y sede
+      const [specialtyInfo] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          s.id as specialty_id,
+          s.name as specialty_name,
+          l.id as location_id,
+          l.name as location_name,
+          l.address as location_address,
+          l.phone as location_phone
+        FROM specialties s
+        CROSS JOIN locations l
+        WHERE s.id = ? AND l.id = ?
+      `, [specialty_id, location_id]);
+
+      if (specialtyInfo.length === 0) {
+        return {
+          success: false,
+          error: 'Especialidad o sede no encontrada'
+        };
+      }
+
+      const info = specialtyInfo[0];
+
+      // 2. Obtener TODAS las availabilities de esta especialidad en esta sede
+      let availQuery = `
+        SELECT 
+          a.id as availability_id,
+          a.date as appointment_date,
+          a.start_time,
+          a.end_time,
+          a.duration_minutes,
+          a.capacity as total_capacity,
+          d.id as doctor_id,
+          d.name as doctor_name,
+          d.email as doctor_email,
+          (
+            SELECT COUNT(*)
+            FROM appointments app
+            WHERE app.availability_id = a.id 
+              AND app.status IN ('Pendiente', 'Confirmada')
+          ) as booked_slots,
+          (
+            a.capacity - (
+              SELECT COUNT(*)
+              FROM appointments app
+              WHERE app.availability_id = a.id 
+                AND app.status IN ('Pendiente', 'Confirmada')
+            )
+          ) as slots_available
+        FROM availabilities a
+        INNER JOIN doctors d ON a.doctor_id = d.id
+        WHERE a.specialty_id = ? 
+          AND a.location_id = ? 
+          AND a.status = 'Activa'
+          AND a.date >= CURDATE()
+      `;
+
+      const queryParams: any[] = [specialty_id, location_id];
+
+      if (day_date) {
+        availQuery += ' AND a.date = ?';
+        queryParams.push(day_date);
+      }
+
+      availQuery += ' ORDER BY a.date ASC, a.start_time ASC';
+
+      const [availabilities] = await connection.execute<RowDataPacket[]>(availQuery, queryParams);
+
+      if (availabilities.length === 0) {
+        return {
+          success: false,
+          error: 'No hay agendas activas para esta especialidad en esta sede',
+          specialty: { id: info.specialty_id, name: info.specialty_name },
+          location: { id: info.location_id, name: info.location_name },
+          suggestion: 'Intente con otra sede o consulte las especialidades disponibles'
+        };
+      }
+
+      // Calcular totales
+      const totalCapacity = availabilities.reduce((sum, a) => sum + a.total_capacity, 0);
+      const totalBooked = availabilities.reduce((sum, a) => sum + a.booked_slots, 0);
+      const totalAvailable = availabilities.reduce((sum, a) => sum + a.slots_available, 0);
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, availabilities: availabilities.length }, 'checkAvailabilityQuota completed');
+
+      return {
+        success: true,
+        specialty: { id: info.specialty_id, name: info.specialty_name },
+        location: { id: info.location_id, name: info.location_name, address: info.location_address },
+        summary: {
+          total_capacity: totalCapacity,
+          total_booked: totalBooked,
+          total_available: totalAvailable,
+          availabilities_count: availabilities.length
+        },
+        availabilities: availabilities.map(a => ({
+          availability_id: a.availability_id,
+          date: a.appointment_date,
+          start_time: formatTimeToAMPM(utcToColombiaTime(a.start_time)),
+          end_time: formatTimeToAMPM(utcToColombiaTime(a.end_time)),
+          doctor: { id: a.doctor_id, name: a.doctor_name },
+          capacity: a.total_capacity,
+          booked: a.booked_slots,
+          available: a.slots_available
+        })),
+        message: `Se encontraron ${totalAvailable} cupos disponibles en ${availabilities.length} agenda(s)`
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'checkAvailabilityQuota');
+}
+
+// ============================================================================
+// FUNCIÓN: BUSCAR CUPS POR NOMBRE
+// ============================================================================
+
+export async function searchCupsByName(args: { name: string; limit?: number }): Promise<any> {
+  const startTime = Date.now();
+  const { name, limit = 10 } = args;
+  logger.info({ name, limit }, 'searchCupsByName called');
+
+  if (!name || name.trim() === '') {
+    return {
+      success: false,
+      error: 'El parámetro "name" es obligatorio',
+      usage: 'Proporcione un nombre o parte del nombre del procedimiento a buscar'
+    };
+  }
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      const validLimit = Math.min(Math.max(1, limit), 50);
+      const searchPattern = `%${name.trim()}%`;
+
+      const [cupsList] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          c.id,
+          c.code,
+          c.name,
+          c.category,
+          c.price,
+          c.status,
+          s.id as specialty_id,
+          s.name as specialty_name
+        FROM cups c
+        LEFT JOIN specialties s ON c.specialty_id = s.id
+        WHERE c.name LIKE ?
+          AND c.status = 'Activo'
+        ORDER BY c.category, c.name
+        LIMIT ?
+      `, [searchPattern, validLimit]);
+
+      if (cupsList.length === 0) {
+        return {
+          success: true,
+          message: `No se encontraron procedimientos con el nombre "${name}"`,
+          search_term: name,
+          total: 0,
+          procedures: [],
+          suggestion: 'Intente con otro término de búsqueda o use palabras más generales (ej: "mama", "abdomen", "hemograma")'
+        };
+      }
+
+      const formattedProcedures = cupsList.map(cup => ({
+        id: cup.id,
+        code: cup.code,
+        name: cup.name,
+        category: cup.category,
+        price: parseFloat(cup.price),
+        specialty: cup.specialty_id ? {
+          id: cup.specialty_id,
+          name: cup.specialty_name
+        } : null,
+        status: cup.status
+      }));
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: cupsList.length, name }, 'searchCupsByName completed');
+
+      return {
+        success: true,
+        message: `Se encontraron ${cupsList.length} procedimiento(s) con el nombre "${name}"`,
+        search_term: name,
+        total: cupsList.length,
+        procedures: formattedProcedures,
+        usage_note: 'Use el campo "id" como cups_id al agregar a lista de espera (addToWaitingList)'
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'searchCupsByName');
+}
+
+// ============================================================================
+// FUNCIÓN: BUSCAR CUPS POR CÓDIGO U OTROS FILTROS
+// ============================================================================
+
+export async function searchCups(args: { 
+  code?: string; 
+  name?: string; 
+  category?: string;
+  specialty_id?: number;
+  status?: string;
+  limit?: number 
+}): Promise<any> {
+  const startTime = Date.now();
+  const { code, name, category, specialty_id, status = 'Activo', limit = 20 } = args;
+  logger.info({ code, name, category, specialty_id, status, limit }, 'searchCups called');
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      const finalLimit = Math.min(Math.max(1, limit), 100);
+
+      let query = `
+        SELECT 
+          c.id,
+          c.code,
+          c.name,
+          c.category,
+          c.subcategory,
+          c.description,
+          c.specialty_id,
+          s.name as specialty_name,
+          c.price,
+          c.requires_authorization,
+          c.complexity_level,
+          c.estimated_duration_minutes,
+          c.status,
+          c.notes
+        FROM cups c
+        LEFT JOIN specialties s ON c.specialty_id = s.id
+        WHERE 1=1
+      `;
+
+      const queryParams: any[] = [];
+
+      if (code) {
+        query += ` AND c.code LIKE ?`;
+        queryParams.push(`%${code}%`);
+      }
+
+      if (name) {
+        query += ` AND c.name LIKE ?`;
+        queryParams.push(`%${name}%`);
+      }
+
+      if (category) {
+        query += ` AND c.category LIKE ?`;
+        queryParams.push(`%${category}%`);
+      }
+
+      if (specialty_id) {
+        query += ` AND c.specialty_id = ?`;
+        queryParams.push(specialty_id);
+      }
+
+      if (status !== 'Todos') {
+        query += ` AND c.status = ?`;
+        queryParams.push(status);
+      }
+
+      query += ` ORDER BY c.category, c.name LIMIT ?`;
+      queryParams.push(finalLimit);
+
+      const [cupsList] = await connection.execute<RowDataPacket[]>(query, queryParams);
+
+      if (cupsList.length === 0) {
+        return {
+          success: true,
+          message: 'No se encontraron procedimientos CUPS con los criterios especificados',
+          search_criteria: { code, name, category, specialty_id, status },
+          total: 0,
+          procedures: []
+        };
+      }
+
+      const formattedProcedures = cupsList.map(cup => ({
+        id: cup.id,
+        code: cup.code,
+        name: cup.name,
+        category: cup.category,
+        subcategory: cup.subcategory,
+        description: cup.description,
+        specialty: cup.specialty_id ? { id: cup.specialty_id, name: cup.specialty_name } : null,
+        price: parseFloat(cup.price),
+        requires_authorization: cup.requires_authorization === 1,
+        complexity_level: cup.complexity_level,
+        estimated_duration_minutes: cup.estimated_duration_minutes,
+        status: cup.status,
+        notes: cup.notes
+      }));
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: cupsList.length }, 'searchCups completed');
+
+      return {
+        success: true,
+        message: `Se encontraron ${cupsList.length} procedimiento(s) CUPS`,
+        total: cupsList.length,
+        procedures: formattedProcedures
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'searchCups');
+}
+
+// ============================================================================
+// FUNCIÓN: CONSULTAR LISTA DE ESPERA
+// ============================================================================
+
+export async function getWaitingListAppointments(args: {
+  patient_id?: number;
+  doctor_id?: number;
+  specialty_id?: number;
+  location_id?: number;
+  priority_level?: string;
+  status?: string;
+  limit?: number;
+}): Promise<any> {
+  const startTime = Date.now();
+  const {
+    patient_id,
+    doctor_id,
+    specialty_id,
+    location_id,
+    priority_level = 'Todas',
+    status = 'pending',
+    limit = 50
+  } = args;
+  logger.info({ patient_id, doctor_id, specialty_id, location_id, priority_level, status, limit }, 'getWaitingListAppointments called');
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      let query = `
+        SELECT 
+          wl.id as waiting_list_id,
+          wl.status,
+          wl.priority_level,
+          wl.scheduled_date as requested_date,
+          wl.appointment_type,
+          wl.reason,
+          wl.notes,
+          wl.created_at as added_to_waiting_list_at,
+          wl.expires_at,
+          DATEDIFF(wl.expires_at, NOW()) as days_until_expiration,
+          wl.reassigned_at,
+          wl.reassigned_appointment_id,
+          
+          p.id as patient_id,
+          p.name as patient_name,
+          p.document as patient_document,
+          p.phone as patient_phone,
+          p.email as patient_email,
+          
+          a.id as availability_id,
+          a.date as availability_date,
+          a.start_time,
+          a.end_time,
+          a.duration_minutes,
+          a.capacity as total_capacity,
+          
+          (
+            SELECT COUNT(*)
+            FROM appointments app
+            WHERE app.availability_id = a.id 
+              AND app.status IN ('Pendiente', 'Confirmada')
+          ) as current_appointments_count,
+          
+          d.id as doctor_id,
+          d.name as doctor_name,
+          d.email as doctor_email,
+          
+          s.id as specialty_id,
+          s.name as specialty_name,
+          
+          l.id as location_id,
+          l.name as location_name,
+          l.address as location_address,
+          
+          (
+            SELECT COUNT(*) + 1
+            FROM appointments_waiting_list wl2
+            INNER JOIN availabilities a2 ON wl2.availability_id = a2.id
+            WHERE a2.specialty_id = s.id
+              AND wl2.status = 'pending'
+              AND (
+                (wl2.priority_level = 'Urgente' AND wl.priority_level != 'Urgente')
+                OR (wl2.priority_level = 'Alta' AND wl.priority_level NOT IN ('Urgente', 'Alta'))
+                OR (wl2.priority_level = 'Normal' AND wl.priority_level = 'Baja')
+                OR (wl2.priority_level = wl.priority_level AND wl2.created_at < wl.created_at)
+              )
+          ) as queue_position
+        
+        FROM appointments_waiting_list wl
+        INNER JOIN patients p ON wl.patient_id = p.id
+        INNER JOIN availabilities a ON wl.availability_id = a.id
+        INNER JOIN doctors d ON a.doctor_id = d.id
+        INNER JOIN specialties s ON a.specialty_id = s.id
+        INNER JOIN locations l ON a.location_id = l.id
+        WHERE 1=1
+      `;
+
+      const params: any[] = [];
+
+      if (patient_id) {
+        query += ' AND wl.patient_id = ?';
+        params.push(patient_id);
+      }
+
+      if (doctor_id) {
+        query += ' AND a.doctor_id = ?';
+        params.push(doctor_id);
+      }
+
+      if (specialty_id) {
+        query += ' AND a.specialty_id = ?';
+        params.push(specialty_id);
+      }
+
+      if (location_id) {
+        query += ' AND a.location_id = ?';
+        params.push(location_id);
+      }
+
+      if (priority_level !== 'Todas') {
+        query += ' AND wl.priority_level = ?';
+        params.push(priority_level);
+      }
+
+      if (status !== 'all') {
+        query += ' AND wl.status = ?';
+        params.push(status);
+      }
+
+      query += ` 
+        ORDER BY 
+          CASE wl.priority_level
+            WHEN 'Urgente' THEN 1
+            WHEN 'Alta' THEN 2
+            WHEN 'Normal' THEN 3
+            WHEN 'Baja' THEN 4
+          END,
+          wl.created_at ASC
+        LIMIT ?
+      `;
+      params.push(limit);
+
+      const [rows] = await connection.execute<RowDataPacket[]>(query, params);
+
+      if (rows.length === 0) {
+        return {
+          success: true,
+          message: 'No hay solicitudes en lista de espera con los filtros aplicados',
+          count: 0,
+          waiting_list: [],
+          filters_applied: { patient_id, doctor_id, specialty_id, location_id, priority_level, status, limit }
+        };
+      }
+
+      const waitingList = rows.map(wl => ({
+        waiting_list_id: wl.waiting_list_id,
+        status: wl.status,
+        priority_level: wl.priority_level,
+        queue_position: wl.queue_position,
+        requested_date: wl.requested_date,
+        appointment_type: wl.appointment_type,
+        reason: wl.reason,
+        notes: wl.notes,
+        added_at: wl.added_to_waiting_list_at,
+        expires_at: wl.expires_at,
+        days_until_expiration: wl.days_until_expiration,
+        patient: {
+          id: wl.patient_id,
+          name: wl.patient_name,
+          document: wl.patient_document,
+          phone: wl.patient_phone,
+          email: wl.patient_email
+        },
+        availability: {
+          id: wl.availability_id,
+          date: wl.availability_date,
+          start_time: formatTimeToAMPM(utcToColombiaTime(wl.start_time)),
+          end_time: formatTimeToAMPM(utcToColombiaTime(wl.end_time)),
+          capacity: wl.total_capacity,
+          current_appointments: wl.current_appointments_count,
+          slots_available: wl.total_capacity - wl.current_appointments_count,
+          can_be_reassigned: (wl.total_capacity - wl.current_appointments_count) > 0
+        },
+        doctor: { id: wl.doctor_id, name: wl.doctor_name, email: wl.doctor_email },
+        specialty: { id: wl.specialty_id, name: wl.specialty_name },
+        location: { id: wl.location_id, name: wl.location_name, address: wl.location_address },
+        reassignment_info: wl.reassigned_at ? {
+          reassigned_at: wl.reassigned_at,
+          appointment_id: wl.reassigned_appointment_id
+        } : null
+      }));
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: rows.length }, 'getWaitingListAppointments completed');
+
+      return {
+        success: true,
+        count: rows.length,
+        waiting_list: waitingList,
+        filters_applied: { patient_id, doctor_id, specialty_id, location_id, priority_level, status, limit }
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'getWaitingListAppointments');
+}
+
+// ============================================================================
+// FUNCIÓN: REASIGNAR DESDE LISTA DE ESPERA
+// ============================================================================
+
+export async function reassignWaitingListAppointments(args: { availability_id: number }): Promise<any> {
+  const startTime = Date.now();
+  const { availability_id } = args;
+  logger.info({ availability_id }, 'reassignWaitingListAppointments called');
+
+  if (!availability_id) {
+    return {
+      success: false,
+      error: 'El parámetro availability_id es obligatorio'
+    };
+  }
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      // Verificar que la disponibilidad existe
+      const [availCheck] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          a.id, a.date, a.start_time, a.end_time,
+          d.name as doctor_name,
+          s.name as specialty_name,
+          l.name as location_name,
+          a.capacity,
+          (
+            SELECT COUNT(*)
+            FROM appointments app
+            WHERE app.availability_id = a.id 
+              AND app.status IN ('Pendiente', 'Confirmada')
+          ) as current_appointments
+        FROM availabilities a
+        INNER JOIN doctors d ON a.doctor_id = d.id
+        INNER JOIN specialties s ON a.specialty_id = s.id
+        INNER JOIN locations l ON a.location_id = l.id
+        WHERE a.id = ?
+      `, [availability_id]);
+
+      if (availCheck.length === 0) {
+        return {
+          success: false,
+          error: 'Disponibilidad no encontrada'
+        };
+      }
+
+      const availability = availCheck[0];
+      const slotsAvailable = availability.capacity - availability.current_appointments;
+
+      if (slotsAvailable <= 0) {
+        return {
+          success: false,
+          message: 'No hay cupos disponibles para reasignar',
+          availability_info: {
+            availability_id: availability.id,
+            date: availability.date,
+            doctor: availability.doctor_name,
+            specialty: availability.specialty_name,
+            location: availability.location_name,
+            capacity: availability.capacity,
+            current_appointments: availability.current_appointments,
+            slots_available: slotsAvailable
+          }
+        };
+      }
+
+      // Llamar al procedimiento almacenado
+      await connection.execute(`CALL process_waiting_list_for_availability(?)`, [availability_id]);
+
+      // Consultar resultados
+      const [reassignedResult] = await connection.execute<RowDataPacket[]>(`
+        SELECT COUNT(*) as total_reassigned
+        FROM appointments_waiting_list
+        WHERE availability_id = ? AND status = 'reassigned'
+      `, [availability_id]);
+
+      const totalReassigned = reassignedResult[0].total_reassigned;
+
+      const [stillWaitingResult] = await connection.execute<RowDataPacket[]>(`
+        SELECT COUNT(*) as still_waiting
+        FROM appointments_waiting_list
+        WHERE availability_id = ? AND status = 'pending'
+      `, [availability_id]);
+
+      const stillWaiting = stillWaitingResult[0].still_waiting;
+
+      // Nueva consulta de cupos actuales
+      const [updatedAvailCheck] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          a.capacity,
+          (
+            SELECT COUNT(*)
+            FROM appointments app
+            WHERE app.availability_id = a.id 
+              AND app.status IN ('Pendiente', 'Confirmada')
+          ) as current_appointments
+        FROM availabilities a
+        WHERE a.id = ?
+      `, [availability_id]);
+
+      const updated = updatedAvailCheck[0];
+      const slotsRemainingAfter = updated.capacity - updated.current_appointments;
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, totalReassigned, stillWaiting }, 'reassignWaitingListAppointments completed');
+
+      return {
+        success: true,
+        message: `Se procesó la lista de espera exitosamente`,
+        reassigned_count: totalReassigned,
+        still_waiting_count: stillWaiting,
+        availability_info: {
+          availability_id: availability.id,
+          date: availability.date,
+          doctor: availability.doctor_name,
+          specialty: availability.specialty_name,
+          location: availability.location_name,
+          capacity: updated.capacity,
+          appointments_before: availability.current_appointments,
+          appointments_after: updated.current_appointments,
+          slots_available_before: slotsAvailable,
+          slots_available_after: slotsRemainingAfter
+        },
+        info: totalReassigned > 0
+          ? `Se reasignaron ${totalReassigned} solicitudes de la lista de espera a citas confirmadas`
+          : 'No se reasignó ninguna solicitud (puede que no hayan solicitudes o los cupos ya estén llenos)'
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'reassignWaitingListAppointments');
+}
+
+// ============================================================================
+// FUNCIÓN: CANCELAR CITAS VENCIDAS
+// ============================================================================
+
+export async function cancelarCitasVencidas(args: { 
+  document: string; 
+  current_date: string; 
+  dry_run?: boolean 
+}): Promise<any> {
+  const startTime = Date.now();
+  let { document, current_date, dry_run = false } = args;
+  logger.info({ document, current_date, dry_run }, 'cancelarCitasVencidas called');
+
+  // Normalizar documento
+  if (document) {
+    document = document.replace(/[^0-9]/g, '');
+  }
+
+  if (!document) {
+    return {
+      success: false,
+      error: 'El parámetro document es obligatorio',
+      suggestion: 'Proporcione el número de documento del paciente para cancelar sus citas vencidas'
+    };
+  }
+
+  if (!current_date) {
+    return {
+      success: false,
+      error: 'El parámetro current_date es obligatorio',
+      suggestion: 'Proporcione la fecha actual en formato ISO 8601 (YYYY-MM-DDTHH:mm:ss)'
+    };
+  }
+
+  // Validar formato de fecha
+  const currentDateTime = new Date(current_date);
+  if (isNaN(currentDateTime.getTime())) {
+    return {
+      success: false,
+      error: 'Formato de fecha inválido',
+      received: current_date,
+      expected_format: 'ISO 8601 (YYYY-MM-DDTHH:mm:ss)',
+      example: '2025-11-21T15:30:00'
+    };
+  }
+
+  return withRetry(async () => {
+    const connection = await pool.getConnection();
+    try {
+      // Verificar que el paciente existe
+      const [patientRows] = await connection.execute<RowDataPacket[]>(`
+        SELECT id, document, name, phone, status
+        FROM patients
+        WHERE document = ?
+        LIMIT 1
+      `, [document]);
+
+      if (patientRows.length === 0) {
+        return {
+          success: false,
+          error: 'Paciente no encontrado',
+          document: document,
+          suggestion: 'Verifique el número de documento o use searchPatient para buscar'
+        };
+      }
+
+      const patient = patientRows[0];
+
+      if (patient.status !== 'Activo') {
+        return {
+          success: false,
+          error: 'El paciente no está activo en el sistema',
+          patient: {
+            name: patient.name,
+            document: patient.document,
+            status: patient.status
+          },
+          suggestion: 'Solo se pueden cancelar citas de pacientes activos'
+        };
+      }
+
+      // Buscar citas vencidas del paciente
+      const [expiredAppointments] = await connection.execute<RowDataPacket[]>(`
+        SELECT 
+          a.id,
+          a.patient_id,
+          a.scheduled_at,
+          a.status,
+          a.reason,
+          p.name as patient_name,
+          p.document as patient_document,
+          p.phone as patient_phone,
+          d.name as doctor_name,
+          s.name as specialty_name,
+          l.name as location_name
+        FROM appointments a
+        LEFT JOIN patients p ON a.patient_id = p.id
+        LEFT JOIN doctors d ON a.doctor_id = d.id
+        LEFT JOIN specialties s ON a.specialty_id = s.id
+        LEFT JOIN locations l ON a.location_id = l.id
+        WHERE a.patient_id = ?
+          AND a.scheduled_at < ?
+          AND a.status != 'Cancelada'
+        ORDER BY a.scheduled_at ASC
+      `, [patient.id, current_date]);
+
+      const expiredList = expiredAppointments as any[];
+
+      if (expiredList.length === 0) {
+        return {
+          success: true,
+          message: 'No se encontraron citas vencidas para este paciente',
+          patient: {
+            id: patient.id,
+            name: patient.name,
+            document: patient.document,
+            phone: patient.phone
+          },
+          expired_appointments_count: 0,
+          expired_appointments: []
+        };
+      }
+
+      // Si es dry_run, solo mostrar lo que se cancelaría
+      if (dry_run) {
+        return {
+          success: true,
+          dry_run: true,
+          message: `Se encontraron ${expiredList.length} citas vencidas que serían canceladas`,
+          patient: {
+            id: patient.id,
+            name: patient.name,
+            document: patient.document,
+            phone: patient.phone
+          },
+          expired_appointments_count: expiredList.length,
+          expired_appointments: expiredList.map(apt => ({
+            id: apt.id,
+            scheduled_at: apt.scheduled_at,
+            status: apt.status,
+            doctor: apt.doctor_name,
+            specialty: apt.specialty_name,
+            location: apt.location_name,
+            reason: apt.reason
+          }))
+        };
+      }
+
+      // Cancelar las citas vencidas
+      const appointmentIds = expiredList.map(apt => apt.id);
+      await connection.execute(`
+        UPDATE appointments 
+        SET status = 'Cancelada', 
+            cancellation_reason = 'Cita vencida - cancelación automática',
+            updated_at = NOW()
+        WHERE id IN (${appointmentIds.map(() => '?').join(',')})
+      `, appointmentIds);
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, cancelled: expiredList.length, document }, 'cancelarCitasVencidas completed');
+
+      return {
+        success: true,
+        message: `Se cancelaron ${expiredList.length} citas vencidas exitosamente`,
+        patient: {
+          id: patient.id,
+          name: patient.name,
+          document: patient.document,
+          phone: patient.phone
+        },
+        cancelled_appointments_count: expiredList.length,
+        cancelled_appointments: expiredList.map(apt => ({
+          id: apt.id,
+          scheduled_at: apt.scheduled_at,
+          previous_status: apt.status,
+          new_status: 'Cancelada',
+          doctor: apt.doctor_name,
+          specialty: apt.specialty_name,
+          location: apt.location_name
+        }))
+      };
+    } finally {
+      connection.release();
+    }
+  }, 'cancelarCitasVencidas');
+}
+
+// ============================================================================
 // EXPORT DEFAULT
 // ============================================================================
 
@@ -1700,19 +3474,31 @@ const DirectDBTools = {
   searchPatient,
   getAvailableAppointments,
   getAvailableTimeSlots,
+  getAvailableTimeSlotsForDoctorOnDate,  // NUEVO: Slots verificados por doctor/fecha
   scheduleAppointment,
   registerPatientSimple,
   listActiveEPS,
   searchSpecialties,
   getPatientAppointments,
+  getPatientWaitingList,
   cancelAppointment,
   actualizarPhone,
-  // Nuevas funciones (lógica del portal)
+  // Funciones de cita doble
   checkConsecutiveSlots,
   scheduleDoubleAppointment,
+  // Funciones de lista de espera
   addToWaitingList,
   getWaitingListPosition,
-  getAvailabilityByDoctor
+  getAvailabilityByDoctor,
+  // Nuevas funciones (migradas de MCP)
+  listZones,
+  getEPSServices,
+  checkAvailabilityQuota,
+  searchCupsByName,
+  searchCups,
+  getWaitingListAppointments,
+  reassignWaitingListAppointments,
+  cancelarCitasVencidas
 };
 
 export default DirectDBTools;

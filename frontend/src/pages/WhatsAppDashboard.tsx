@@ -488,7 +488,35 @@ const WhatsAppDashboard = () => {
             )}
 
             {status?.lastError && (
-              <p className="text-red-500 text-sm mt-4">{status.lastError}</p>
+              <div className="mt-4 space-y-3">
+                <p className="text-red-500 text-sm">{status.lastError}</p>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={async () => {
+                    setConnecting(true);
+                    try {
+                      const response = await api.post<{ success: boolean; data: { qrCode?: string }; error?: string }>('/whatsapp/force-restart');
+                      if (response.success) {
+                        const qr = response.data?.qrCode;
+                        if (qr) setQrCodeImage(qr);
+                        toast({ title: 'Reconexión iniciada', description: 'Escanee el nuevo código QR' });
+                        await fetchStatus();
+                      } else {
+                        throw new Error(response.error || 'Error reiniciando');
+                      }
+                    } catch (error: any) {
+                      toast({ title: 'Error', description: error.message || 'No se pudo reiniciar', variant: 'destructive' });
+                    } finally {
+                      setConnecting(false);
+                    }
+                  }}
+                  disabled={connecting}
+                >
+                  {connecting ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                  Reiniciar conexión
+                </Button>
+              </div>
             )}
           </div>
         </main>
@@ -729,18 +757,7 @@ const WhatsAppDashboard = () => {
                               </div>
                             )}
                             <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{displayContent}</p>
-                            {msg.toolCalls && msg.toolCalls.length > 0 && (
-                              <div className="mt-2 pt-2 border-t border-gray-200 flex flex-wrap gap-1">
-                                {msg.toolCalls.map((tool, i) => (
-                                  <span 
-                                    key={i} 
-                                    className="text-[10px] px-2 py-0.5 bg-green-100 text-green-700 rounded-full"
-                                  >
-                                    {tool.name}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
+                            {/* Herramientas ejecutadas - ocultas para una experiencia más limpia */}
                             <p className={`text-[11px] mt-1 flex items-center justify-end gap-1 text-gray-500`}>
                               {msg.timestamp.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}
                               {msg.role === 'user' && (
