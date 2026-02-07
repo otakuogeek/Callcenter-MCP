@@ -4,24 +4,45 @@ import path from 'path';
 
 const router = Router();
 
-// Base path para la documentación
-const DOCS_BASE_PATH = path.join(__dirname, '../../../..');
+// Base path para la documentación - usar ruta absoluta para compatibilidad con esbuild
+const DOCS_BASE_PATH = process.env.DOCS_BASE_PATH || '/home/ubuntu/app';
 
 // Mapeo de rutas de documentación
 const WIKI_DOCS: Record<string, string> = {
+  // === Guías de Usuario (Nuevas) ===
+  'inicio': 'docs/wiki/INICIO.md',
+  'portal-paciente': 'docs/wiki/PORTAL_PACIENTE.md',
+  'admin-agendas': 'docs/wiki/ADMIN_AGENDAS.md',
+  'admin-pacientes': 'docs/wiki/ADMIN_PACIENTES.md',
+  'admin-cola-espera': 'docs/wiki/ADMIN_COLA_ESPERA.md',
+  'admin-sms': 'docs/wiki/ADMIN_SMS.md',
+  'admin-whatsapp': 'docs/wiki/ADMIN_WHATSAPP.md',
+  'admin-llamadas': 'docs/wiki/ADMIN_LLAMADAS.md',
+  'admin-configuracion': 'docs/wiki/ADMIN_CONFIGURACION.md',
+  'doctor-portal': 'docs/wiki/DOCTOR_PORTAL.md',
+  'faq': 'docs/wiki/FAQ.md',
+  
+  // === Documentación Técnica (Referencia) ===
+  'readme': 'README.md',
   'manual-uso': 'docs/MANUAL_DE_USO.md',
+  'indice-documentacion': 'INDICE_DOCUMENTACION.md',
   'resumen-proyecto': 'RESUMEN_PROYECTO_COMPLETO.md',
   'guia-mantenimiento': 'GUIA_MANTENIMIENTO.md',
-  'indice-documentacion': 'INDICE_DOCUMENTACION.md',
-  'readme': 'README.md',
+  
+  // === Sistema de Comunicaciones ===
   'sistema-sms': 'SISTEMA_SMS_RESUMEN.md',
+  'historial-sms': 'docs/HISTORIAL_SMS_IMPLEMENTADO.md',
+  
+  // === Sistema de Llamadas ===
   'sistema-llamadas': 'SISTEMA_LLAMADAS_BD_RESUMEN.md',
-  'doctor-portal': 'DOCTOR_LOGIN_PORTAL.md',
-  'sistema-historias': 'docs/SISTEMA_HISTORIAS_CLINICAS.md',
-  'sistema-dictado': 'docs/SISTEMA_DICTADO_VOZ_IA.md',
-  'sistema-pausas': 'docs/SISTEMA_PAUSAR_REANUDAR_AGENDAS.md',
-  'doctor-auth': 'backend/docs/DOCTOR_AUTHENTICATION_SYSTEM.md',
   'elevenlabs-sync': 'backend/docs/ELEVENLABS_SYNC_SYSTEM.md',
+  
+  // === Sistema de Citas ===
+  'sistema-pausas': 'docs/SISTEMA_PAUSAR_REANUDAR_AGENDAS.md',
+  'sistema-historias': 'docs/SISTEMA_HISTORIAS_CLINICAS.md',
+  
+  // === WhatsApp Bot ===
+  'whatsapp-sistema': 'docs/WHATSAPP_SISTEMA_INFORME.md',
 };
 
 /**

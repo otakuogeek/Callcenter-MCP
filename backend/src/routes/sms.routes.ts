@@ -59,6 +59,68 @@ router.post('/send', requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/sms/send-single
+ * Envía un SMS individual a un paciente (desde cola de espera)
+ * Body: { phoneNumber: string, message: string, patientId?: number }
+ */
+router.post('/send-single', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { phoneNumber, message, patientId } = req.body;
+
+    // Validaciones
+    if (!phoneNumber || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Se requieren los campos: phoneNumber y message',
+      });
+    }
+
+    // Obtener nombre del paciente si se proporciona ID
+    let recipientName = 'Paciente';
+    if (patientId) {
+      const [patientRows]: any = await pool.query(
+        'SELECT name FROM patients WHERE id = ?',
+        [patientId]
+      );
+      if (patientRows.length > 0) {
+        recipientName = patientRows[0].name;
+      }
+    }
+
+    // Enviar SMS con LabsMobile
+    const result = await labsmobileService.sendSMS({
+      number: phoneNumber,
+      message,
+      recipient_name: recipientName,
+      patient_id: patientId,
+      user_id: (req as any).user?.id,
+      template_id: 'waiting_list_notification'
+    });
+
+    if (result.success) {
+      return res.json({
+        success: true,
+        message: `SMS enviado exitosamente a ${phoneNumber}`,
+        sms_id: result.sms_id
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        error: result.error || 'Error al enviar SMS',
+        message: result.error || 'No se pudo enviar el mensaje'
+      });
+    }
+  } catch (error: any) {
+    console.error('Error en POST /api/sms/send-single:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error interno al enviar SMS',
+      message: error.message,
+    });
+  }
+});
+
+/**
  * GET /api/sms/balance
  * Obtiene el saldo de créditos disponibles en LabsMobile
  */
@@ -354,6 +416,139 @@ router.post('/send-public', async (req: Request, res: Response) => {
       success: false,
       error: 'Error interno al enviar SMS',
       details: error.message,
+    });
+  }
+});
+
+/**
+ * GET /api/sms/patient/:patientId
+ * Endpoint PÚBLICO para que pacientes vean sus notificaciones SMS
+ * No requiere autenticación JWT (el paciente se autentica con su cédula)
+ */
+router.get('/patient/:patientId', async (req: Request, res: Response) => {
+  try {
+    const { patientId } = req.params;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = (page - 1) * limit;
+
+    if (!patientId || isNaN(parseInt(patientId))) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de paciente inválido'
+      });
+    }
+
+    // Consultar total de registros del paciente
+    const [countResult] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) as total FROM sms_logs WHERE patient_id = ?`,
+      [patientId]
+    );
+    const total = countResult[0]?.total || 0;
+
+    // Consultar registros con paginación
+    const query = `
+      SELECT 
+        id,
+        recipient_number,
+        recipient_name,
+        message,
+        status,
+        parts,
+        template_id,
+        sent_at
+      FROM sms_logs
+      WHERE patient_id = ?
+      ORDER BY sent_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    const [rows] = await pool.query<RowDataPacket[]>(query, [patientId, limit, offset]);
+
+    return res.json({
+      success: true,
+      data: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error: any) {
+    console.error('Error en GET /api/sms/patient/:patientId:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al obtener notificaciones SMS',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/sms/patient/:patientId/unread-count
+ * Endpoint PÚBLICO para obtener cantidad de mensajes no leídos
+ */
+router.get('/patient/:patientId/unread-count', async (req: Request, res: Response) => {
+  try {
+    const { patientId } = req.params;
+
+    if (!patientId || isNaN(parseInt(patientId))) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de paciente inválido'
+      });
+    }
+
+    const [result] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) as unread FROM sms_logs WHERE patient_id = ? AND read_at IS NULL`,
+      [patientId]
+    );
+
+    return res.json({
+      success: true,
+      unread: result[0]?.unread || 0
+    });
+  } catch (error: any) {
+    console.error('Error en GET /api/sms/patient/:patientId/unread-count:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al obtener conteo de no leídos'
+    });
+  }
+});
+
+/**
+ * POST /api/sms/patient/:patientId/mark-read
+ * Endpoint PÚBLICO para marcar todos los mensajes como leídos
+ */
+router.post('/patient/:patientId/mark-read', async (req: Request, res: Response) => {
+  try {
+    const { patientId } = req.params;
+
+    if (!patientId || isNaN(parseInt(patientId))) {
+      return res.status(400).json({
+        success: false,
+        error: 'ID de paciente inválido'
+      });
+    }
+
+    const [result]: any = await pool.query(
+      `UPDATE sms_logs SET read_at = NOW() WHERE patient_id = ? AND read_at IS NULL`,
+      [patientId]
+    );
+
+    console.log(`[SMS-MARK-READ] Paciente ${patientId} marcó ${result.affectedRows} mensajes como leídos`);
+
+    return res.json({
+      success: true,
+      markedAsRead: result.affectedRows || 0
+    });
+  } catch (error: any) {
+    console.error('Error en POST /api/sms/patient/:patientId/mark-read:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al marcar mensajes como leídos'
     });
   }
 });
@@ -1004,6 +1199,166 @@ router.delete('/history/clear', requireAuth, async (req: Request, res: Response)
 });
 
 /**
+ * POST /api/sms/send-custom-bulk
+ * Envía un SMS personalizado a todos los pacientes confirmados en una disponibilidad
+ * Body: { availability_id: number, message: string }
+ */
+router.post('/send-custom-bulk', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { availability_id, message } = req.body;
+
+    if (!availability_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Se requiere el campo availability_id',
+      });
+    }
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Se requiere un mensaje para enviar',
+      });
+    }
+
+    // Obtener información de la disponibilidad
+    const [availabilityRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT 
+        a.id,
+        a.date,
+        d.name as doctor_name,
+        s.name as specialty_name,
+        l.name as location_name
+       FROM availabilities a
+       JOIN doctors d ON a.doctor_id = d.id
+       JOIN specialties s ON a.specialty_id = s.id
+       JOIN locations l ON a.location_id = l.id
+       WHERE a.id = ?`,
+      [availability_id]
+    );
+
+    if (availabilityRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Disponibilidad no encontrada',
+      });
+    }
+
+    const availability = availabilityRows[0];
+
+    // Obtener todos los pacientes confirmados en esta disponibilidad
+    const [appointmentsRows] = await pool.execute<RowDataPacket[]>(
+      `SELECT 
+        ap.id as appointment_id,
+        p.id as patient_id,
+        p.name as patient_name,
+        p.phone as patient_phone
+       FROM appointments ap
+       JOIN patients p ON ap.patient_id = p.id
+       WHERE ap.availability_id = ?
+         AND ap.status = 'Confirmada'
+         AND p.phone IS NOT NULL
+         AND p.phone != ''
+       ORDER BY ap.scheduled_at`,
+      [availability_id]
+    );
+
+    if (appointmentsRows.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No hay pacientes con teléfono registrado en esta disponibilidad',
+        data: {
+          total_pacientes: 0,
+          sms_enviados: 0,
+          sms_fallidos: 0
+        }
+      });
+    }
+
+    // Enviar SMS a cada paciente
+    let successCount = 0;
+    let failCount = 0;
+    const results = [];
+
+    for (const appointment of appointmentsRows) {
+      try {
+        // Agregar firma al mensaje
+        const fullMessage = `${message.trim()}\n\n- Fundación Biosanar IPS`;
+
+        const result = await labsmobileService.sendSMS({
+          number: appointment.patient_phone,
+          message: fullMessage,
+          recipient_name: appointment.patient_name,
+          patient_id: appointment.patient_id,
+          appointment_id: appointment.appointment_id,
+          user_id: (req as any).user?.id,
+          template_id: 'custom_bulk'
+        });
+
+        if (result.success) {
+          successCount++;
+          results.push({
+            patient_id: appointment.patient_id,
+            patient_name: appointment.patient_name,
+            phone: appointment.patient_phone,
+            status: 'enviado',
+            message_id: result.message_id
+          });
+        } else {
+          failCount++;
+          results.push({
+            patient_id: appointment.patient_id,
+            patient_name: appointment.patient_name,
+            phone: appointment.patient_phone,
+            status: 'fallido',
+            error: result.error
+          });
+        }
+
+        // Pequeña pausa entre envíos
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error: any) {
+        failCount++;
+        results.push({
+          patient_id: appointment.patient_id,
+          patient_name: appointment.patient_name,
+          phone: appointment.patient_phone,
+          status: 'error',
+          error: error.message
+        });
+      }
+    }
+
+    console.log(`📱 SMS personalizado enviado: ${successCount} exitosos, ${failCount} fallidos para availability ${availability_id}`);
+
+    return res.json({
+      success: true,
+      message: `SMS enviados: ${successCount} exitosos, ${failCount} fallidos`,
+      data: {
+        availability_info: {
+          doctor: availability.doctor_name,
+          specialty: availability.specialty_name,
+          location: availability.location_name,
+          date: availability.date
+        },
+        total_pacientes: appointmentsRows.length,
+        sms_enviados: successCount,
+        sms_fallidos: failCount,
+        resultados: results
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error en POST /api/sms/send-custom-bulk:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al enviar SMS personalizado',
+      details: error.message
+    });
+  }
+});
+/**
  * POST /api/sms/notify-availability-patients
  * Envía SMS a todos los pacientes agendados en una disponibilidad específica
  * Body: { availability_id: number }
@@ -1091,14 +1446,15 @@ router.post('/notify-availability-patients', requireAuth, async (req: Request, r
         // Formatear la hora INDIVIDUAL de cada paciente desde scheduled_at (UTC-0 → UTC-5)
         const appointmentTime = formatTimeColombia(appointment.scheduled_at);
         
-        const message = `Hola ${appointment.patient_name}! 📅 Recordatorio de su cita:\n\n` +
-          `🏥 Especialidad: ${availability.specialty_name}\n` +
-          `👨‍⚕️ Doctor: ${availability.doctor_name}\n` +
-          `📍 Sede: ${availability.location_name}\n` +
-          `📆 Fecha: ${formattedDate}\n` +
-          `🕐 Hora: ${appointmentTime}\n\n` +
-          `Por favor asista puntualmente. ¡Le esperamos!\n` +
-          `- Fundación Biosanar IPS`;
+        // Mensaje SIN emojis para compatibilidad con GSM-7 (LabsMobile)
+        const message = `Hola ${appointment.patient_name}! Recordatorio de su cita:\n\n` +
+          `Especialidad: ${availability.specialty_name}\n` +
+          `Doctor: ${availability.doctor_name}\n` +
+          `Sede: ${availability.location_name}\n` +
+          `Fecha: ${formattedDate}\n` +
+          `Hora: ${appointmentTime}\n\n` +
+          `Por favor asista puntualmente. Le esperamos!\n` +
+          `- Fundacion Biosanar IPS`;
 
         const result = await labsmobileService.sendSMS({
           number: appointment.patient_phone,

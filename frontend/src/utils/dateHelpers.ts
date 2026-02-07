@@ -53,24 +53,34 @@ export function safeDayOfWeek(dateString: string | null | undefined): number | n
 /**
  * Formatea una fecha de forma segura usando date-fns
  * @param dateString - String de fecha
- * @param formatStr - String de formato de date-fns
+ * @param formatStr - String de formato de date-fns (default: "dd/MM/yyyy")
  * @param options - Opciones adicionales (locale, etc)
+ * @param fallback - Valor por defecto si la fecha es inválida
  * @returns String formateado o fallback
  */
 export function safeFormatDate(
   dateString: string | null | undefined,
-  formatStr: string,
-  options?: any,
+  formatStr: string = "dd/MM/yyyy",
+  options?: { locale?: any },
   fallback: string = 'Sin fecha'
 ): string {
   const date = safeDateFromString(dateString);
   if (!date) return fallback;
   
   try {
+    // Si no hay opciones o locale, formatear sin locale para evitar errores
+    if (!options || !options.locale) {
+      return format(date, formatStr);
+    }
     return format(date, formatStr, options);
   } catch (error) {
     console.warn('Error formatting date:', dateString, error);
-    return fallback;
+    // Intentar formatear sin locale como fallback
+    try {
+      return format(date, formatStr);
+    } catch {
+      return fallback;
+    }
   }
 }
 

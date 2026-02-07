@@ -650,9 +650,14 @@ const AvailabilityList = ({ date, filteredAvailabilities }: AvailabilityListProp
                                 </div>
                               </div>
                               <div>
-                                <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors">
-                                  Dr. {availability.doctor}
-                                </h3>
+                                <div className="flex items-center gap-2">
+                                  <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-700 transition-colors">
+                                    Dr. {availability.doctor}
+                                  </h3>
+                                  <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200 font-mono">
+                                    ID: {availability.id}
+                                  </Badge>
+                                </div>
                                 <p className="text-sm text-gray-600">{availability.specialty}</p>
                               </div>
                             </div>

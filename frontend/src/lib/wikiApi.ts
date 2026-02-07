@@ -86,30 +86,55 @@ export const wikiApi = {
 };
 
 // Categorías de documentos para organización
-export const WIKI_CATEGORIES = {
-  'Inicio': ['readme', 'indice-documentacion'],
-  'Arquitectura': ['resumen-proyecto'],
-  'Manuales': ['manual-uso', 'guia-mantenimiento'],
-  'Sistemas': [
-    'sistema-sms',
-    'sistema-llamadas',
-    'sistema-historias',
-    'sistema-dictado',
-    'sistema-pausas',
+export const WIKI_CATEGORIES: Record<string, string[]> = {
+  '🏠 Inicio': [
+    'inicio',
+    'faq',
   ],
-  'Portal Doctores': ['doctor-portal', 'doctor-auth'],
-  'Integraciones': ['elevenlabs-sync'],
+  '👤 Portal del Paciente': [
+    'portal-paciente',
+  ],
+  '📅 Gestión de Agendas': [
+    'admin-agendas',
+    'admin-cola-espera',
+  ],
+  '👥 Gestión de Pacientes': [
+    'admin-pacientes',
+  ],
+  '📱 Comunicaciones': [
+    'admin-sms',
+    'admin-whatsapp',
+    'admin-llamadas',
+  ],
+  '🩺 Portal del Médico': [
+    'doctor-portal',
+  ],
+  '⚙️ Configuración': [
+    'admin-configuracion',
+  ],
+  '📚 Documentación Técnica': [
+    'readme',
+    'manual-uso',
+    'resumen-proyecto',
+    'guia-mantenimiento',
+  ],
 };
 
 // Iconos por categoría
 export const getCategoryIcon = (category: string) => {
   const icons: Record<string, typeof BookOpen> = {
-    'Inicio': BookOpen,
-    'Arquitectura': BookOpen,
-    'Manuales': BookOpen,
-    'Sistemas': BookOpen,
-    'Portal Doctores': BookOpen,
-    'Integraciones': BookOpen,
+    '📚 Documentación Principal': BookOpen,
+    '📱 Sistema de Comunicaciones': BookOpen,
+    '📞 Sistema de Llamadas': BookOpen,
+    '👨‍⚕️ Portal de Doctores': BookOpen,
+    '📅 Sistema de Citas': BookOpen,
+    '📋 Historias Clínicas': BookOpen,
+    '🔬 Sistema CUPS': BookOpen,
+    '👤 Portal de Pacientes': BookOpen,
+    '💬 WhatsApp Bot': BookOpen,
+    '📊 Exportación y Reportes': BookOpen,
+    '🏥 Autorizaciones EPS': BookOpen,
+    '🔐 Administración': BookOpen,
   };
   return icons[category] || BookOpen;
 };

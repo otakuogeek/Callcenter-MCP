@@ -91,7 +91,7 @@ export default function Wiki() {
   };
 
   const handleDocClick = (docSlug: string) => {
-    navigate(`/wiki/${docSlug}`);
+    navigate(`/admin/wiki/${docSlug}`);
     setSearchQuery("");
     setSearchResults([]);
   };

@@ -13,12 +13,14 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       SELECT 
         a.id,
         a.patient_id,
+        a.availability_id,
         a.scheduled_at,
         a.status,
         a.appointment_type,
         a.reason,
         a.priority_level,
         a.created_at,
+        a.updated_at,
         p.name AS patient_name,
         p.document AS patient_document,
         p.phone AS patient_phone,
@@ -66,7 +68,7 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
     }
     
     if (search) {
-      // Búsqueda SOLO por número de orden
+      // Búsqueda por número de orden
       const isNumeric = /^\d+$/.test(search as string);
       
       if (isNumeric) {
@@ -75,6 +77,16 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
       } else {
         // Si no es numérico, no buscar nada (solo búsqueda por ID)
         query += ` AND 1=0`;
+      }
+    }
+    
+    // Filtro por ID de agenda (availability_id)
+    const { agenda_id } = req.query;
+    if (agenda_id) {
+      const agendaIdNum = parseInt(agenda_id as string);
+      if (!isNaN(agendaIdNum)) {
+        query += ` AND a.availability_id = ?`;
+        params.push(agendaIdNum);
       }
     }
     
@@ -134,6 +146,14 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
         countParams.push(parseInt(search as string));
       } else {
         countQuery += ` AND 1=0`;
+      }
+    }
+    
+    if (agenda_id) {
+      const agendaIdNum = parseInt(agenda_id as string, 10);
+      if (!isNaN(agendaIdNum)) {
+        countQuery += ` AND a.availability_id = ?`;
+        countParams.push(agendaIdNum);
       }
     }
     

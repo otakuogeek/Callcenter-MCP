@@ -1,0 +1,52 @@
+{
+  "phoneNumber": "",
+  "createdAt": "2026-02-03T17:59:01.002Z",
+  "updatedAt": "2026-02-07T18:09:11.328Z",
+  "messageCount": 0,
+  "patient": {
+    "patientId": 1057,
+    "fullName": "Dave Bastidas",
+    "firstName": "Dave",
+    "documentNumber": "17265900",
+    "phone": "584263774021",
+    "eps": "DELOREAN"
+  },
+  "isIdentified": true,
+  "askedQuestions": {
+    "cedula": true,
+    "nombre": true,
+    "telefono": false,
+    "eps": false,
+    "especialidad": true,
+    "fecha": false,
+    "motivo": false
+  },
+  "collectedAnswers": {
+    "especialidad": {
+      "value": "Odontología",
+      "collectedAt": "2026-02-07T18:09:11.328Z"
+    },
+    "cedula": {
+      "value": "17265900",
+      "collectedAt": "2026-02-03T18:32:30.430Z"
+    },
+    "nombre": {
+      "value": "Dave Bastidas",
+      "collectedAt": "2026-02-03T18:32:30.430Z"
+    }
+  },
+  "preferences": {},
+  "appointments": [],
+  "topicsDiscussed": [],
+  "lastInteraction": {
+    "timestamp": "2026-02-03T17:59:01.002Z",
+    "userMessage": "",
+    "botResponse": ""
+  },
+  "currentContext": {
+    "state": "specialty_selection",
+    "selectedSpecialty": "Odontología"
+  },
+  "conversationSummary": "",
+  "identifiedAt": "2026-02-03T18:32:30.430Z"
+}

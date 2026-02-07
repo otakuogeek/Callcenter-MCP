@@ -963,6 +963,167 @@ router.get('/:id/appointments', async (req, res) => {
   }
 });
 
+// ===== DETECTAR PACIENTES DUPLICADOS =====
+// GET /api/patients-v2/duplicates
+// IMPORTANTE: Esta ruta debe estar ANTES de /:id para evitar colisiones
+router.get('/duplicates', requireAuth, async (req, res) => {
+  try {
+    const { type = 'document' } = req.query;
+    
+    let duplicatesQuery = '';
+    
+    switch (type) {
+      case 'document':
+        // Duplicados por mismo número de documento
+        duplicatesQuery = `
+          SELECT 
+            p.id,
+            p.document,
+            p.name,
+            p.phone,
+            p.email,
+            p.birth_date,
+            p.gender,
+            p.status,
+            p.created_at,
+            e.name as eps_name,
+            p.document as duplicate_value
+          FROM patients p
+          LEFT JOIN eps e ON p.insurance_eps_id = e.id
+          WHERE p.document IN (
+            SELECT document 
+            FROM patients 
+            WHERE document IS NOT NULL AND document != ''
+            GROUP BY document 
+            HAVING COUNT(*) > 1
+          )
+          ORDER BY p.document, p.created_at ASC
+        `;
+        break;
+        
+      case 'name':
+        // Duplicados por mismo nombre exacto
+        duplicatesQuery = `
+          SELECT 
+            p.id,
+            p.document,
+            p.name,
+            p.phone,
+            p.email,
+            p.birth_date,
+            p.gender,
+            p.status,
+            p.created_at,
+            e.name as eps_name,
+            p.name as duplicate_value
+          FROM patients p
+          LEFT JOIN eps e ON p.insurance_eps_id = e.id
+          WHERE LOWER(TRIM(p.name)) IN (
+            SELECT LOWER(TRIM(name)) 
+            FROM patients 
+            WHERE name IS NOT NULL AND name != ''
+            GROUP BY LOWER(TRIM(name)) 
+            HAVING COUNT(*) > 1
+          )
+          ORDER BY p.name, p.created_at ASC
+        `;
+        break;
+        
+      case 'phone':
+        // Duplicados por mismo teléfono
+        duplicatesQuery = `
+          SELECT 
+            p.id,
+            p.document,
+            p.name,
+            p.phone,
+            p.email,
+            p.birth_date,
+            p.gender,
+            p.status,
+            p.created_at,
+            e.name as eps_name,
+            p.phone as duplicate_value
+          FROM patients p
+          LEFT JOIN eps e ON p.insurance_eps_id = e.id
+          WHERE p.phone IN (
+            SELECT phone 
+            FROM patients 
+            WHERE phone IS NOT NULL AND phone != '' AND LENGTH(phone) >= 7
+            GROUP BY phone 
+            HAVING COUNT(*) > 1
+          )
+          ORDER BY p.phone, p.created_at ASC
+        `;
+        break;
+        
+      default:
+        return res.status(400).json({
+          success: false,
+          message: 'Tipo de duplicado no válido. Use: document, name, phone'
+        });
+    }
+    
+    const [rows] = await pool.execute(duplicatesQuery);
+    const patients = rows as any[];
+    
+    // Agrupar pacientes por valor duplicado
+    const groupedDuplicates: Record<string, any[]> = {};
+    
+    patients.forEach(patient => {
+      const key = type === 'name' 
+        ? patient.duplicate_value?.toLowerCase().trim() 
+        : patient.duplicate_value;
+      
+      if (key) {
+        if (!groupedDuplicates[key]) {
+          groupedDuplicates[key] = [];
+        }
+        groupedDuplicates[key].push({
+          id: patient.id,
+          document: patient.document,
+          name: patient.name,
+          phone: patient.phone,
+          email: patient.email,
+          birth_date: patient.birth_date,
+          gender: patient.gender,
+          status: patient.status,
+          created_at: patient.created_at,
+          eps_name: patient.eps_name
+        });
+      }
+    });
+    
+    // Convertir a array de grupos
+    const duplicateGroups = Object.entries(groupedDuplicates).map(([value, patients]) => ({
+      duplicate_value: value,
+      duplicate_type: type,
+      count: patients.length,
+      patients: patients
+    }));
+    
+    // Ordenar por cantidad de duplicados (más duplicados primero)
+    duplicateGroups.sort((a, b) => b.count - a.count);
+    
+    res.json({
+      success: true,
+      data: {
+        type: type,
+        total_groups: duplicateGroups.length,
+        total_duplicates: patients.length,
+        groups: duplicateGroups
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error al obtener duplicados:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error al obtener pacientes duplicados'
+    });
+  }
+});
+
 // ===== OBTENER PACIENTE CON TODOS LOS DATOS =====
 // Endpoint quick-search debe declararse antes de rutas dinámicas :id para evitar colisiones
 // (Movido al final superior)
@@ -1556,42 +1717,51 @@ router.post('/public/schedule-appointment', async (req, res) => {
     const specialtyName = (specialtyCheck as any[])[0].name;
     const isOdontologia = specialtyName.toLowerCase().includes('odontolog');
 
-    // Validar que el paciente no tenga citas activas en la MISMA ESPECIALIDAD (Confirmada o Pendiente)
-    console.log(`🔍 Verificando si el paciente ${patient_id} tiene citas activas en la especialidad ${specialty_id}...`);
-    const [existingAppointments] = await pool.execute(
-      `SELECT a.id, a.scheduled_at, a.status, a.reason, s.name as specialty_name
-       FROM appointments a
-       JOIN specialties s ON a.specialty_id = s.id
-       WHERE a.patient_id = ? 
-         AND a.specialty_id = ?
-         AND a.status IN ('Confirmada', 'Pendiente') 
-         AND a.scheduled_at >= NOW()
-       LIMIT 1`,
-      [patient_id, specialty_id]
-    );
+    // Extraer flags de cita doble consecutiva
+    const { is_consecutive_double, first_appointment_id } = req.body;
 
-    if ((existingAppointments as any[]).length > 0) {
-      const existingAppointment = (existingAppointments as any[])[0];
-      
-      console.log(`⚠️ Paciente ${patient_id} ya tiene una cita activa en ${existingAppointment.specialty_name}: ID ${existingAppointment.id}`);
-      
-      // Formatear fechas con timezone Colombia
-      const scheduledDateFormatted = formatDateColombia(existingAppointment.scheduled_at);
-      const scheduledTimeFormatted = formatTimeColombia(existingAppointment.scheduled_at);
-      
-      return res.status(409).json({
-        success: false,
-        error: 'Ya tienes una cita activa en esta especialidad',
-        details: {
-          existing_appointment_id: existingAppointment.id,
-          specialty_name: existingAppointment.specialty_name,
-          scheduled_date: scheduledDateFormatted,
-          scheduled_time: scheduledTimeFormatted,
-          status: existingAppointment.status,
-          reason: existingAppointment.reason
-        },
-        message: `Ya tienes una cita ${existingAppointment.status.toLowerCase()} en ${existingAppointment.specialty_name} programada para el ${scheduledDateFormatted} a las ${scheduledTimeFormatted}. No puedes agendar otra cita en la misma especialidad hasta completar o cancelar la anterior.`
-      });
+    // Validar que el paciente no tenga citas activas en la MISMA ESPECIALIDAD (Confirmada o Pendiente)
+    // EXCEPCIÓN: Permitir si es la segunda parte de una cita doble consecutiva
+    console.log(`🔍 Verificando si el paciente ${patient_id} tiene citas activas en la especialidad ${specialty_id}...`);
+    
+    if (is_consecutive_double && first_appointment_id) {
+      console.log(`✅ Es cita doble consecutiva (parte 2/2), omitiendo validación de duplicados. Primera cita: ${first_appointment_id}`);
+    } else {
+      const [existingAppointments] = await pool.execute(
+        `SELECT a.id, a.scheduled_at, a.status, a.reason, s.name as specialty_name
+         FROM appointments a
+         JOIN specialties s ON a.specialty_id = s.id
+         WHERE a.patient_id = ? 
+           AND a.specialty_id = ?
+           AND a.status IN ('Confirmada', 'Pendiente') 
+           AND a.scheduled_at >= NOW()
+         LIMIT 1`,
+        [patient_id, specialty_id]
+      );
+
+      if ((existingAppointments as any[]).length > 0) {
+        const existingAppointment = (existingAppointments as any[])[0];
+        
+        console.log(`⚠️ Paciente ${patient_id} ya tiene una cita activa en ${existingAppointment.specialty_name}: ID ${existingAppointment.id}`);
+        
+        // Formatear fechas con timezone Colombia
+        const scheduledDateFormatted = formatDateColombia(existingAppointment.scheduled_at);
+        const scheduledTimeFormatted = formatTimeColombia(existingAppointment.scheduled_at);
+        
+        return res.status(409).json({
+          success: false,
+          error: 'Ya tienes una cita activa en esta especialidad',
+          details: {
+            existing_appointment_id: existingAppointment.id,
+            specialty_name: existingAppointment.specialty_name,
+            scheduled_date: scheduledDateFormatted,
+            scheduled_time: scheduledTimeFormatted,
+            status: existingAppointment.status,
+            reason: existingAppointment.reason
+          },
+          message: `Ya tienes una cita ${existingAppointment.status.toLowerCase()} en ${existingAppointment.specialty_name} programada para el ${scheduledDateFormatted} a las ${scheduledTimeFormatted}. No puedes agendar otra cita en la misma especialidad hasta completar o cancelar la anterior.`
+        });
+      }
     }
 
     console.log(`✅ Paciente ${patient_id} no tiene citas activas en la especialidad ${specialty_id}, puede agendar nueva cita`);

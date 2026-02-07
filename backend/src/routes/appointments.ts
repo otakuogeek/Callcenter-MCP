@@ -737,127 +737,9 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// ============= RESTAURAR CITA CANCELADA =============
-router.post('/:id/restore', requireAuth, async (req: Request, res: Response) => {
-  const id = Number(req.params.id);
-  if (Number.isNaN(id)) {
-    return res.status(400).json({ message: 'Invalid appointment id' });
-  }
-
-  try {
-    // 1. Verificar que la cita existe y está cancelada
-    const [apptRows] = await pool.query(
-      `SELECT a.*, 
-              p.name AS patient_name
-       FROM appointments a
-       LEFT JOIN patients p ON a.patient_id = p.id
-       WHERE a.id = ?
-       LIMIT 1`,
-      [id]
-    );
-
-    if (!Array.isArray(apptRows) || apptRows.length === 0) {
-      return res.status(404).json({ message: 'Cita no encontrada' });
-    }
-
-    const appointment = apptRows[0] as any;
-
-    if (appointment.status !== 'Cancelada') {
-      return res.status(400).json({ 
-        message: 'Solo se pueden restaurar citas canceladas',
-        currentStatus: appointment.status
-      });
-    }
-
-    // 2. Verificar que no haya conflictos con el paciente en el mismo día
-    const [conflictRows] = await pool.query(
-      `SELECT id FROM appointments
-       WHERE patient_id = ? 
-         AND id != ?
-         AND status != 'Cancelada'
-         AND DATE(scheduled_at) = DATE(?)
-       LIMIT 1`,
-      [appointment.patient_id, id, appointment.scheduled_at]
-    );
-
-    if (Array.isArray(conflictRows) && conflictRows.length > 0) {
-      return res.status(409).json({ 
-        message: 'El paciente ya tiene otra cita confirmada en este día. No se puede restaurar.',
-        patientName: appointment.patient_name
-      });
-    }
-
-    // 3. Si tiene availability_id, verificar que hay cupos disponibles
-    if (appointment.availability_id) {
-      const [availRows] = await pool.query(
-        `SELECT id, capacity, booked_slots, status 
-         FROM availabilities
-         WHERE id = ?
-         LIMIT 1`,
-        [appointment.availability_id]
-      );
-
-      if (!Array.isArray(availRows) || availRows.length === 0) {
-        return res.status(404).json({ 
-          message: 'La agenda asociada ya no existe. No se puede restaurar.'
-        });
-      }
-
-      const availability = availRows[0] as any;
-
-      if (availability.status !== 'Activa') {
-        return res.status(409).json({ 
-          message: `La agenda ya no está activa (estado: ${availability.status}). No se puede restaurar.`
-        });
-      }
-
-      if (availability.booked_slots >= availability.capacity) {
-        return res.status(409).json({ 
-          message: 'La agenda ya no tiene cupos disponibles. No se puede restaurar.',
-          capacity: availability.capacity,
-          booked: availability.booked_slots
-        });
-      }
-    }
-
-    // 4. Restaurar la cita a estado "Confirmada"
-    await pool.query(
-      `UPDATE appointments 
-       SET status = 'Confirmada',
-           cancellation_reason = NULL,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [id]
-    );
-
-    // 5. Incrementar booked_slots si tiene availability_id
-    if (appointment.availability_id) {
-      await pool.query(
-        `UPDATE availabilities 
-         SET booked_slots = booked_slots + 1
-         WHERE id = ? AND booked_slots < capacity`,
-        [appointment.availability_id]
-      );
-    }
-
-    console.log(`✅ Cita ${id} restaurada exitosamente por el usuario`);
-
-    return res.json({ 
-      success: true,
-      message: 'Cita restaurada exitosamente',
-      appointmentId: id,
-      patientName: appointment.patient_name,
-      scheduledAt: appointment.scheduled_at
-    });
-
-  } catch (error) {
-    console.error('❌ Error restaurando cita:', error);
-    return res.status(500).json({ 
-      message: 'Error al restaurar la cita',
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-});
+// NOTA: Endpoint de restauración ELIMINADO
+// Las citas canceladas NUNCA deben volver a activarse para evitar problemas de caché
+// y asegurar integridad de datos
 
 // Resumen de calendario por día en un rango [start, end]
 // Devuelve conteos por fecha de citas y disponibilidades para pintar el calendario
@@ -1766,6 +1648,119 @@ router.delete('/waiting-list/:id', requireAuth, async (req: Request, res: Respon
     return res.status(500).json({
       success: false,
       message: 'Error al eliminar de lista de espera',
+      error: error.message
+    });
+  }
+});
+
+// DELETE - Eliminar solicitud de lista de espera (endpoint PÚBLICO para portal de pacientes)
+// El paciente solo puede eliminar sus propias solicitudes verificando patient_id
+router.delete('/waiting-list/patient/:patientId/:waitingListId', async (req: Request, res: Response) => {
+  const patientId = Number(req.params.patientId);
+  const waitingListId = Number(req.params.waitingListId);
+
+  if (Number.isNaN(patientId) || Number.isNaN(waitingListId)) {
+    return res.status(400).json({
+      success: false,
+      message: 'IDs inválidos'
+    });
+  }
+
+  try {
+    // Obtener información completa de la solicitud antes de eliminar
+    const [existsCheck]: any = await pool.query(
+      `SELECT 
+        wl.id, 
+        wl.patient_id, 
+        wl.specialty_id,
+        wl.priority_level,
+        wl.reason,
+        wl.created_at,
+        s.name as specialty_name,
+        p.name as patient_name,
+        p.phone
+      FROM appointments_waiting_list wl
+      LEFT JOIN specialties s ON wl.specialty_id = s.id
+      LEFT JOIN patients p ON wl.patient_id = p.id
+      WHERE wl.id = ? AND wl.patient_id = ?`,
+      [waitingListId, patientId]
+    );
+
+    if (!existsCheck || existsCheck.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Solicitud no encontrada o no tienes permiso para eliminarla'
+      });
+    }
+
+    const solicitud = existsCheck[0];
+
+    // Eliminar el registro
+    await pool.query(
+      'DELETE FROM appointments_waiting_list WHERE id = ? AND patient_id = ?',
+      [waitingListId, patientId]
+    );
+
+    console.log(`[WAITING-LIST-DELETE-PUBLIC] Paciente ${patientId} eliminó su solicitud ID ${waitingListId}`);
+
+    // Guardar notificación en el historial de SMS del paciente
+    try {
+      const fechaSolicitud = new Date(solicitud.created_at).toLocaleDateString('es-CO', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+      });
+
+      const notificationMessage = `📋 Solicitud de espera ELIMINADA
+
+Has eliminado tu solicitud de la cola de espera:
+
+📌 Especialidad: ${solicitud.specialty_name || 'No especificada'}
+⚡ Prioridad: ${solicitud.priority_level || 'Normal'}
+${solicitud.reason ? `📝 Motivo: ${solicitud.reason}` : ''}
+📅 Fecha de solicitud: ${fechaSolicitud}
+🔢 N° Solicitud: #${waitingListId}
+
+Si deseas volver a registrarte, puedes hacerlo desde el portal de pacientes.
+
+Fundación Biosanar IPS`;
+
+      await pool.query(
+        `INSERT INTO sms_logs (
+          recipient_number, 
+          recipient_name, 
+          message, 
+          status, 
+          patient_id, 
+          template_id,
+          parts,
+          sent_at
+        ) VALUES (?, ?, ?, 'success', ?, 'waiting_list_deleted', 1, NOW())`,
+        [
+          solicitud.phone || 'N/A',
+          solicitud.patient_name || 'Paciente',
+          notificationMessage,
+          patientId
+        ]
+      );
+
+      console.log(`[WAITING-LIST-DELETE-PUBLIC] Notificación guardada para paciente ${patientId}`);
+    } catch (notifError) {
+      // No fallar si no se puede guardar la notificación
+      console.error('[WAITING-LIST-DELETE-PUBLIC] Error guardando notificación:', notifError);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Solicitud eliminada de la cola de espera exitosamente',
+      deleted_id: waitingListId
+    });
+
+  } catch (error: any) {
+    console.error('[WAITING-LIST-DELETE-PUBLIC] Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error al eliminar solicitud',
       error: error.message
     });
   }

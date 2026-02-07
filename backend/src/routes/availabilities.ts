@@ -1781,11 +1781,14 @@ router.get('/:id/unassigned-summary', requireAuth, async (req: Request, res: Res
 });
 
 // Endpoint para sincronizar horas de citas secuencialmente
+// NUEVA VERSIÓN: Mantiene los slots seleccionados por los pacientes y envía SMS cuando hay cambios
 router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res: Response) => {
   const connection = await pool.getConnection();
   
   try {
     const availabilityId = parseInt(req.params.id);
+    // Parámetro opcional para enviar SMS (por defecto: true)
+    const sendNotifications = req.body.sendNotifications !== false;
 
     if (isNaN(availabilityId)) {
       return res.status(400).json({
@@ -1831,6 +1834,7 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
     const availability = availabilityRows[0] as any;
 
     // Obtener todas las citas confirmadas y pendientes de esta availability
+    // IMPORTANTE: Ordenar por scheduled_at para mantener los slots seleccionados
     const [appointments] = await connection.query(`
       SELECT 
         a.id,
@@ -1838,12 +1842,14 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
         a.scheduled_at,
         a.duration_minutes,
         a.status,
-        p.name as patient_name
+        p.name as patient_name,
+        p.phone as patient_phone,
+        p.document as patient_document
       FROM appointments a
       LEFT JOIN patients p ON a.patient_id = p.id
       WHERE a.availability_id = ?
         AND a.status IN ('Pendiente', 'Confirmada')
-      ORDER BY a.scheduled_at, a.id
+      ORDER BY a.scheduled_at ASC, a.id ASC
     `, [availabilityId]);
 
     if (!Array.isArray(appointments) || appointments.length === 0) {
@@ -1851,87 +1857,259 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
       return res.json({
         success: true,
         message: 'No hay citas para sincronizar',
-        updated: 0
+        updated: 0,
+        notifications_sent: 0
       });
     }
 
-    // Calcular hora de inicio base
+    // Calcular hora de inicio base y parámetros de duración
     const fechaFormateada = String(availability.date).split('T')[0].split(' ')[0];
-    const fechaHoraInicio = `${fechaFormateada} ${availability.start_time}`;
-    let currentTime = utcDateFromYMDAndUTCTime(fechaFormateada, availability.start_time);
+    const startTimeDate = utcDateFromYMDAndUTCTime(fechaFormateada, availability.start_time);
+    const endTimeDate = utcDateFromYMDAndUTCTime(fechaFormateada, availability.end_time);
+    const slotDuration = availability.duration_minutes + (availability.break_between_slots || 0);
 
-    console.log('🔧 Sincronización de horas iniciada:');
+    console.log('🔧 Sincronización INTELIGENTE de horas iniciada:');
     console.log('  - Availability ID:', availabilityId);
     console.log('  - Fecha:', fechaFormateada);
     console.log('  - Hora inicio:', availability.start_time);
     console.log('  - Hora fin:', availability.end_time);
     console.log('  - Duration minutes:', availability.duration_minutes);
     console.log('  - Break between slots:', availability.break_between_slots);
-    console.log('  - Total citas a reorganizar:', (appointments as any[]).length);
+    console.log('  - Slot total:', slotDuration, 'minutos');
+    console.log('  - Total citas:', (appointments as any[]).length);
+    console.log('  - Enviar SMS:', sendNotifications);
 
-    if (isNaN(currentTime.getTime())) {
+    if (isNaN(startTimeDate.getTime())) {
       await connection.rollback();
       return res.status(400).json({
         success: false,
-        message: `Fecha/hora inválida: ${fechaHoraInicio}`
+        message: `Fecha/hora inválida: ${fechaFormateada} ${availability.start_time}`
       });
     }
 
-    const endTimeDate = utcDateFromYMDAndUTCTime(fechaFormateada, availability.end_time);
-    let updatedCount = 0;
-    const updates: any[] = [];
+    // Generar todos los slots disponibles de la agenda
+    const allSlots: Date[] = [];
+    let slotTime = new Date(startTimeDate.getTime());
+    while (slotTime < endTimeDate) {
+      allSlots.push(new Date(slotTime.getTime()));
+      slotTime = new Date(slotTime.getTime() + (slotDuration * 60 * 1000));
+    }
 
-    // Reorganizar cada cita secuencialmente
-    for (let i = 0; i < (appointments as any[]).length; i++) {
-      const apt = (appointments as any[])[i];
+    console.log('  - Slots totales disponibles:', allSlots.length);
+
+    // Mapear cada cita a su slot más cercano válido
+    const aptList = (appointments as any[]).map(apt => ({
+      ...apt,
+      originalScheduledAt: new Date(apt.scheduled_at),
+      newScheduledAt: null as Date | null
+    }));
+
+    // Marcar qué slots ya están ocupados (respetando selección original)
+    const occupiedSlots = new Set<number>(); // Índices de slots ocupados
+    const updates: any[] = [];
+    const notificationsToSend: any[] = [];
+
+    // FASE 1: Asignar slots a citas que ya tienen una hora válida dentro de los slots
+    for (const apt of aptList) {
+      const aptTime = apt.originalScheduledAt.getTime();
       
-      // Verificar si la cita excede el end_time de la availability
-      if (currentTime >= endTimeDate) {
-        console.log(`⚠️  ADVERTENCIA: Cita ${i + 1} excede el horario de fin (${availability.end_time})`);
-        break; // No procesar más citas que excedan el horario
+      // Buscar el slot que coincide exactamente o el más cercano
+      let bestSlotIndex = -1;
+      let minDiff = Infinity;
+      
+      for (let i = 0; i < allSlots.length; i++) {
+        if (occupiedSlots.has(i)) continue; // Slot ya ocupado
+        
+        const diff = Math.abs(allSlots[i].getTime() - aptTime);
+        // Si coincide exactamente (dentro de 1 minuto de tolerancia)
+        if (diff < 60000) {
+          bestSlotIndex = i;
+          break;
+        }
+        // Si es el más cercano hasta ahora
+        if (diff < minDiff) {
+          minDiff = diff;
+          bestSlotIndex = i;
+        }
       }
       
-      // Formatear la nueva hora para MySQL datetime
-      const newScheduledAt = formatDateForMySQLUTC(currentTime);
-      const oldScheduledAt = new Date(apt.scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
-      
-      console.log(`  📅 Cita ${i + 1}: ${apt.patient_name}`);
-      console.log(`     Hora anterior: ${oldScheduledAt}`);
-      console.log(`     Hora nueva: ${newScheduledAt}`);
-      
-      // Actualizar la cita
-      await connection.execute(
-        `UPDATE appointments 
-         SET scheduled_at = ? 
-         WHERE id = ?`,
-        [newScheduledAt, apt.id]
-      );
-
-      updates.push({
-        id: apt.id,
-        patient_name: apt.patient_name,
-        old_time: oldScheduledAt,
-        new_time: newScheduledAt
-      });
-
-      updatedCount++;
-
-      // Calcular siguiente hora: sumar duration_minutes + break_between_slots
-      const totalMinutes = availability.duration_minutes + (availability.break_between_slots || 0);
-      console.log(`     Total minutos a sumar: ${totalMinutes} (duration: ${availability.duration_minutes} + break: ${availability.break_between_slots || 0})`);
-      currentTime = new Date(currentTime.getTime() + (totalMinutes * 60 * 1000));
-      console.log(`     Siguiente hora disponible: ${currentTime.toISOString().slice(11, 19)}`);
+      if (bestSlotIndex >= 0) {
+        apt.newScheduledAt = allSlots[bestSlotIndex];
+        apt.slotIndex = bestSlotIndex;
+        occupiedSlots.add(bestSlotIndex);
+      }
     }
 
-    console.log(`✅ Sincronización completada: ${updatedCount} citas actualizadas`);
+    // FASE 2: Asignar slots a citas que no encontraron uno cercano
+    for (const apt of aptList) {
+      if (apt.newScheduledAt) continue; // Ya tiene slot asignado
+      
+      // Buscar el primer slot disponible
+      for (let i = 0; i < allSlots.length; i++) {
+        if (!occupiedSlots.has(i)) {
+          apt.newScheduledAt = allSlots[i];
+          apt.slotIndex = i;
+          occupiedSlots.add(i);
+          break;
+        }
+      }
+    }
+
+    // FASE 3: Reordenar por slotIndex para mantener orden cronológico
+    aptList.sort((a, b) => (a.slotIndex || 0) - (b.slotIndex || 0));
+
+    let updatedCount = 0;
+    let unchangedCount = 0;
+
+    // FASE 4: Aplicar actualizaciones y detectar cambios
+    for (const apt of aptList) {
+      if (!apt.newScheduledAt) {
+        console.log(`⚠️  ADVERTENCIA: Cita ${apt.id} no pudo ser asignada a ningún slot`);
+        continue;
+      }
+
+      // Verificar si la cita excede el end_time
+      if (apt.newScheduledAt >= endTimeDate) {
+        console.log(`⚠️  ADVERTENCIA: Cita ${apt.id} excede el horario de fin`);
+        continue;
+      }
+
+      const newScheduledAt = formatDateForMySQLUTC(apt.newScheduledAt);
+      const oldScheduledAt = apt.originalScheduledAt.toISOString().slice(0, 19).replace('T', ' ');
+      
+      // Verificar si hay cambio real (más de 1 minuto de diferencia)
+      const timeDiff = Math.abs(apt.newScheduledAt.getTime() - apt.originalScheduledAt.getTime());
+      const hasChanged = timeDiff > 60000; // Más de 1 minuto de diferencia
+
+      if (hasChanged) {
+        console.log(`  📅 Cita ${apt.id}: ${apt.patient_name}`);
+        console.log(`     ⏰ Hora anterior: ${oldScheduledAt}`);
+        console.log(`     ✨ Hora nueva: ${newScheduledAt}`);
+        
+        // Actualizar la cita
+        await connection.execute(
+          `UPDATE appointments 
+           SET scheduled_at = ?,
+               updated_at = NOW()
+           WHERE id = ?`,
+          [newScheduledAt, apt.id]
+        );
+
+        updates.push({
+          id: apt.id,
+          patient_id: apt.patient_id,
+          patient_name: apt.patient_name,
+          patient_phone: apt.patient_phone,
+          old_time: oldScheduledAt,
+          new_time: newScheduledAt,
+          changed: true
+        });
+
+        // Preparar notificación SMS si hay teléfono
+        if (sendNotifications && apt.patient_phone) {
+          notificationsToSend.push({
+            appointment_id: apt.id,
+            patient_id: apt.patient_id,
+            patient_name: apt.patient_name,
+            patient_phone: apt.patient_phone,
+            new_scheduled_at: newScheduledAt,
+            doctor_name: availability.doctor_name,
+            specialty_name: availability.specialty_name,
+            location_name: availability.location_name,
+            date: fechaFormateada
+          });
+        }
+
+        updatedCount++;
+      } else {
+        unchangedCount++;
+        updates.push({
+          id: apt.id,
+          patient_id: apt.patient_id,
+          patient_name: apt.patient_name,
+          old_time: oldScheduledAt,
+          new_time: newScheduledAt,
+          changed: false
+        });
+      }
+    }
+
+    console.log(`✅ Sincronización completada: ${updatedCount} actualizadas, ${unchangedCount} sin cambios`);
 
     await connection.commit();
 
+    // FASE 5: Enviar notificaciones SMS (después del commit para no bloquear la transacción)
+    let notificationsSent = 0;
+    const notificationErrors: any[] = [];
+
+    if (sendNotifications && notificationsToSend.length > 0) {
+      console.log(`📱 Enviando ${notificationsToSend.length} notificaciones SMS...`);
+      
+      // Importar servicio de SMS dinámicamente para evitar dependencias circulares
+      const labsmobileService = (await import('../services/labsmobile-sms.service')).default;
+      
+      for (const notification of notificationsToSend) {
+        try {
+          // Formatear fecha y hora para el mensaje
+          const appointmentDate = new Date(notification.new_scheduled_at);
+          const dateFormatted = appointmentDate.toLocaleDateString('es-CO', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            timeZone: 'America/Bogota'
+          });
+          const timeFormatted = appointmentDate.toLocaleTimeString('es-CO', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: true,
+            timeZone: 'America/Bogota'
+          });
+
+          const smsMessage = `Hola ${notification.patient_name}, le informamos que el horario de su cita ha sido actualizado. Nueva fecha: ${dateFormatted} a las ${timeFormatted}. Doctor/a: ${notification.doctor_name || 'Por asignar'}. Especialidad: ${notification.specialty_name}. Sede: ${notification.location_name}. Fundación Biosanar IPS.`;
+
+          const result = await labsmobileService.sendSMS({
+            number: notification.patient_phone,
+            message: smsMessage,
+            recipient_name: notification.patient_name,
+            patient_id: notification.patient_id,
+            appointment_id: notification.appointment_id,
+            template_id: 'appointment_time_change'
+          });
+
+          if (result.success) {
+            notificationsSent++;
+            console.log(`  ✅ SMS enviado a ${notification.patient_name} (${notification.patient_phone})`);
+          } else {
+            console.log(`  ❌ Error SMS a ${notification.patient_name}: ${result.error}`);
+            notificationErrors.push({
+              patient_name: notification.patient_name,
+              phone: notification.patient_phone,
+              error: result.error
+            });
+          }
+        } catch (smsError: any) {
+          console.error(`  ❌ Error enviando SMS a ${notification.patient_name}:`, smsError.message);
+          notificationErrors.push({
+            patient_name: notification.patient_name,
+            phone: notification.patient_phone,
+            error: smsError.message
+          });
+        }
+      }
+
+      console.log(`📱 Notificaciones completadas: ${notificationsSent}/${notificationsToSend.length} enviadas`);
+    }
+
     return res.json({
       success: true,
-      message: `${updatedCount} citas sincronizadas correctamente`,
+      message: `${updatedCount} citas sincronizadas, ${unchangedCount} sin cambios${sendNotifications ? `, ${notificationsSent} SMS enviados` : ''}`,
       updated: updatedCount,
+      unchanged: unchangedCount,
       total: (appointments as any[]).length,
+      notifications_sent: notificationsSent,
+      notifications_failed: notificationErrors.length,
+      notification_errors: notificationErrors.length > 0 ? notificationErrors : undefined,
       updates: updates,
       availability: {
         id: availability.id,
@@ -1942,7 +2120,8 @@ router.post('/:id/sync-appointment-times', requireAuth, async (req: Request, res
         start_time: availability.start_time,
         end_time: availability.end_time,
         duration_minutes: availability.duration_minutes,
-        break_between_slots: availability.break_between_slots
+        break_between_slots: availability.break_between_slots,
+        total_slots: allSlots.length
       }
     });
 
@@ -2959,6 +3138,52 @@ router.post('/:id/toggle-pause', requireAuth, async (req: Request, res: Response
     });
   } finally {
     connection.release();
+  }
+});
+
+// ===== ENDPOINT PÚBLICO: DISPONIBILIDAD POR ESPECIALIDAD =====
+// GET /api/availabilities/public/by-specialty - Resumen de citas disponibles agrupadas por especialidad
+router.get('/public/by-specialty', async (req: Request, res: Response) => {
+  try {
+    // Consultar todas las citas disponibles (desde hoy) agrupadas por especialidad
+    // Sumamos available_slots de todas las fechas/agendas para cada especialidad
+    const [rows] = await pool.query(
+      `SELECT 
+        s.id AS specialty_id,
+        s.name AS specialty_name,
+        COUNT(DISTINCT a.id) AS total_agendas,
+        SUM(GREATEST(0, CAST(a.capacity AS SIGNED) - CAST(a.booked_slots AS SIGNED))) AS total_available_slots,
+        MIN(a.date) AS next_available_date
+       FROM availabilities a
+       JOIN specialties s ON s.id = a.specialty_id
+       WHERE a.date >= CURDATE()
+         AND a.status IN ('Activa', 'Completa')
+         AND (a.is_paused = 0 OR a.is_paused IS NULL)
+         AND GREATEST(0, CAST(a.capacity AS SIGNED) - CAST(a.booked_slots AS SIGNED)) > 0
+       GROUP BY s.id, s.name
+       ORDER BY s.name ASC`
+    );
+    
+    // Convertir a un objeto indexado por specialty_id para acceso rápido
+    const bySpecialty: Record<number, { specialty_name: string; total_available_slots: number; next_available_date: string | null }> = {};
+    
+    for (const row of rows as any[]) {
+      bySpecialty[row.specialty_id] = {
+        specialty_name: row.specialty_name,
+        total_available_slots: Number(row.total_available_slots) || 0,
+        next_available_date: row.next_available_date || null
+      };
+    }
+    
+    console.log(`[AVAILABILITIES-BY-SPECIALTY] Found ${Object.keys(bySpecialty).length} specialties with available slots`);
+    
+    return res.json({
+      success: true,
+      data: bySpecialty
+    });
+  } catch (e: any) {
+    console.error('[AVAILABILITIES-BY-SPECIALTY] Error:', e);
+    return res.status(500).json({ success: false, message: 'Server error', error: e.message });
   }
 });
 

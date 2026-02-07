@@ -31,7 +31,8 @@ import {
   TrendingUp,
   User,
   Activity,
-  Archive
+  Archive,
+  AlertTriangle
 } from 'lucide-react';
 import { PatientCard } from './PatientCard';
 import { PatientDetailModal } from './PatientDetailModal';
@@ -44,13 +45,14 @@ import {
 } from '@/schemas/patientSchemas';
 import { generatePatientPDF, generatePatientsListPDF } from '@/utils/pdfGenerators';
 import { StatisticsModal } from './StatisticsModal';
+import { DuplicatesView } from './DuplicatesView';
 
 export const PatientsModernView = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
   // Estados
-  const [activeTab, setActiveTab] = useState<'active' | 'inactive'>('active');
+  const [activeTab, setActiveTab] = useState<'active' | 'inactive' | 'duplicates'>('active');
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState<PatientFilters>({
     status: 'Todos',
@@ -677,9 +679,9 @@ export const PatientsModernView = () => {
         </CardContent>
       </Card>
 
-      {/* Tabs para separar Activos e Inactivos */}
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'active' | 'inactive')} className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-2">
+      {/* Tabs para separar Activos, Inactivos y Duplicados */}
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as 'active' | 'inactive' | 'duplicates')} className="w-full">
+        <TabsList className="grid w-full max-w-2xl grid-cols-3">
           <TabsTrigger value="active" className="flex items-center gap-2">
             <Activity className="w-4 h-4" />
             Activos ({patientsData?.filter((p: Patient) => p.status === 'Activo').length || 0})
@@ -687,6 +689,10 @@ export const PatientsModernView = () => {
           <TabsTrigger value="inactive" className="flex items-center gap-2">
             <Archive className="w-4 h-4" />
             Inactivos ({patientsData?.filter((p: Patient) => p.status === 'Inactivo').length || 0})
+          </TabsTrigger>
+          <TabsTrigger value="duplicates" className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" />
+            Duplicados
           </TabsTrigger>
         </TabsList>
 
@@ -782,10 +788,15 @@ export const PatientsModernView = () => {
             </>
           )}
         </TabsContent>
+        
+        {/* Tab Content para Duplicados */}
+        <TabsContent value="duplicates" className="mt-6">
+          <DuplicatesView />
+        </TabsContent>
       </Tabs>
 
       {/* Paginación */}
-      {!isLoading && paginatedPatients.length > 0 && totalPages > 1 && (
+      {!isLoading && paginatedPatients.length > 0 && totalPages > 1 && activeTab !== 'duplicates' && (
         <Card className="mt-6">
           <CardContent className="py-4">
             <div className="flex justify-center items-center gap-2">

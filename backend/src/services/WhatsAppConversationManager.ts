@@ -299,9 +299,11 @@ export class WhatsAppConversationManager {
   }
 
   /**
-   * Crea la tabla si no existe
+   * Crea la tabla si no existe (con cache para evitar consultas repetitivas)
    */
+  private _tableEnsured = false;
   async ensureTableExists(): Promise<void> {
+    if (this._tableEnsured) return;
     await pool.execute(`
       CREATE TABLE IF NOT EXISTS wa_conversation_states (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -321,6 +323,7 @@ export class WhatsAppConversationManager {
         INDEX idx_phone_expires (phone_number, expires_at)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+    this._tableEnsured = true;
   }
 }
 

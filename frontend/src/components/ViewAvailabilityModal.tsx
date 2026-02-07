@@ -31,6 +31,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Textarea } from "@/components/ui/textarea";
+import { Send } from "lucide-react";
 
 interface ViewAvailabilityModalProps {
   isOpen: boolean;
@@ -90,6 +92,11 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
   
   // Estado para enviar SMS masivos
   const [sendingSMS, setSendingSMS] = useState(false);
+  
+  // Estados para modal de SMS personalizado
+  const [customSmsModalOpen, setCustomSmsModalOpen] = useState(false);
+  const [customSmsMessage, setCustomSmsMessage] = useState("");
+  const [sendingCustomSMS, setSendingCustomSMS] = useState(false);
   
   const { toast } = useToast();
 
@@ -351,84 +358,39 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
     }
   };
 
-  const handleRestoreAppointment = async (
-    appointmentId: number, 
-    patientName: string, 
-    scheduledAt: string,
-    specialtyName?: string,
-    locationName?: string
-  ) => {
-    // Formatear la fecha y hora
-    const fecha = new Date(scheduledAt).toLocaleDateString('es-CO', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
-    const hora = scheduledAt.includes('T') 
-      ? scheduledAt.split('T')[1].substring(0, 5)
-      : scheduledAt.split(' ')[1].substring(0, 5);
-
-    // Mensaje detallado con toda la información
-    const mensaje = `¿Está seguro de que desea restaurar la cita de ${patientName}?\n\n` +
-      `📋 DETALLES DE LA CITA:\n` +
-      `• Especialidad: ${specialtyName || 'No especificada'}\n` +
-      `• Sede: ${locationName || 'No especificada'}\n` +
-      `• Fecha: ${fecha}\n` +
-      `• Hora: ${hora}\n\n` +
-      `La cita volverá a estado confirmado y ocupará un cupo en la agenda.`;
-
-    if (!confirm(mensaje)) {
-      return;
-    }
-
-    setDeletingIds(prev => new Set(prev).add(appointmentId));
-    
-    try {
-      const response = await api.restoreAppointment(appointmentId);
-      
-      toast({
-        title: "Cita restaurada",
-        description: response.message || `La cita de ${patientName} ha sido restaurada exitosamente.`,
-        variant: "default",
-      });
-      
-      // Recargar las citas
-      await loadAppointments();
-    } catch (e: any) {
-      toast({
-        title: "Error al restaurar",
-        description: e?.message || "No se pudo restaurar la cita",
-        variant: "destructive",
-      });
-    } finally {
-      setDeletingIds(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(appointmentId);
-        return newSet;
-      });
-    }
-  };
+  // Función handleRestoreAppointment ELIMINADA
+  // Las citas canceladas NO deben reactivarse para evitar problemas de caché e integridad
 
   const handleSyncAppointmentTimes = async () => {
     if (!availability) return;
 
-    if (!confirm('¿Está seguro de que desea sincronizar las horas de las citas?\n\nEsto reorganizará todas las citas secuencialmente desde la hora de inicio de la agenda.')) {
+    if (!confirm('¿Está seguro de que desea sincronizar las horas de las citas?\n\nEsto:\n• Mantendrá las horas seleccionadas por cada paciente cuando sea posible\n• Reorganizará los huecos entre citas\n• Enviará SMS a los pacientes cuya hora cambie informándoles del nuevo horario')) {
       return;
     }
 
     try {
       toast({
         title: "Sincronizando horas",
-        description: "Por favor espere...",
+        description: "Por favor espere... Se enviará SMS a pacientes con cambios",
       });
 
       const result = await api.syncAppointmentTimes(availability.id);
 
       if (result.success && result.data) {
+        const data = result.data;
+        let description = `${data.updated || 0} citas actualizadas, ${data.unchanged || 0} sin cambios`;
+        
+        if (data.notifications_sent !== undefined) {
+          description += `. ${data.notifications_sent} SMS enviados`;
+        }
+        
+        if (data.notifications_failed && data.notifications_failed > 0) {
+          description += ` (${data.notifications_failed} fallidos)`;
+        }
+        
         toast({
           title: "Sincronización exitosa",
-          description: `${result.data.updated} citas sincronizadas correctamente`,
+          description: description,
           variant: "default",
         });
 
@@ -511,6 +473,78 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
       });
     } finally {
       setSendingSMS(false);
+    }
+  };
+
+  // Función para enviar SMS personalizado a todos los pacientes agendados
+  const handleSendCustomSMS = async () => {
+    if (!availability) return;
+
+    const confirmedAppointments = appointments.filter(ap => ap.status === 'Confirmada');
+    
+    if (confirmedAppointments.length === 0) {
+      toast({
+        title: "Sin pacientes",
+        description: "No hay pacientes confirmados para notificar",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!customSmsMessage.trim()) {
+      toast({
+        title: "Mensaje vacío",
+        description: "Por favor escriba un mensaje para enviar",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSendingCustomSMS(true);
+
+    try {
+      toast({
+        title: "Enviando SMS...",
+        description: `Enviando mensaje personalizado a ${confirmedAppointments.length} paciente(s)`,
+      });
+
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/sms/send-custom-bulk`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
+        body: JSON.stringify({
+          availability_id: availability.id,
+          message: customSmsMessage.trim()
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast({
+          title: "SMS enviados exitosamente",
+          description: `${result.data.sms_enviados} SMS enviados, ${result.data.sms_fallidos} fallidos`,
+        });
+        setCustomSmsModalOpen(false);
+        setCustomSmsMessage("");
+      } else {
+        toast({
+          title: "Error al enviar SMS",
+          description: result.error || "No se pudieron enviar los SMS",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      console.error('Error enviando SMS personalizado:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo conectar con el servicio de SMS",
+        variant: "destructive",
+      });
+    } finally {
+      setSendingCustomSMS(false);
     }
   };
 
@@ -955,25 +989,7 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                                 <Badge variant="outline" className="text-xs bg-red-100 text-red-700 border-red-300">
                                   Cancelada
                                 </Badge>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="h-7 px-2 text-green-600 hover:text-green-700 hover:bg-green-50 border-green-300"
-                                  onClick={() => handleRestoreAppointment(
-                                    ap.id, 
-                                    ap.patient_name, 
-                                    ap.scheduled_at,
-                                    ap.specialty_name,
-                                    ap.location_name
-                                  )}
-                                  disabled={isRestoring}
-                                  title="Restaurar cita"
-                                >
-                                  <RotateCcw className="w-3 h-3 mr-1" />
-                                  <span className="text-xs hidden sm:inline">
-                                    {isRestoring ? 'Restaurando...' : 'Restaurar'}
-                                  </span>
-                                </Button>
+                                {/* Botón de restaurar ELIMINADO - Las citas canceladas no deben reactivarse */}
                               </div>
                             </div>
                           </div>
@@ -1047,6 +1063,18 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
               >
                 <MessageCircle className="w-4 h-4 mr-2" />
                 {sendingSMS ? 'Enviando...' : 'Notificar SMS'}
+              </Button>
+            )}
+            
+            {/* Botón SMS Personalizado */}
+            {!loading && !error && appointments.filter(ap => ap.status === 'Confirmada').length > 0 && (
+              <Button 
+                variant="default" 
+                onClick={() => setCustomSmsModalOpen(true)}
+                className="bg-purple-600 hover:bg-purple-700 text-white"
+              >
+                <Send className="w-4 h-4 mr-2" />
+                SMS Personalizado
               </Button>
             )}
           </div>
@@ -1284,6 +1312,89 @@ const ViewAvailabilityModal = ({ isOpen, onClose, availability }: ViewAvailabili
                 </>
               )}
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Modal de SMS Personalizado */}
+      <AlertDialog open={customSmsModalOpen} onOpenChange={setCustomSmsModalOpen}>
+        <AlertDialogContent className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Send className="w-5 h-5 text-purple-600" />
+              Enviar SMS Personalizado
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Este mensaje se enviará a los <strong>{appointments.filter(ap => ap.status === 'Confirmada').length} paciente(s)</strong> confirmados en esta agenda.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          
+          <div className="space-y-4 py-4">
+            {/* Info de la agenda */}
+            {availability && (
+              <div className="bg-purple-50 p-3 rounded-md text-sm space-y-1">
+                <p><strong>Especialidad:</strong> {availability.specialty}</p>
+                <p><strong>Doctor:</strong> {availability.doctor}</p>
+                <p><strong>Fecha:</strong> {safeFormatDate(availability.date)}</p>
+                <p><strong>Sede:</strong> {availability.locationName}</p>
+              </div>
+            )}
+
+            {/* Lista de pacientes que recibirán el SMS */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Destinatarios:</Label>
+              <div className="bg-gray-50 p-2 rounded-md max-h-24 overflow-y-auto">
+                {appointments.filter(ap => ap.status === 'Confirmada').map((ap, idx) => (
+                  <div key={ap.id} className="text-xs text-gray-600 py-0.5">
+                    {idx + 1}. {ap.patient_name} - {ap.patient_phone || 'Sin teléfono'}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Textarea para el mensaje */}
+            <div className="space-y-2">
+              <Label htmlFor="custom-sms-message">Mensaje personalizado:</Label>
+              <Textarea
+                id="custom-sms-message"
+                placeholder="Escriba aquí el mensaje que desea enviar a los pacientes..."
+                value={customSmsMessage}
+                onChange={(e) => setCustomSmsMessage(e.target.value)}
+                className="min-h-[120px] resize-none"
+                maxLength={400}
+              />
+              <div className="text-xs text-gray-500 text-right">
+                {customSmsMessage.length}/400 caracteres
+              </div>
+            </div>
+
+            {/* Advertencia */}
+            <div className="bg-yellow-50 border border-yellow-200 rounded-md p-3 text-sm text-yellow-800">
+              <strong>⚠️ Nota:</strong> Los SMS tienen un costo por mensaje. Asegúrese de que el contenido sea correcto antes de enviar.
+            </div>
+          </div>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={sendingCustomSMS} onClick={() => setCustomSmsMessage("")}>
+              Cancelar
+            </AlertDialogCancel>
+            <Button
+              onClick={handleSendCustomSMS}
+              disabled={sendingCustomSMS || !customSmsMessage.trim()}
+              className="bg-purple-600 hover:bg-purple-700 text-white"
+            >
+              {sendingCustomSMS ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                  Enviando...
+                </>
+              ) : (
+                <>
+                  <Send className="w-4 h-4 mr-2" />
+                  Enviar SMS ({appointments.filter(ap => ap.status === 'Confirmada').length})
+                </>
+              )}
+            </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

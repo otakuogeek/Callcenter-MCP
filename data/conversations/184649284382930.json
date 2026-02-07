@@ -1,0 +1,36 @@
+{
+  "phoneNumber": "184649284382930",
+  "createdAt": "2026-02-03T20:25:56.076Z",
+  "updatedAt": "2026-02-03T20:26:24.882Z",
+  "messageCount": 0,
+  "patient": {},
+  "isIdentified": false,
+  "askedQuestions": {
+    "cedula": false,
+    "nombre": false,
+    "telefono": false,
+    "eps": false,
+    "especialidad": true,
+    "fecha": false,
+    "motivo": false
+  },
+  "collectedAnswers": {
+    "especialidad": {
+      "value": "Odontología",
+      "collectedAt": "2026-02-03T20:26:24.882Z"
+    }
+  },
+  "preferences": {},
+  "appointments": [],
+  "topicsDiscussed": [],
+  "lastInteraction": {
+    "timestamp": "2026-02-03T20:25:56.076Z",
+    "userMessage": "",
+    "botResponse": ""
+  },
+  "currentContext": {
+    "state": "specialty_selection",
+    "selectedSpecialty": "Odontología"
+  },
+  "conversationSummary": ""
+}

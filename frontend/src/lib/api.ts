@@ -32,8 +32,8 @@ function isTokenExpired(token: string): boolean {
     const payload = JSON.parse(atob(token.split('.')[1]));
     const exp = payload.exp * 1000; // Convertir a milisegundos
     const now = Date.now();
-    const fiveMinutesFromNow = now + (5 * 60 * 1000); // 5 minutos extra de margen
-    return exp <= fiveMinutesFromNow; // Considerar expirado si expira en los próximos 5 minutos
+    // Solo considerar expirado si YA pasó la fecha de expiración
+    return exp <= now;
   } catch {
     return true; // Si no se puede decodificar, considerarlo expirado
   }
@@ -592,15 +592,24 @@ export const api = {
     request<ApiResponse<unknown>>(`/availabilities/${availabilityId}/regenerate-distribution`, { 
       method: 'POST' 
     }),
-  syncAppointmentTimes: (availabilityId: number) => 
+  syncAppointmentTimes: (availabilityId: number, sendNotifications: boolean = true) => 
     request<ApiResponse<{
       updated: number;
+      unchanged: number;
       total: number;
+      notifications_sent: number;
+      notifications_failed: number;
+      notification_errors?: Array<{
+        patient_name: string;
+        phone: string;
+        error: string;
+      }>;
       updates: Array<{
         id: number;
         patient_name: string;
         old_time: string;
         new_time: string;
+        changed: boolean;
       }>;
       availability: {
         id: number;
@@ -612,9 +621,11 @@ export const api = {
         end_time: string;
         duration_minutes: number;
         break_between_slots: number;
+        total_slots: number;
       };
     }>>(`/availabilities/${availabilityId}/sync-appointment-times`, { 
-      method: 'POST' 
+      method: 'POST',
+      body: { sendNotifications }
     }),
   syncAllAppointmentTimes: () => 
     request<ApiResponse<{
@@ -754,10 +765,7 @@ export const api = {
         auto_assign: autoAssign
       }
     }),
-  restoreAppointment: (id: number) =>
-    request<ApiResponse<{ success: boolean; message: string; appointmentId: number }>>(`/appointments/${id}/restore`, {
-      method: 'POST'
-    }),
+  // restoreAppointment ELIMINADO - Las citas canceladas no deben reactivarse
   checkAppointmentConflicts: (params: { 
     doctor_id?: number; 
     patient_id?: number; 
@@ -1378,6 +1386,17 @@ export const api = {
       location_name: string;
     }[]>(`/availabilities/public${specialtyId ? `?specialty_id=${specialtyId}` : ''}`),
 
+  // Obtener resumen de citas disponibles por especialidad (para badges en cola de espera)
+  getAvailableSlotsBySpecialty: () =>
+    request<{
+      success: boolean;
+      data: Record<number, {
+        specialty_name: string;
+        total_available_slots: number;
+        next_available_date: string | null;
+      }>;
+    }>('/availabilities/public/by-specialty'),
+
   // Asignar cita desde lista de espera a una agenda real
   assignFromWaitingList: (data: {
     waiting_list_id: number;
@@ -1726,6 +1745,11 @@ export const api = {
         }>;
       };
     }>(`/analytics/occupancy-details?doctor_id=${doctorId}&specialty_id=${specialtyId}`);
+  },
+
+  // Enviar SMS individual a un paciente
+  async sendSingleSMS(data: { phoneNumber: string; message: string; patientId?: number }) {
+    return this.post<{ success: boolean; message: string; sms_id?: number }>('/sms/send-single', data);
   }
 };
 

@@ -206,11 +206,27 @@ Recuerda: No eres solo un bot, eres Valeria - una persona real que se preocupa g
     };
   }
 
+  private static readonly MAX_CONTEXTS = 1000;
+
   /**
    * Obtiene o crea el contexto de conversación para un usuario
    */
   getConversationContext(userId: string): ConversationContext {
     if (!this.conversationContexts.has(userId)) {
+      // Evitar crecimiento ilimitado del Map
+      if (this.conversationContexts.size >= WhatsAppPersonalityManager.MAX_CONTEXTS) {
+        // Eliminar el contexto más antiguo por lastInteraction
+        let oldestKey: string | null = null;
+        let oldestTime = Infinity;
+        for (const [key, ctx] of this.conversationContexts) {
+          const time = ctx.lastInteraction.getTime();
+          if (time < oldestTime) {
+            oldestTime = time;
+            oldestKey = key;
+          }
+        }
+        if (oldestKey) this.conversationContexts.delete(oldestKey);
+      }
       this.conversationContexts.set(userId, {
         userId,
         conversationHistory: [],

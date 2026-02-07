@@ -1,6 +1,7 @@
 
 import { ReactNode } from "react";
 import { Navigate } from "react-router-dom";
+import { SessionProvider } from "./SessionProvider";
 
 interface ProtectedRouteProps {
   children: ReactNode;
@@ -33,7 +34,8 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
     return <Navigate to="/admin/login" replace />;
   }
   
-  return <>{children}</>;
+  // Envolver con SessionProvider para auto-logout por inactividad
+  return <SessionProvider>{children}</SessionProvider>;
 };
 
 export default ProtectedRoute;

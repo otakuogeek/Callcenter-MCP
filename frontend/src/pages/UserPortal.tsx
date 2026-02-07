@@ -4,10 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar, LogOut, QrCode, Download, User, Phone, Mail, MapPin, Home, X, AlertTriangle, CalendarDays, Clock } from "lucide-react";
+import { Calendar, LogOut, QrCode, Download, User, Phone, Mail, MapPin, Home, X, AlertTriangle, CalendarDays, Clock, MessageSquare, Bell, CheckCircle2, XCircle, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import QRCode from 'qrcode';
 import { useToast } from "@/hooks/use-toast";
@@ -166,6 +166,10 @@ export default function UserPortal() {
   const [patient, setPatient] = useState<any>(null);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [waitingList, setWaitingList] = useState<any[]>([]);
+  const [smsNotifications, setSmsNotifications] = useState<any[]>([]);
+  const [loadingSms, setLoadingSms] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [activeTab, setActiveTab] = useState<'citas' | 'notificaciones'>('citas');
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [epsList, setEpsList] = useState<any[]>([]);
@@ -224,6 +228,11 @@ export default function UserPortal() {
   const [isDoubleAppointment, setIsDoubleAppointment] = useState(false);
   const [consecutiveTimeAvailable, setConsecutiveTimeAvailable] = useState(false);
   const [nextConsecutiveTime, setNextConsecutiveTime] = useState<string | null>(null);
+
+  // Estados para eliminar solicitud de lista de espera
+  const [showDeleteWaitingListModal, setShowDeleteWaitingListModal] = useState(false);
+  const [waitingListToDelete, setWaitingListToDelete] = useState<any>(null);
+  const [deletingWaitingList, setDeletingWaitingList] = useState(false);
 
   // Estados para selección de hora en reasignación
   const [selectedScheduleForRescheduleTime, setSelectedScheduleForRescheduleTime] = useState<any>(null);
@@ -405,6 +414,33 @@ export default function UserPortal() {
             setAppointments([]);
             setWaitingList([]);
           }
+
+          // Cargar notificaciones SMS del paciente
+          try {
+            setLoadingSms(true);
+            const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+            
+            // Cargar mensajes
+            const smsResponse = await fetch(`${baseUrl}/sms/patient/${foundPatient.patient_id}?limit=50`);
+            if (smsResponse.ok) {
+              const smsJson = await smsResponse.json();
+              setSmsNotifications(smsJson.data || []);
+            } else {
+              setSmsNotifications([]);
+            }
+            
+            // Cargar conteo de no leídos
+            const unreadResponse = await fetch(`${baseUrl}/sms/patient/${foundPatient.patient_id}/unread-count`);
+            if (unreadResponse.ok) {
+              const unreadJson = await unreadResponse.json();
+              setUnreadCount(unreadJson.unread || 0);
+            }
+          } catch (smsErr) {
+            console.error('Error cargando SMS:', smsErr);
+            setSmsNotifications([]);
+          } finally {
+            setLoadingSms(false);
+          }
         } catch (err) {
           console.error('Error cargando citas:', err);
           setAppointments([]);
@@ -498,16 +534,19 @@ export default function UserPortal() {
       return;
     }
 
-    // Validar que tenga al menos 10 dígitos
+    // Validar que tenga exactamente 10 dígitos (número colombiano sin código de país)
     const phoneDigits = newPhone.replace(/\D/g, '');
-    if (phoneDigits.length < 10) {
+    if (phoneDigits.length !== 10) {
       toast({
         title: "Error",
-        description: "El teléfono debe tener al menos 10 dígitos",
+        description: "El número debe tener exactamente 10 dígitos",
         variant: "destructive",
       });
       return;
     }
+
+    // Agregar prefijo +57 al número
+    const fullPhoneNumber = `+57${phoneDigits}`;
 
     setUpdatingPhone(true);
 
@@ -525,7 +564,7 @@ export default function UserPortal() {
         body: JSON.stringify({
           patientId: patient.patient_id,
           document: patient.document,
-          phone: newPhone,
+          phone: fullPhoneNumber,
         }),
       });
 
@@ -533,7 +572,7 @@ export default function UserPortal() {
 
       if (data.success) {
         // Actualizar el estado del paciente con el nuevo teléfono
-        setPatient({ ...patient, phone: newPhone });
+        setPatient({ ...patient, phone: fullPhoneNumber });
         
         toast({
           title: "Teléfono actualizado",
@@ -1228,7 +1267,9 @@ export default function UserPortal() {
           const secondRequestBody = {
             ...requestBody,
             selected_time: nextConsecutiveTime,
-            reason: `Consulta de ${selectedSpecialty.name} - CITA DOBLE (2/2)`
+            reason: `Consulta de ${selectedSpecialty.name} - CITA DOBLE (2/2)`,
+            is_consecutive_double: true,
+            first_appointment_id: data.data.appointment_id
           };
 
           try {
@@ -1592,6 +1633,55 @@ export default function UserPortal() {
       text: 'text-gray-700',
       badge: 'bg-gray-500'
     };
+  };
+
+  // Función para eliminar solicitud de lista de espera
+  const handleDeleteWaitingList = async () => {
+    if (!waitingListToDelete || !patient) return;
+
+    try {
+      setDeletingWaitingList(true);
+
+      const baseUrl = (import.meta.env.VITE_API_URL || 'http://localhost:4000/api').replace(/\/+$/, '');
+      const url = baseUrl.endsWith('/api')
+        ? `${baseUrl}/appointments/waiting-list/patient/${patient.patient_id}/${waitingListToDelete.id}`
+        : `${baseUrl}/api/appointments/waiting-list/patient/${patient.patient_id}/${waitingListToDelete.id}`;
+
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        // Actualizar la lista de espera local
+        setWaitingList(prev => prev.filter(item => item.id !== waitingListToDelete.id));
+
+        toast({
+          title: "Solicitud eliminada",
+          description: "Tu solicitud ha sido eliminada de la cola de espera exitosamente",
+        });
+
+        setShowDeleteWaitingListModal(false);
+        setWaitingListToDelete(null);
+      } else {
+        toast({
+          title: "Error",
+          description: data.message || "No se pudo eliminar la solicitud",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Error eliminando solicitud:', error);
+      toast({
+        title: "Error",
+        description: "No se pudo procesar la solicitud",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingWaitingList(false);
+    }
   };
 
   // Función para procesar la reasignación
@@ -2202,7 +2292,10 @@ export default function UserPortal() {
                     </p>
                     <button
                       onClick={() => {
-                        setNewPhone(patient?.phone || '');
+                        // Extraer solo los 10 dígitos del número (sin +57)
+                        const currentPhone = patient?.phone || '';
+                        const digitsOnly = currentPhone.replace(/^\+57/, '').replace(/\D/g, '');
+                        setNewPhone(digitsOnly);
                         setShowEditPhoneModal(true);
                       }}
                       className="text-blue-600 hover:text-blue-700 text-xs underline"
@@ -2237,8 +2330,68 @@ export default function UserPortal() {
         </div>
       </div>
 
+      {/* Navegación por Pestañas */}
+      <div className="bg-white border-b border-gray-200 sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <nav className="flex gap-1 sm:gap-2" aria-label="Tabs">
+            <button
+              onClick={() => setActiveTab('citas')}
+              className={`flex items-center gap-2 px-4 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-semibold border-b-3 transition-all ${
+                activeTab === 'citas'
+                  ? 'border-blue-600 text-blue-600 bg-blue-50/50'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Calendar className="w-4 h-4 sm:w-5 sm:h-5" />
+              <span>Mis Citas</span>
+              {(appointments.length + waitingList.length) > 0 && (
+                <span className={`ml-1 px-2 py-0.5 text-xs rounded-full ${
+                  activeTab === 'citas' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-600'
+                }`}>
+                  {appointments.length + waitingList.length}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={async () => {
+                setActiveTab('notificaciones');
+                // Marcar mensajes como leídos al entrar a la pestaña
+                if (unreadCount > 0 && patient) {
+                  try {
+                    const baseUrl = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+                    await fetch(`${baseUrl}/sms/patient/${patient.patient_id}/mark-read`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' }
+                    });
+                    setUnreadCount(0);
+                  } catch (err) {
+                    console.error('Error marcando como leídos:', err);
+                  }
+                }
+              }}
+              className={`flex items-center gap-2 px-4 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-semibold border-b-3 transition-all ${
+                activeTab === 'notificaciones'
+                  ? 'border-purple-600 text-purple-600 bg-purple-50/50'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+              }`}
+            >
+              <Bell className="w-4 h-4 sm:w-5 sm:h-5" />
+              <span>Notificaciones</span>
+              {unreadCount > 0 && (
+                <span className="ml-1 px-2 py-0.5 text-xs rounded-full bg-red-500 text-white font-bold animate-pulse">
+                  {unreadCount}
+                </span>
+              )}
+            </button>
+          </nav>
+        </div>
+      </div>
+
       {/* Contenido principal */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {/* Pestaña de Citas */}
+        {activeTab === 'citas' && (
+          <>
         {/* Título de Sección */}
         <div className="mb-6 sm:mb-8">
           <div className="flex items-center gap-3 mb-2">
@@ -2823,13 +2976,169 @@ export default function UserPortal() {
                     )}
                   </div>
 
-                  {/* ID de solicitud */}
-                  <div className="bg-gray-50 border-t border-gray-200 px-4 sm:px-6 py-3 text-right">
+                  {/* Footer con ID de solicitud y botón eliminar */}
+                  <div className="bg-gray-50 border-t border-gray-200 px-4 sm:px-6 py-3 flex items-center justify-between">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setWaitingListToDelete(item);
+                        setShowDeleteWaitingListModal(true);
+                      }}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs sm:text-sm font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-all"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      <span>Eliminar</span>
+                    </button>
                     <p className="text-xs sm:text-sm text-gray-600">Solicitud N° <span className="font-mono font-bold text-gray-900">#{item.id}</span></p>
                   </div>
                 </div>
               );
             })}
+          </div>
+        )}
+          </>
+        )}
+
+        {/* Pestaña de Notificaciones / SMS */}
+        {activeTab === 'notificaciones' && (
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <div className="flex items-center gap-3">
+                <div className="bg-purple-100 rounded-xl p-2.5">
+                  <Bell className="w-6 h-6 text-purple-700" />
+                </div>
+                <h2 className="text-2xl sm:text-3xl font-bold text-gray-900">
+                  Notificaciones / SMS
+                </h2>
+              </div>
+              <p className="text-sm sm:text-base text-gray-600 pl-14">
+                Historial de mensajes SMS enviados a tu número de teléfono
+              </p>
+            </div>
+
+            {loadingSms ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+              <span className="ml-3 text-gray-600">Cargando notificaciones...</span>
+            </div>
+          ) : smsNotifications.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-8 sm:p-12 text-center">
+              <div className="bg-purple-100 w-20 h-20 sm:w-24 sm:h-24 rounded-full flex items-center justify-center mx-auto mb-4">
+                <MessageSquare className="w-10 h-10 sm:w-12 sm:h-12 text-purple-600" />
+              </div>
+              <h3 className="text-lg sm:text-2xl font-bold text-gray-900 mb-2">No hay notificaciones SMS</h3>
+              <p className="text-sm sm:text-base text-gray-600 max-w-md mx-auto">
+                Cuando te enviemos mensajes de confirmación, recordatorio o información importante, aparecerán aquí.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {smsNotifications.map((sms: any) => {
+                const sentDate = new Date(sms.sent_at);
+                const formattedDate = sentDate.toLocaleDateString('es-CO', {
+                  day: '2-digit',
+                  month: 'short',
+                  year: 'numeric'
+                });
+                const formattedTime = sentDate.toLocaleTimeString('es-CO', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  hour12: true
+                });
+
+                const isSuccess = sms.status === 'success';
+                
+                // Detectar si es un mensaje interno del sistema
+                const isInternalNotification = sms.template_id && sms.template_id.startsWith('waiting_list');
+                
+                // Título para mensajes internos según el tipo
+                const getInternalTitle = (templateId: string) => {
+                  switch (templateId) {
+                    case 'waiting_list_deleted':
+                      return '📋 Notificación del Sistema';
+                    case 'waiting_list_assigned':
+                      return '✅ Asignación de Cita';
+                    default:
+                      return '🔔 Notificación Interna';
+                  }
+                };
+
+                return (
+                  <div 
+                    key={sms.id} 
+                    className={`bg-white rounded-xl shadow-sm border overflow-hidden hover:shadow-md transition-shadow ${isInternalNotification ? 'border-gray-300' : 'border-gray-200'}`}
+                  >
+                    {/* Título para mensajes internos */}
+                    {isInternalNotification && (
+                      <div className="bg-gray-800 px-4 sm:px-6 py-2">
+                        <p className="text-sm font-semibold text-white">
+                          {getInternalTitle(sms.template_id)}
+                        </p>
+                      </div>
+                    )}
+                    
+                    {/* Header con fecha y estado */}
+                    <div className={`px-4 sm:px-6 py-3 flex items-center justify-between ${isSuccess ? 'bg-gradient-to-r from-green-50 to-emerald-50 border-b border-green-100' : 'bg-gradient-to-r from-red-50 to-orange-50 border-b border-red-100'}`}>
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-lg ${isSuccess ? 'bg-green-100' : 'bg-red-100'}`}>
+                          <MessageSquare className={`w-4 h-4 ${isSuccess ? 'text-green-600' : 'text-red-600'}`} />
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-gray-900">{formattedDate}</p>
+                          <p className="text-xs text-gray-600">{formattedTime}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {/* Badge de tipo de mensaje */}
+                        {isInternalNotification ? (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-200 text-gray-700">
+                            Sistema
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                            SMS
+                          </span>
+                        )}
+                        <div className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold ${isSuccess ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                          {isSuccess ? (
+                            <>
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Enviado</span>
+                            </>
+                          ) : (
+                            <>
+                              <XCircle className="w-3.5 h-3.5" />
+                              <span>Falló</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Contenido del mensaje */}
+                    <div className="px-4 sm:px-6 py-4">
+                      <p className="text-sm sm:text-base text-gray-700 leading-relaxed whitespace-pre-wrap">
+                        {sms.message}
+                      </p>
+                    </div>
+
+                    {/* Footer con info adicional */}
+                    <div className="bg-gray-50 border-t border-gray-200 px-4 sm:px-6 py-2.5 flex items-center justify-between text-xs text-gray-500">
+                      <div className="flex items-center gap-1.5">
+                        <Phone className="w-3.5 h-3.5" />
+                        <span>{sms.recipient_number.startsWith('+') ? sms.recipient_number : '+' + sms.recipient_number}</span>
+                      </div>
+                      {sms.parts > 1 && (
+                        <span className="text-gray-400">
+                          {sms.parts} partes
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           </div>
         )}
       </div>
@@ -3748,6 +4057,78 @@ export default function UserPortal() {
         </DialogContent>
       </Dialog>
 
+      {/* Modal de confirmación para eliminar solicitud de lista de espera */}
+      <Dialog open={showDeleteWaitingListModal} onOpenChange={setShowDeleteWaitingListModal}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <Trash2 className="w-5 h-5" />
+              Eliminar Solicitud de Espera
+            </DialogTitle>
+            <DialogDescription>
+              ¿Estás seguro de que deseas eliminar esta solicitud de la cola de espera? Esta acción no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+
+          {waitingListToDelete && (
+            <div className="space-y-4">
+              {/* Información de la solicitud a eliminar */}
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-2">
+                <h4 className="font-semibold text-gray-900">Detalles de la solicitud:</h4>
+                <div className="text-sm space-y-1">
+                  <div><span className="font-medium">Especialidad:</span> {waitingListToDelete.specialty_name}</div>
+                  <div><span className="font-medium">Prioridad:</span> {waitingListToDelete.priority_level}</div>
+                  {waitingListToDelete.reason && (
+                    <div><span className="font-medium">Motivo:</span> {waitingListToDelete.reason}</div>
+                  )}
+                  <div><span className="font-medium">N° Solicitud:</span> #{waitingListToDelete.id}</div>
+                </div>
+              </div>
+
+              {/* Advertencia */}
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-red-700">
+                  Si eliminas esta solicitud, perderás tu lugar en la cola de espera y tendrás que volver a registrarte si deseas ser atendido.
+                </p>
+              </div>
+
+              {/* Botones de acción */}
+              <DialogFooter className="flex gap-3 pt-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteWaitingListModal(false);
+                    setWaitingListToDelete(null);
+                  }}
+                  className="flex-1"
+                  disabled={deletingWaitingList}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  onClick={handleDeleteWaitingList}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                  disabled={deletingWaitingList}
+                >
+                  {deletingWaitingList ? (
+                    <div className="flex items-center gap-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Eliminando...
+                    </div>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      Confirmar Eliminación
+                    </>
+                  )}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Diálogo de reasignación de cita */}
       <Dialog open={showRescheduleDialog} onOpenChange={setShowRescheduleDialog}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -4358,20 +4739,26 @@ export default function UserPortal() {
               <Label htmlFor="new-phone">
                 Número de Teléfono <span className="text-red-500">*</span>
               </Label>
-              <div className="flex items-center gap-2">
-                <Phone className="w-4 h-4 text-gray-500" />
+              <div className="flex items-center gap-0">
+                <div className="flex items-center justify-center bg-gray-100 border border-r-0 border-gray-300 rounded-l-md px-3 h-10 text-gray-700 font-semibold">
+                  +57
+                </div>
                 <Input
                   id="new-phone"
                   type="tel"
-                  placeholder="Ej: +573001234567 o 3001234567"
+                  placeholder="3001234567"
                   value={newPhone}
-                  onChange={(e) => setNewPhone(e.target.value)}
-                  maxLength={15}
-                  className="flex-1"
+                  onChange={(e) => {
+                    // Solo permitir dígitos y máximo 10
+                    const digits = e.target.value.replace(/\D/g, '').slice(0, 10);
+                    setNewPhone(digits);
+                  }}
+                  maxLength={10}
+                  className="flex-1 rounded-l-none"
                 />
               </div>
               <p className="text-xs text-gray-500">
-                Ingresa el número con código de país o sin él (mínimo 10 dígitos)
+                Ingresa los 10 dígitos de tu número celular colombiano
               </p>
             </div>
 

@@ -33,7 +33,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Clock, User, Phone, AlertCircle, CalendarPlus, Trash2, FileText, X, Search, Download, CheckCircle, PhoneCall, ChevronDown, BarChart3, MessageSquare } from "lucide-react";
+import { Clock, User, Phone, AlertCircle, CalendarPlus, Trash2, FileText, X, Search, Download, CheckCircle, PhoneCall, ChevronDown, BarChart3, MessageSquare, CalendarCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import AISchedulingModal from "@/components/AISchedulingModal";
@@ -84,6 +84,21 @@ const Queue = () => {
   // Estado para acordeones - expandir todas las especialidades con resultados de búsqueda
   const [expandedSpecialties, setExpandedSpecialties] = useState<string[]>([]);
 
+  // Estado para disponibilidad de citas por especialidad
+  const [availableSlotsBySpecialty, setAvailableSlotsBySpecialty] = useState<Record<number, { total_available_slots: number; next_available_date: string | null }>>({});
+
+  // Función para cargar disponibilidad por especialidad
+  const refreshAvailability = async () => {
+    try {
+      const response = await api.getAvailableSlotsBySpecialty();
+      if (response.success) {
+        setAvailableSlotsBySpecialty(response.data);
+      }
+    } catch (err) {
+      console.error('Error cargando disponibilidad por especialidad:', err);
+    }
+  };
+
   // Función refresh principal - Cargar TODOS los pacientes de una vez
   const refresh = async () => {
     setLoading(true);
@@ -96,6 +111,8 @@ const Queue = () => {
       if (!searchTerm) {
         setFilteredData(response);
       }
+      // También actualizar disponibilidad
+      await refreshAvailability();
     } catch (err: any) {
       setError(err.message || 'Error cargando cola de espera');
     } finally {
@@ -318,43 +335,36 @@ const Queue = () => {
     }
   };
 
-  // Función para llamar al paciente con ElevenLabs
+  // Función para notificar al paciente por SMS que hay cita disponible
   const handleCallPatient = async (item: any, section: any) => {
     setCallingPatientId(item.id);
     try {
-      const response = await api.initiateElevenLabsCall({
+      // Construir mensaje SMS
+      const message = `Hola ${item.patient_name.split(' ')[0]}! Le informamos que hay agenda disponible para ${section.specialty_name}. Le invitamos a visitar https://biosanarcall.site y agendar su cita. Fundacion Biosanar IPS`;
+      
+      const response = await api.sendSingleSMS({
         phoneNumber: item.patient_phone,
-        patientId: item.patient_id,
-        patientName: item.patient_name,
-        metadata: {
-          specialty: section.specialty_name,
-          specialty_id: section.specialty_id,
-          priority: item.priority_level,
-          waiting_list_id: item.id,
-          call_type: item.call_type || 'agendar',
-          reason: item.reason,
-          doctor_name: item.doctor_name,
-          queue_position: item.queue_position
-        }
+        message: message,
+        patientId: item.patient_id
       });
 
       if (response.success) {
         toast({
-          title: "✅ Llamada iniciada",
-          description: `Llamando a ${item.patient_name} al ${item.patient_phone}`,
+          title: "✅ SMS enviado",
+          description: `Notificación enviada a ${item.patient_name} al ${item.patient_phone}`,
         });
       } else {
         toast({
-          title: "❌ Error al llamar",
-          description: response.message || "No se pudo iniciar la llamada",
+          title: "❌ Error al enviar SMS",
+          description: response.message || "No se pudo enviar el mensaje",
           variant: "destructive",
         });
       }
     } catch (error: any) {
-      console.error('Error al iniciar llamada:', error);
+      console.error('Error al enviar SMS:', error);
       toast({
         title: "❌ Error",
-        description: error.message || "Error al conectar con el sistema de llamadas",
+        description: error.message || "Error al conectar con el sistema de SMS",
         variant: "destructive",
       });
     } finally {
@@ -704,24 +714,46 @@ const Queue = () => {
               onValueChange={handleAccordionChange}
               className="space-y-4"
             >
-              {filteredData?.data?.map((section: any) => (
+              {filteredData?.data?.map((section: any) => {
+                // Verificar si esta especialidad tiene citas disponibles
+                const availabilityInfo = availableSlotsBySpecialty[section.specialty_id];
+                const hasAvailableSlots = availabilityInfo && availabilityInfo.total_available_slots > 0;
+                
+                return (
                 <AccordionItem 
                   key={section.specialty_id} 
                   value={`specialty-${section.specialty_id}`}
-                  className="border-medical-200 bg-white rounded-lg shadow-sm overflow-hidden"
+                  className={`border-medical-200 rounded-lg shadow-sm overflow-hidden ${
+                    hasAvailableSlots 
+                      ? 'bg-gradient-to-r from-green-50 to-emerald-50 border-green-300 ring-2 ring-green-200' 
+                      : 'bg-white'
+                  }`}
                 >
-                  <AccordionTrigger className="hover:no-underline px-6 py-4 bg-gradient-to-r from-medical-50 to-white hover:from-medical-100 hover:to-medical-50">
+                  <AccordionTrigger className={`hover:no-underline px-6 py-4 ${
+                    hasAvailableSlots 
+                      ? 'bg-gradient-to-r from-green-100 to-emerald-100 hover:from-green-150 hover:to-emerald-150' 
+                      : 'bg-gradient-to-r from-medical-50 to-white hover:from-medical-100 hover:to-medical-50'
+                  }`}>
                     <div className="flex items-center justify-between w-full pr-4">
                       <div className="flex items-center gap-3">
                         <span className="text-2xl">{getSpecialtyIcon(section.specialty_name)}</span>
                         <div className="text-left">
-                          <div className="text-lg font-semibold text-medical-800">{section.specialty_name}</div>
-                          <div className="text-sm text-medical-600 font-normal">
+                          <div className={`text-lg font-semibold ${hasAvailableSlots ? 'text-green-800' : 'text-medical-800'}`}>
+                            {section.specialty_name}
+                          </div>
+                          <div className={`text-sm font-normal ${hasAvailableSlots ? 'text-green-600' : 'text-medical-600'}`}>
                             {section.total_waiting} paciente{section.total_waiting !== 1 ? 's' : ''} en espera
                           </div>
                         </div>
                       </div>
                       <div className="flex items-center gap-2">
+                        {/* Badge de disponibilidad */}
+                        {hasAvailableSlots && (
+                          <Badge className="bg-green-500 hover:bg-green-600 text-white gap-1 animate-pulse">
+                            <CalendarCheck className="w-3.5 h-3.5" />
+                            {availabilityInfo.total_available_slots} cita{availabilityInfo.total_available_slots !== 1 ? 's' : ''} disponible{availabilityInfo.total_available_slots !== 1 ? 's' : ''}
+                          </Badge>
+                        )}
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -762,7 +794,8 @@ const Queue = () => {
                     </div>
                   </AccordionContent>
                 </AccordionItem>
-              ))}
+              );
+              })}
             </Accordion>
               
             {!loading && searchTerm && (!filteredData?.data || filteredData.data.length === 0) && (

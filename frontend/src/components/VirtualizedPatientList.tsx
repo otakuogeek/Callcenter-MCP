@@ -6,7 +6,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Clock, Phone, FileText, CheckCircle, Trash2, PhoneCall } from "lucide-react";
+import { Clock, Phone, FileText, CheckCircle, Trash2, MessageSquare } from "lucide-react";
 import { useMemo, memo } from "react";
 
 interface PatientItemProps {
@@ -203,15 +203,15 @@ const PatientCard = memo(({
             variant="default"
             onClick={() => handleCallPatient(item, { specialty_name: sectionSpecialtyName, specialty_id: sectionSpecialtyId })}
             disabled={callingPatientId === item.id}
-            className="bg-blue-600 hover:bg-blue-700 text-white"
-            title="Llamar con ElevenLabs"
+            className="bg-green-600 hover:bg-green-700 text-white"
+            title="Enviar SMS de disponibilidad"
           >
             {callingPatientId === item.id ? (
               <Clock className="w-4 h-4 mr-1 animate-spin" />
             ) : (
-              <PhoneCall className="w-4 h-4 mr-1" />
+              <MessageSquare className="w-4 h-4 mr-1" />
             )}
-            {callingPatientId === item.id ? 'Llamando...' : 'Llamar'}
+            {callingPatientId === item.id ? 'Enviando...' : 'Notificar'}
           </Button>
           <Button
             size="sm"

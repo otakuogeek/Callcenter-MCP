@@ -2041,6 +2041,7 @@ async function getAvailableAppointments(args: any): Promise<any> {
                d.id, d.name, d.email, d.phone,
                s.id, s.name,
                l.id, l.name, l.address, l.phone
+      HAVING SUM(ad.quota - ad.assigned) > 0
       ORDER BY s.name, l.name, a.date, a.start_time
       LIMIT ?
     `;
@@ -2167,7 +2168,7 @@ async function getAvailableAppointments(args: any): Promise<any> {
 
     return {
       success: true,
-      message: `Se encontraron ${uniqueSpecialties.length} especialidades con agendas disponibles`,
+      message: `Se encontraron ${uniqueSpecialties.length} especialidades con agendas disponibles y cupos`,
       count: appointments.length,
       specialties_count: uniqueSpecialties.length,
       specialties_list: uniqueSpecialties,
@@ -2175,9 +2176,9 @@ async function getAvailableAppointments(args: any): Promise<any> {
       available_appointments: formattedAppointments,
       info: {
         grouping: 'Agrupado por ESPECIALIDAD + SEDE',
-        specialty_focus: 'Cada especialidad muestra todas sus sedes y doctores disponibles',
-        slots_available_info: 'slots_available=0 permite lista de espera automática',
-        usage: 'Use specialty_id + location_id para verificar cupos con checkAvailabilityQuota'
+        specialty_focus: 'Solo se muestran agendas CON CUPOS DISPONIBLES (slots_available > 0)',
+        waiting_list_info: 'Si no aparece una especialidad, puede que no tenga cupos. Usa scheduleAppointment para agregar a lista de espera',
+        usage: 'Use availability_id para agendar directamente con scheduleAppointment'
       }
     };
 

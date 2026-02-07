@@ -61,20 +61,21 @@ class LabsMobileSMSService {
   }
 
   /**
-   * Formatea un número telefónico colombiano al formato internacional
+   * Formatea un número telefónico al formato internacional SIN el signo +
    * LabsMobile requiere formato internacional: 57XXXXXXXXXX (sin +)
+   * También soporta números de Venezuela (58)
    */
   private formatPhoneNumber(phone: string): string {
-    // Eliminar todos los caracteres que no sean dígitos
+    // Eliminar todos los caracteres que no sean dígitos (incluido el +)
     let cleaned = phone.replace(/\D/g, '');
 
-    // Eliminar el prefijo 0 si está presente
+    // Eliminar el prefijo 0 si está presente al inicio
     if (cleaned.startsWith('0')) {
       cleaned = cleaned.substring(1);
     }
 
-    // Casos de números colombianos
-    if (cleaned.length === 10) {
+    // Casos de números colombianos (código país 57)
+    if (cleaned.length === 10 && cleaned.startsWith('3')) {
       // Número colombiano de 10 dígitos (ej: 3105672307)
       return '57' + cleaned;
     } else if (cleaned.startsWith('57') && cleaned.length === 12) {
@@ -86,12 +87,21 @@ class LabsMobileSMSService {
       return '5716' + cleaned;
     }
 
-    // Si ya empieza con +, eliminarlo
-    if (phone.startsWith('+')) {
-      return phone.substring(1);
+    // Casos de números de Venezuela (código país 58)
+    if (cleaned.startsWith('58') && cleaned.length >= 12) {
+      // Ya tiene código de país 58 (ej: 584263774021)
+      return cleaned;
+    } else if (cleaned.length === 10 && cleaned.startsWith('4')) {
+      // Número venezolano de 10 dígitos (ej: 4263774021)
+      return '58' + cleaned;
     }
 
-    // Por defecto, agregar código de Colombia
+    // Si el número tiene más de 10 dígitos y empieza con código país válido, devolverlo limpio
+    if (cleaned.length >= 11) {
+      return cleaned;
+    }
+
+    // Por defecto, asumir código de Colombia
     return '57' + cleaned;
   }
 
@@ -207,11 +217,11 @@ class LabsMobileSMSService {
     } catch (error: any) {
       console.error('❌ Error enviando SMS con LabsMobile:', error);
 
-      // Registrar error en base de datos
+      // Registrar error en base de datos - usar números formateados (sin +)
       const numbers = Array.isArray(number) ? number : [number];
       for (const phone of numbers) {
         await this.logSMS({
-          recipient_number: phone,
+          recipient_number: this.formatPhoneNumber(phone),
           recipient_name: recipient_name,
           message: message,
           sender_id: this.sender,

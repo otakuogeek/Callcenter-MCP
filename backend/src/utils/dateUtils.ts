@@ -5,12 +5,21 @@
  * que las fechas almacenadas en MySQL (UTC-0) se conviertan correctamente
  * a la zona horaria de Colombia (UTC-5 / America/Bogota).
  * 
- * IMPORTANTE: MySQL en este servidor almacena fechas en UTC-0.
- * Todas las fechas que se muestran a usuarios deben convertirse a UTC-5.
+ * IMPORTANTE: 
+ * - Campos DATETIME/TIMESTAMP: Se almacenan en UTC-0, se convierten a UTC-5
+ * - Campos DATE (solo fecha): Se usan TAL CUAL, sin conversión de timezone
  */
 
 export const COLOMBIA_TIMEZONE = 'America/Bogota';
 export const COLOMBIA_LOCALE = 'es-CO';
+
+/**
+ * Detecta si un string es solo una fecha (YYYY-MM-DD) sin componente de hora
+ */
+function isDateOnly(str: string): boolean {
+  // Formato YYYY-MM-DD exacto (10 caracteres)
+  return /^\d{4}-\d{2}-\d{2}$/.test(str);
+}
 
 /**
  * Convierte un datetime de MySQL (UTC-0) a objeto Date interpretándolo como UTC
@@ -25,14 +34,13 @@ export function parseMySQLDatetime(mysqlDatetime: string | Date): Date {
   }
   
   // Si ya tiene 'Z' o offset, parsearlo directamente
-  if (mysqlDatetime.includes('Z') || mysqlDatetime.includes('+') || mysqlDatetime.includes('-')) {
-    // Verificar si tiene offset al final (ej: +00:00)
-    if (/[+-]\d{2}:\d{2}$/.test(mysqlDatetime)) {
-      return new Date(mysqlDatetime);
-    }
-    if (mysqlDatetime.endsWith('Z')) {
-      return new Date(mysqlDatetime);
-    }
+  if (mysqlDatetime.includes('Z') || mysqlDatetime.includes('+')) {
+    return new Date(mysqlDatetime);
+  }
+  
+  // Verificar si tiene offset al final (ej: +00:00 o -05:00)
+  if (/[+-]\d{2}:\d{2}$/.test(mysqlDatetime)) {
+    return new Date(mysqlDatetime);
   }
   
   // MySQL datetime sin timezone: interpretar como UTC
@@ -42,12 +50,70 @@ export function parseMySQLDatetime(mysqlDatetime: string | Date): Date {
 }
 
 /**
- * Formatea una fecha a formato corto DD/MM/YYYY en zona horaria Colombia
+ * 🆕 Formatea una fecha DATE (sin hora) directamente sin conversión de timezone
+ * Para campos tipo DATE de MySQL que no necesitan conversión
+ * Acepta string "YYYY-MM-DD" o objeto Date en UTC
+ */
+function formatDateOnlyDirect(dateInput: string | Date): { day: number; month: number; year: number; weekday: string } {
+  let year: number, month: number, day: number;
+  
+  if (typeof dateInput === 'string') {
+    // String: parsear directamente
+    [year, month, day] = dateInput.split('-').map(Number);
+  } else {
+    // Date object: usar getUTC* para obtener la fecha sin cambio de timezone
+    // MySQL2 devuelve Date con UTC (ej: 2026-02-08T00:00:00.000Z)
+    year = dateInput.getUTCFullYear();
+    month = dateInput.getUTCMonth() + 1;  // getUTCMonth es 0-indexed
+    day = dateInput.getUTCDate();
+  }
+  
+  // Crear fecha local (sin UTC) para obtener el día de la semana correcto
+  const localDate = new Date(year, month - 1, day, 12, 0, 0);
+  
+  const weekdays = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+  
+  return {
+    day,
+    month,
+    year,
+    weekday: weekdays[localDate.getDay()]
+  };
+}
+
+/**
+ * Detecta si un objeto Date representa una fecha de medianoche UTC
+ * (típico de campos DATE de MySQL devueltos por mysql2)
+ */
+function isDateObjectFromDateField(date: Date): boolean {
+  // Los campos DATE de MySQL vienen como UTC medianoche: 2026-02-08T00:00:00.000Z
+  return date.getUTCHours() === 0 && 
+         date.getUTCMinutes() === 0 && 
+         date.getUTCSeconds() === 0 && 
+         date.getUTCMilliseconds() === 0;
+}
+
+/**
+ * Formatea una fecha a formato corto DD/MM/YYYY
  * @param date - Fecha de MySQL o Date object
  * @returns Fecha formateada como 'DD/MM/YYYY'
  */
 export function formatDateColombia(date: string | Date): string {
   if (!date) return '';
+  
+  // Caso 1: String en formato DATE (YYYY-MM-DD) - formatear directamente
+  if (typeof date === 'string' && isDateOnly(date)) {
+    const { day, month, year } = formatDateOnlyDirect(date);
+    return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+  }
+  
+  // Caso 2: Date object de campo DATE de MySQL (medianoche UTC)
+  if (date instanceof Date && isDateObjectFromDateField(date)) {
+    const { day, month, year } = formatDateOnlyDirect(date);
+    return `${String(day).padStart(2, '0')}/${String(month).padStart(2, '0')}/${year}`;
+  }
+  
+  // Caso 3: DATETIME - usar conversión de timezone
   const d = parseMySQLDatetime(date);
   return d.toLocaleDateString(COLOMBIA_LOCALE, { 
     timeZone: COLOMBIA_TIMEZONE,
@@ -58,13 +124,31 @@ export function formatDateColombia(date: string | Date): string {
 }
 
 /**
- * Formatea una fecha a formato largo en zona horaria Colombia
+ * Formatea una fecha a formato largo
  * Ej: "lunes, 15 de enero de 2026"
+ * IMPORTANTE: Si es DATE (solo fecha), se usa directamente sin conversión timezone
  * @param date - Fecha de MySQL o Date object
  * @returns Fecha formateada con día de semana, día, mes y año
  */
 export function formatFullDateColombia(date: string | Date): string {
   if (!date) return '';
+  
+  const months = ['', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  
+  // Caso 1: String en formato DATE (YYYY-MM-DD) - formatear directamente
+  if (typeof date === 'string' && isDateOnly(date)) {
+    const { day, month, year, weekday } = formatDateOnlyDirect(date);
+    return `${weekday}, ${day} de ${months[month]} de ${year}`;
+  }
+  
+  // Caso 2: Date object de campo DATE de MySQL (medianoche UTC)
+  if (date instanceof Date && isDateObjectFromDateField(date)) {
+    const { day, month, year, weekday } = formatDateOnlyDirect(date);
+    return `${weekday}, ${day} de ${months[month]} de ${year}`;
+  }
+  
+  // Caso 3: DATETIME - usar conversión de timezone
   const d = parseMySQLDatetime(date);
   return d.toLocaleDateString(COLOMBIA_LOCALE, { 
     timeZone: COLOMBIA_TIMEZONE,

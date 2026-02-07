@@ -33,6 +33,7 @@ const formatDateTime = (dateString: string): string => {
 interface Order {
   id: number;
   patient_id: number;
+  availability_id: number | null;
   scheduled_at: string;
   status: string;
   appointment_type: string;
@@ -72,6 +73,7 @@ export default function Orders() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [agendaSearch, setAgendaSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [specialtyFilter, setSpecialtyFilter] = useState('all');
   const [fromDate, setFromDate] = useState('');
@@ -110,6 +112,7 @@ export default function Orders() {
       if (fromDate) params.append('from_date', fromDate);
       if (toDate) params.append('to_date', toDate);
       if (searchTerm) params.append('search', searchTerm);
+      if (agendaSearch) params.append('agenda_id', agendaSearch);
 
       const response = await api.get(`/orders?${params.toString()}`);
       
@@ -200,7 +203,7 @@ export default function Orders() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
                 <div className="space-y-2">
                   <Label>Búsqueda por # de Orden</Label>
                   <div className="flex gap-2">
@@ -209,6 +212,22 @@ export default function Orders() {
                       placeholder="Ingrese número de orden..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                    />
+                    <Button onClick={handleSearch} size="icon">
+                      <Search className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label>Búsqueda por # de Agenda</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="number"
+                      placeholder="# de agenda..."
+                      value={agendaSearch}
+                      onChange={(e) => setAgendaSearch(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                     />
                     <Button onClick={handleSearch} size="icon">
@@ -293,8 +312,13 @@ export default function Orders() {
                       <CardContent className="p-4">
                         <div className="flex items-start justify-between">
                           <div className="space-y-3 flex-1">
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 flex-wrap">
                               <div className="font-semibold text-lg">Orden #{order.id}</div>
+                              {order.availability_id && (
+                                <Badge variant="outline" className="text-xs font-mono">
+                                  Agenda #{order.availability_id}
+                                </Badge>
+                              )}
                               {getStatusBadge(order.status)}
                               {getPriorityBadge(order.priority_level)}
                             </div>
