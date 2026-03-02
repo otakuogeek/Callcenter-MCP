@@ -1,5 +1,6 @@
 // Cliente API simple con fetch y manejo de token
 import { logger } from './logger';
+import { clearAdminSession, getAdminToken, isJwtExpired } from './authStorage';
 import type {
   CreatePatientData,
   UpdatePatientData,
@@ -23,30 +24,12 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /**
- * Verifica si un token JWT está expirado
- * @param token - JWT token string
- * @returns true si el token está expirado o inválido
- */
-function isTokenExpired(token: string): boolean {
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    const exp = payload.exp * 1000; // Convertir a milisegundos
-    const now = Date.now();
-    // Solo considerar expirado si YA pasó la fecha de expiración
-    return exp <= now;
-  } catch {
-    return true; // Si no se puede decodificar, considerarlo expirado
-  }
-}
-
-/**
  * Limpia la autenticación expirada y redirige al login
  */
 function clearExpiredAuth(): void {
-  localStorage.removeItem('token');
-  localStorage.removeItem('user');
-  if (window.location.pathname !== '/login') {
-    window.location.href = '/login';
+  clearAdminSession();
+  if (window.location.pathname !== '/admin/login') {
+    window.location.href = '/admin/login';
   }
 }
 
@@ -60,10 +43,10 @@ async function request<T>(
   path: string,
   options: { method?: Method; body?: unknown; token?: string } = {}
 ): Promise<T> {
-  let token = options.token || localStorage.getItem('token') || undefined;
+  let token = options.token || getAdminToken() || undefined;
   
   // Verificar si el token está expirado antes de hacer la petición
-  if (token && isTokenExpired(token)) {
+  if (token && isJwtExpired(token)) {
     logger.warn('Token expirado detectado, limpiando autenticación');
     clearExpiredAuth();
     throw new Error('Token expirado');

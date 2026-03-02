@@ -1,28 +1,27 @@
 /**
- * WhatsApp Connection Service usando Baileys
- * Maneja la conexión real a WhatsApp Web con QR code
+ * WhatsApp Connection Service — Baileys v7 Refactored
  * 
- * @version 2.2.0
- * @description Incluye mejoras:
- *   - Backoff exponencial para reconexiones
- *   - Notificaciones al admin cuando falla reconexión
- *   - Métricas Prometheus integradas
- *   - Logging estructurado con pino
- *   - Fallback mejorado para transcripción de audio
- *   - 🆕 Normalización de texto entrante (caracteres invisibles)
- *   - 🆕 Message debouncing (agrupa mensajes rápidos) - inspirado en moltbot
- *   - 🆕 Response chunking inteligente - inspirado en moltbot
+ * @version 3.0.0
+ * @description Refactorización completa para corregir recepción de mensajes:
+ *   1. getMessage() callback requerido por Baileys v7 para reintentos y ACK
+ *   2. Logging directo con console.log para visibilidad en PM2
+ *   3. Debounce simplificado inline (sin módulo externo que pierda mensajes)
+ *   4. Chunking de respuesta inline
+ *   5. Health check mejorado
+ *   6. Manejo robusto de errores en TODOS los catch
+ *   7. Reconexión con backoff exponencial y jitter
  */
 
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   WASocket,
-  BaileysEventMap,
   proto,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-  downloadMediaMessage
+  downloadMediaMessage,
+  isJidGroup,
+  WAMessageKey
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
@@ -32,33 +31,56 @@ import { EventEmitter } from 'events';
 import pino from 'pino';
 import pool from '../db/pool';
 import { ResultSetHeader } from 'mysql2';
-
-// 🆕 Importar servicios de debouncing y chunking
-import { messageDebouncer, IncomingMessage } from './WhatsAppMessageDebouncer';
-import { chunkResponse, needsChunking } from './WhatsAppResponseChunker';
 import { normalizeIncomingText } from '../utils/whatsappUtils';
-
-// normalizeIncomingText importada desde ../utils/whatsappUtils
-
-// ============================================================================
-// LOGGER ESTRUCTURADO
-// ============================================================================
-
-// Logger principal para WhatsApp (estructurado)
-const waLogger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  name: 'whatsapp-connection',
-  transport: process.env.NODE_ENV !== 'production' ? {
-    target: 'pino-pretty',
-    options: { colorize: true, translateTime: 'SYS:standard' }
-  } : undefined
-});
-
-// Logger silencioso para Baileys (interno)
-const logger = pino({ level: 'silent' });
+import { COLOMBIA_TIMEZONE } from '../utils/dateUtils';
+import ResponseChunker from './WhatsAppResponseChunker';
+import { messageDebouncer, IncomingMessage as DebouncerMessage } from './WhatsAppMessageDebouncer';
 
 // ============================================================================
-// MÉTRICAS PROMETHEUS
+// LOGGING — console directo para que PM2 capture TODO sin pino-pretty
+// ============================================================================
+
+const LOG_PREFIX = '[WhatsApp]';
+
+function logInfo(msg: string, data?: any): void {
+  if (data !== undefined) {
+    console.log(`${LOG_PREFIX} INFO: ${msg}`, typeof data === 'string' ? data : JSON.stringify(data));
+  } else {
+    console.log(`${LOG_PREFIX} INFO: ${msg}`);
+  }
+}
+
+function logWarn(msg: string, data?: any): void {
+  if (data !== undefined) {
+    console.warn(`${LOG_PREFIX} WARN: ${msg}`, typeof data === 'string' ? data : JSON.stringify(data));
+  } else {
+    console.warn(`${LOG_PREFIX} WARN: ${msg}`);
+  }
+}
+
+function logError(msg: string, data?: any): void {
+  if (data !== undefined) {
+    console.error(`${LOG_PREFIX} ERROR: ${msg}`, typeof data === 'string' ? data : JSON.stringify(data));
+  } else {
+    console.error(`${LOG_PREFIX} ERROR: ${msg}`);
+  }
+}
+
+function logDebug(msg: string, data?: any): void {
+  if (process.env.LOG_LEVEL === 'debug' || process.env.WHATSAPP_DEBUG === 'true') {
+    if (data !== undefined) {
+      console.log(`${LOG_PREFIX} DEBUG: ${msg}`, typeof data === 'string' ? data : JSON.stringify(data));
+    } else {
+      console.log(`${LOG_PREFIX} DEBUG: ${msg}`);
+    }
+  }
+}
+
+// Logger silencioso para Baileys (evita ruido excesivo)
+const baileysLogger = pino({ level: 'silent' });
+
+// ============================================================================
+// MÉTRICAS
 // ============================================================================
 
 interface WhatsAppMetrics {
@@ -87,68 +109,69 @@ const metrics: WhatsAppMetrics = {
   aiProcessingCount: 0
 };
 
-/**
- * Obtener métricas actuales para Prometheus
- */
 export function getWhatsAppMetrics(): WhatsAppMetrics & { avgAiProcessingTime: number } {
   return {
     ...metrics,
-    connectionUptime: metrics.lastConnectedAt 
+    connectionUptime: metrics.lastConnectedAt
       ? Math.floor((Date.now() - metrics.lastConnectedAt.getTime()) / 1000)
       : 0,
-    avgAiProcessingTime: metrics.aiProcessingCount > 0 
-      ? metrics.aiProcessingTimeTotal / metrics.aiProcessingCount 
+    avgAiProcessingTime: metrics.aiProcessingCount > 0
+      ? metrics.aiProcessingTimeTotal / metrics.aiProcessingCount
       : 0
   };
 }
 
-/**
- * Renderizar métricas en formato Prometheus
- */
 export function renderWhatsAppPrometheusMetrics(): string {
   const m = getWhatsAppMetrics();
-  return `
-# HELP whatsapp_messages_received_total Total de mensajes recibidos
-# TYPE whatsapp_messages_received_total counter
-whatsapp_messages_received_total ${m.messagesReceived}
-
-# HELP whatsapp_messages_sent_total Total de mensajes enviados
-# TYPE whatsapp_messages_sent_total counter
-whatsapp_messages_sent_total ${m.messagesSent}
-
-# HELP whatsapp_messages_failed_total Total de mensajes fallidos
-# TYPE whatsapp_messages_failed_total counter
-whatsapp_messages_failed_total ${m.messagesFailed}
-
-# HELP whatsapp_audio_transcriptions_total Total de transcripciones de audio
-# TYPE whatsapp_audio_transcriptions_total counter
-whatsapp_audio_transcriptions_total ${m.audioTranscriptions}
-
-# HELP whatsapp_audio_transcriptions_failed_total Transcripciones de audio fallidas
-# TYPE whatsapp_audio_transcriptions_failed_total counter
-whatsapp_audio_transcriptions_failed_total ${m.audioTranscriptionsFailed}
-
-# HELP whatsapp_reconnect_attempts_total Intentos de reconexión
-# TYPE whatsapp_reconnect_attempts_total counter
-whatsapp_reconnect_attempts_total ${m.reconnectAttempts}
-
-# HELP whatsapp_connection_uptime_seconds Tiempo conectado en segundos
-# TYPE whatsapp_connection_uptime_seconds gauge
-whatsapp_connection_uptime_seconds ${m.connectionUptime}
-
-# HELP whatsapp_ai_processing_time_avg_ms Tiempo promedio de procesamiento IA
-# TYPE whatsapp_ai_processing_time_avg_ms gauge
-whatsapp_ai_processing_time_avg_ms ${m.avgAiProcessingTime}
-`.trim();
+  return [
+    '# HELP whatsapp_messages_received_total Total de mensajes recibidos',
+    '# TYPE whatsapp_messages_received_total counter',
+    `whatsapp_messages_received_total ${m.messagesReceived}`,
+    '',
+    '# HELP whatsapp_messages_sent_total Total de mensajes enviados',
+    '# TYPE whatsapp_messages_sent_total counter',
+    `whatsapp_messages_sent_total ${m.messagesSent}`,
+    '',
+    '# HELP whatsapp_messages_failed_total Total de mensajes fallidos',
+    '# TYPE whatsapp_messages_failed_total counter',
+    `whatsapp_messages_failed_total ${m.messagesFailed}`,
+    '',
+    '# HELP whatsapp_reconnect_attempts_total Intentos de reconexión',
+    '# TYPE whatsapp_reconnect_attempts_total counter',
+    `whatsapp_reconnect_attempts_total ${m.reconnectAttempts}`,
+    '',
+    '# HELP whatsapp_connection_uptime_seconds Tiempo conectado en segundos',
+    '# TYPE whatsapp_connection_uptime_seconds gauge',
+    `whatsapp_connection_uptime_seconds ${m.connectionUptime}`,
+    '',
+    '# HELP whatsapp_ai_processing_time_avg_ms Tiempo promedio IA en ms',
+    '# TYPE whatsapp_ai_processing_time_avg_ms gauge',
+    `whatsapp_ai_processing_time_avg_ms ${m.avgAiProcessingTime}`
+  ].join('\n');
 }
 
-// Directorio para almacenar credenciales - usar ruta absoluta para consistencia
+// ============================================================================
+// CONFIGURACIÓN
+// ============================================================================
+
 const AUTH_FOLDER = '/home/ubuntu/app/backend/.whatsapp-auth';
+const MAX_RECONNECT_ATTEMPTS = 15;
+const BASE_RECONNECT_DELAY_MS = 2000;
+const MAX_RECONNECT_DELAY_MS = 300_000; // 5 min
+const QUICK_QR_RECONNECT_DELAY_MS = 3000;
+const HEALTH_CHECK_INTERVAL_MS = 60_000;
 
-// Eventos del sistema
+// ============================================================================
+// EVENT EMITTER
+// ============================================================================
+
 export const whatsappEvents = new EventEmitter();
+whatsappEvents.setMaxListeners(25);
 
-// Estado de la conexión
+// ============================================================================
+// ESTADO DE CONEXIÓN
+// ============================================================================
+
 interface ConnectionState {
   socket: WASocket | null;
   qrCode: string | null;
@@ -161,7 +184,7 @@ interface ConnectionState {
   lastReconnectAt: number;
 }
 
-let connectionState: ConnectionState = {
+const conn: ConnectionState = {
   socket: null,
   qrCode: null,
   qrCodeImage: null,
@@ -173,978 +196,167 @@ let connectionState: ConnectionState = {
   lastReconnectAt: 0
 };
 
-const MAX_RECONNECT_ATTEMPTS = 10;
-const BASE_RECONNECT_DELAY_MS = 2000;
-const MAX_RECONNECT_DELAY_MS = 300000; // 5 minutos máximo
+// ============================================================================
+// MESSAGE STORE — Requerido por Baileys v7 para getMessage callback
+// ============================================================================
+
+const messageStore = new Map<string, proto.IWebMessageInfo>();
+const MESSAGE_STORE_MAX_SIZE = 5000;
+
+function storeMessage(msg: proto.IWebMessageInfo): void {
+  if (!msg.key?.remoteJid || !msg.key?.id) return;
+  const key = `${msg.key.remoteJid}_${msg.key.id}`;
+  messageStore.set(key, msg);
+
+  // Limpieza LRU si excedemos el tamaño máximo
+  if (messageStore.size > MESSAGE_STORE_MAX_SIZE) {
+    const keys = Array.from(messageStore.keys());
+    const toDelete = keys.slice(0, keys.length - MESSAGE_STORE_MAX_SIZE);
+    for (const k of toDelete) messageStore.delete(k);
+  }
+}
+
+function getMessageFromStore(key: WAMessageKey): proto.IMessage | undefined {
+  const storeKey = `${key.remoteJid}_${key.id}`;
+  const msg = messageStore.get(storeKey);
+  return msg?.message || undefined;
+}
+
+// ============================================================================
+// MUTEX POR TELÉFONO — Serializa procesamiento por usuario
+// ============================================================================
+// Evita race conditions cuando un usuario envía múltiples mensajes rápidos
+// y el anterior aún está siendo procesado por la IA (10-30s).
+
+const phoneLocks = new Map<string, Promise<void>>();
 
 /**
- * Calcular delay con backoff exponencial
+ * Ejecuta `fn` de forma serializada por número de teléfono.
+ * Si ya hay un procesamiento activo para ese phone, el nuevo se encola
+ * y espera a que termine el anterior (FIFO).
  */
+async function withPhoneLock(phone: string, fn: () => Promise<void>): Promise<void> {
+  const existingLock = phoneLocks.get(phone);
+
+  let releaseLock: () => void;
+  const newLock = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+  phoneLocks.set(phone, newLock);
+
+  // Si había un lock previo, esperar a que termine
+  if (existingLock) {
+    logInfo(`⏳ Mensaje de ${phone} en cola, esperando procesamiento anterior...`);
+    await existingLock;
+  }
+
+  try {
+    await fn();
+  } finally {
+    // Liberar el lock
+    releaseLock!();
+    // Limpiar solo si somos el último en la cadena
+    if (phoneLocks.get(phone) === newLock) {
+      phoneLocks.delete(phone);
+    }
+  }
+}
+
+// ============================================================================
+// DEBOUNCE — Delegado a WhatsAppMessageDebouncer
+// ============================================================================
+// La implementación inline anterior fue reemplazada por el servicio dedicado
+// WhatsAppMessageDebouncer que incluye detección inteligente de flush,
+// estadisticas, y soporte para audio.
+
+// Tipo alias para compatibilidad interna
+type PendingMessage = DebouncerMessage;
+
+// ============================================================================
+// CHUNKING DE RESPUESTA — delegado a WhatsAppResponseChunker
+// ============================================================================
+
+function chunkResponse(text: string): string[] {
+  const result = ResponseChunker.chunkResponse(text, { mode: 'smart' });
+  return result.chunks;
+}
+
+// ============================================================================
+// UTILIDADES
+// ============================================================================
+
 function calculateReconnectDelay(attempt: number): number {
-  const delay = Math.min(
-    BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt),
-    MAX_RECONNECT_DELAY_MS
-  );
-  // Añadir jitter para evitar thundering herd
-  const jitter = Math.random() * 1000;
-  return delay + jitter;
+  const delay = Math.min(BASE_RECONNECT_DELAY_MS * Math.pow(2, attempt), MAX_RECONNECT_DELAY_MS);
+  return delay + Math.random() * 1000; // jitter
 }
 
-/**
- * Notificar al admin sobre fallo de conexión
- */
-async function notifyAdminConnectionFailure(reason: string): Promise<void> {
-  try {
-    waLogger.error({ reason, attempts: connectionState.reconnectAttempts }, 'WhatsApp connection failed - notifying admin');
-    
-    // Insertar notificación en BD para que el dashboard la muestre
-    await pool.execute(`
-      INSERT INTO wa_messages (session_id, message_id, from_number, to_number, body, direction, status, metadata)
-      VALUES (?, ?, 'SYSTEM', 'ADMIN', ?, 'outbound', 'failed', ?)
-    `, [
-      connectionState.sessionId,
-      `alert_${Date.now()}`,
-      `⚠️ ALERTA: WhatsApp desconectado. Razón: ${reason}. Intentos: ${connectionState.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`,
-      JSON.stringify({ type: 'connection_failure', reason, timestamp: new Date().toISOString() })
-    ]);
-    
-    // Emitir evento para notificación en tiempo real
-    whatsappEvents.emit('admin_alert', {
-      type: 'connection_failure',
-      reason,
-      attempts: connectionState.reconnectAttempts,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    waLogger.error({ error }, 'Failed to notify admin about connection failure');
+function phoneToJid(phone: string): string {
+  let jid = phone;
+  if (!jid.includes('@')) {
+    jid = jid.replace(/\D/g, '');
+    jid = `${jid}@s.whatsapp.net`;
   }
+  return jid;
 }
 
 /**
- * Iniciar conexión a WhatsApp
+ * Extrae el contenido de texto de un mensaje de WhatsApp.
+ * Centraliza la lógica que antes estaba duplicada en messages.upsert y handleIncomingMessage.
  */
-export async function startConnection(): Promise<{ success: boolean; message: string; qrCode?: string }> {
-  try {
-    waLogger.info({ currentStatus: connectionState.status }, 'Starting WhatsApp connection');
-    
-    // Si ya está conectado, retornar
-    if (connectionState.status === 'connected' && connectionState.socket) {
-      waLogger.info('Already connected to WhatsApp');
-      return { success: true, message: 'Ya conectado a WhatsApp' };
-    }
-
-    // Si ya está conectando o esperando QR, retornar el estado actual
-    if (connectionState.status === 'connecting' || connectionState.status === 'qr_pending') {
-      waLogger.info({ status: connectionState.status }, 'Connection already in progress');
-      return { 
-        success: true, 
-        message: connectionState.status === 'qr_pending' ? 'Esperando escaneo de QR' : 'Conexión en progreso',
-        qrCode: connectionState.qrCodeImage || undefined
-      };
-    }
-
-    // Resetear intentos de reconexión para conexión manual
-    if (connectionState.reconnectAttempts > 0) {
-      waLogger.info({ previousAttempts: connectionState.reconnectAttempts }, 'Resetting reconnect attempts for manual connection');
-      connectionState.reconnectAttempts = 0;
-    }
-
-    // Crear directorio de auth si no existe
-    if (!fs.existsSync(AUTH_FOLDER)) {
-      fs.mkdirSync(AUTH_FOLDER, { recursive: true });
-    }
-
-    connectionState.status = 'connecting';
-    connectionState.lastError = null;
-    connectionState.sessionId = `session_${Date.now()}`;
-
-    // Actualizar estado en BD
-    await updateSessionInDB();
-
-    // Iniciar socket EN BACKGROUND (no bloquear)
-    connectToWhatsApp().catch(err => {
-      waLogger.error({ error: err.message }, 'Error starting background connection');
-      connectionState.status = 'disconnected';
-      connectionState.lastError = err.message;
-    });
-
-    // Esperar un poco para dar chance a que se genere el QR
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    const currentStatus = connectionState.status as string;
-    return { 
-      success: true, 
-      message: currentStatus === 'qr_pending' ? 'QR generado, esperando escaneo' : 'Iniciando conexión...',
-      qrCode: connectionState.qrCodeImage || undefined
-    };
-  } catch (error: any) {
-    waLogger.error({ error: error.message }, 'Error starting connection');
-    connectionState.status = 'disconnected';
-    connectionState.lastError = error.message;
-    await updateSessionInDB();
-    
-    return { success: false, message: error.message };
-  }
-}
-
-/**
- * Conectar a WhatsApp usando Baileys
- */
-async function connectToWhatsApp(): Promise<void> {
-  try {
-    waLogger.info('Connecting to WhatsApp via Baileys');
-    
-    // Cargar estado de autenticación
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-    
-    // Obtener última versión de Baileys
-    const { version } = await fetchLatestBaileysVersion();
-    waLogger.info({ version: version.join('.') }, 'Using Baileys version');
-
-    // Crear socket
-    const socket = makeWASocket({
-      version,
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, logger)
-      },
-      printQRInTerminal: false, // Deprecated en Baileys recientes, usamos connection.update
-      logger,
-      browser: ['Biosanar IPS', 'Chrome', '120.0.0'],
-      generateHighQualityLinkPreview: false,
-      syncFullHistory: false,
-      markOnlineOnConnect: true
-    });
-
-    connectionState.socket = socket;
-
-    // Manejar eventos de conexión
-    socket.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      // Nuevo QR code
-      if (qr) {
-        waLogger.info('New QR code generated');
-        connectionState.qrCode = qr;
-        connectionState.status = 'qr_pending';
-        
-        // Generar imagen base64 del QR
-        try {
-          const qrImage = await QRCode.toDataURL(qr, {
-            width: 300,
-            margin: 2,
-            color: {
-              dark: '#000000',
-              light: '#ffffff'
-            }
-          });
-          connectionState.qrCodeImage = qrImage;
-          
-          // Emitir evento de nuevo QR
-          whatsappEvents.emit('qr', { qr, qrImage });
-          
-          await updateSessionInDB();
-        } catch (qrError) {
-          waLogger.error({ error: qrError }, 'Error generating QR image');
-        }
-      }
-
-      // Conexión establecida
-      if (connection === 'open') {
-        waLogger.info('✅ WhatsApp connection established');
-        connectionState.status = 'connected';
-        connectionState.qrCode = null;
-        connectionState.qrCodeImage = null;
-        connectionState.reconnectAttempts = 0;
-        metrics.lastConnectedAt = new Date();
-        
-        // Obtener número de teléfono
-        const user = socket.user;
-        if (user?.id) {
-          connectionState.phoneNumber = user.id.split(':')[0].replace('@s.whatsapp.net', '');
-        }
-        
-        whatsappEvents.emit('connected', { phoneNumber: connectionState.phoneNumber });
-        await updateSessionInDB();
-      }
-
-      // Conexión cerrada
-      if (connection === 'close') {
-        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-        
-        waLogger.warn({ statusCode, shouldReconnect }, 'WhatsApp connection closed');
-        
-        if (statusCode === DisconnectReason.loggedOut) {
-          // Usuario cerró sesión, limpiar credenciales
-          waLogger.info('Session logged out, clearing credentials');
-          await clearCredentials();
-          connectionState.status = 'disconnected';
-          connectionState.phoneNumber = null;
-          whatsappEvents.emit('logout');
-        } else if (shouldReconnect && connectionState.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-          // Intentar reconectar con backoff exponencial
-          connectionState.reconnectAttempts++;
-          metrics.reconnectAttempts++;
-          connectionState.status = 'connecting';
-          
-          const delay = calculateReconnectDelay(connectionState.reconnectAttempts);
-          waLogger.info({ 
-            attempt: connectionState.reconnectAttempts, 
-            maxAttempts: MAX_RECONNECT_ATTEMPTS,
-            delayMs: delay 
-          }, 'Scheduling reconnection attempt');
-          
-          connectionState.lastReconnectAt = Date.now();
-          
-          setTimeout(() => {
-            connectToWhatsApp().catch(err => {
-              waLogger.error({ error: err.message }, 'Error during reconnection');
-            });
-          }, delay);
-        } else {
-          // Máximo de intentos alcanzado - notificar al admin
-          connectionState.status = 'disconnected';
-          connectionState.lastError = 'Máximo de intentos de reconexión alcanzado';
-          
-          await notifyAdminConnectionFailure(
-            shouldReconnect 
-              ? `Máximo de intentos (${MAX_RECONNECT_ATTEMPTS}) alcanzado` 
-              : `Sesión cerrada por el servidor (código ${statusCode})`
-          );
-        }
-        
-        await updateSessionInDB();
-      }
-    });
-
-    // Guardar credenciales cuando se actualicen
-    socket.ev.on('creds.update', saveCreds);
-
-    // Manejar mensajes entrantes CON DEBOUNCING
-    socket.ev.on('messages.upsert', async (m) => {
-      if (m.type === 'notify') {
-        for (const msg of m.messages) {
-          if (!msg.key.fromMe && msg.message) {
-            // 🆕 Usar debouncer para agrupar mensajes rápidos
-            const from = msg.key.remoteJid;
-            if (!from) continue;
-            
-            const phoneNumber = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
-            
-            // Extraer texto del mensaje para el debouncer
-            const messageContent = msg.message;
-            let body = '';
-            
-            if (messageContent?.conversation) {
-              body = messageContent.conversation;
-            } else if (messageContent?.extendedTextMessage?.text) {
-              body = messageContent.extendedTextMessage.text;
-            } else if (messageContent?.imageMessage?.caption) {
-              body = messageContent.imageMessage.caption;
-            } else if (messageContent?.audioMessage) {
-              // Audio se procesa inmediatamente (sin debounce)
-              await handleIncomingMessage(msg, socket);
-              continue;
-            }
-            
-            if (!body.trim()) {
-              waLogger.debug({ from }, 'Message without text (possibly unsupported media)');
-              continue;
-            }
-            
-            // Normalizar y agregar al debouncer
-            body = normalizeIncomingText(body);
-            
-            const incomingMsg: IncomingMessage = {
-              phone: phoneNumber,
-              text: body,
-              timestamp: Date.now(),
-              messageId: msg.key?.id || `msg_${Date.now()}`,
-              profileName: msg.pushName || 'Usuario'
-            };
-            
-            // El debouncer llamará a handleDebouncedMessages cuando esté listo
-            messageDebouncer.addMessage(
-              incomingMsg, 
-              (messages) => handleDebouncedMessages(messages, socket)
-            );
-          }
-        }
-      }
-    });
-
-  } catch (error) {
-    waLogger.error({ error }, 'Error in connectToWhatsApp');
-    throw error;
-  }
-}
-
-/**
- * 🆕 Handler para mensajes agrupados por el debouncer
- */
-async function handleDebouncedMessages(
-  messages: IncomingMessage[], 
-  socket: WASocket
-): Promise<void> {
-  if (messages.length === 0) return;
-  
-  const phone = messages[0].phone;
-  const profileName = messages[0].profileName;
-  
-  // Combinar todos los mensajes en uno solo
-  const combinedText = messages.map(m => m.text).join('\n');
-  
-  waLogger.info({
-    phone,
-    messagesCount: messages.length,
-    combinedLength: combinedText.length,
-    texts: messages.map(m => m.text.substring(0, 30))
-  }, '🔄 Processing debounced messages');
-  
-  // Crear un mensaje sintético para procesar
-  const syntheticMsg = {
-    key: {
-      remoteJid: `${phone}@s.whatsapp.net`,
-      id: messages[messages.length - 1].messageId
-    },
-    pushName: profileName,
-    message: {
-      conversation: combinedText
-    }
-  } as proto.IWebMessageInfo;
-  
-  await handleIncomingMessage(syntheticMsg, socket);
-}
-
-/**
- * Manejar mensaje entrante
- */
-async function handleIncomingMessage(msg: proto.IWebMessageInfo, socket: WASocket): Promise<void> {
-  const startTime = Date.now();
-  
-  try {
-    if (!msg.key) return;
-    const from = msg.key.remoteJid;
-    if (!from) return;
-
-    // Incrementar métrica
-    metrics.messagesReceived++;
-
-    // Extraer texto del mensaje
-    const messageContent = msg.message;
-    let body = '';
-    let isAudioMessage = false;
-    let audioTranscription = '';
-    
-    if (messageContent?.conversation) {
-      body = messageContent.conversation;
-    } else if (messageContent?.extendedTextMessage?.text) {
-      body = messageContent.extendedTextMessage.text;
-    } else if (messageContent?.imageMessage?.caption) {
-      body = messageContent.imageMessage.caption;
-    } else if (messageContent?.videoMessage?.caption) {
-      body = messageContent.videoMessage.caption;
-    } else if (messageContent?.audioMessage && msg.key) {
-      // Mensaje de audio - transcribir con OpenAI Whisper (con retry)
-      isAudioMessage = true;
-      waLogger.info({ from }, 'Audio message detected, starting transcription');
-      
-      const transcriptionResult = await transcribeAudioWithRetry(msg, messageContent.audioMessage, socket);
-      
-      if (transcriptionResult.success && transcriptionResult.text) {
-        audioTranscription = transcriptionResult.text;
-        body = audioTranscription;
-        metrics.audioTranscriptions++;
-        waLogger.info({ from, textLength: body.length }, 'Audio transcribed successfully');
-      } else {
-        metrics.audioTranscriptionsFailed++;
-        waLogger.warn({ from, error: transcriptionResult.error }, 'Audio transcription failed');
-        // Usar mensaje de fallback amigable
-        body = transcriptionResult.fallbackMessage || '[No pude entender el audio, por favor escríbeme tu mensaje]';
-      }
-    }
-
-    if (!body.trim()) {
-      waLogger.debug({ from }, 'Message without text (possibly unsupported media)');
-      return;
-    }
-
-    // Normalizar texto entrante (eliminar caracteres invisibles)
-    body = normalizeIncomingText(body);
-
-    const phoneNumber = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
-    const pushName = msg.pushName || 'Usuario';
-    const messageId = msg.key?.id || `msg_${Date.now()}`;
-
-    waLogger.info({ 
-      from: phoneNumber, 
-      profileName: pushName, 
-      isAudio: isAudioMessage,
-      messagePreview: body.substring(0, 100)
-    }, 'Processing incoming message');
-
-    // Guardar mensaje entrante en BD (incluir nota si es audio transcrito)
-    const bodyToSave = isAudioMessage && audioTranscription 
-      ? `🎤 ${body}` 
-      : body;
-    
-    await saveMessageToDB({
-      messageId,
-      from: phoneNumber,
-      body: bodyToSave,
-      direction: 'inbound',
-      profileName: pushName
-    });
-
-    // Emitir evento
-    whatsappEvents.emit('message', {
-      from: phoneNumber,
-      body,
-      messageId,
-      profileName: pushName,
-      isAudio: isAudioMessage
-    });
-
-    // Procesar con IA si auto-reply está habilitado
-    const autoReply = process.env.WHATSAPP_AUTO_REPLY === 'true';
-    
-    if (autoReply) {
-      try {
-        // Determinar si responder con voz:
-        // - Si el usuario envió audio Y WHATSAPP_VOICE_RESPONSES está habilitado
-        const shouldRespondWithVoice = isAudioMessage && 
-          process.env.WHATSAPP_VOICE_RESPONSES === 'true';
-        
-        // Si vamos a responder con voz Y tenemos GPT Audio habilitado, usar flujo integrado
-        const useGPTAudioIntegrated = shouldRespondWithVoice && 
-          process.env.USE_GPT_AUDIO_MODEL === 'true';
-        
-        if (useGPTAudioIntegrated) {
-          // Flujo optimizado: GPT Audio genera respuesta + audio en una llamada
-          waLogger.info({ to: phoneNumber }, 'Using GPT Audio integrated flow (chat + TTS in one call)');
-          
-          const aiStartTime = Date.now();
-          const audioResult = await processAndRespondWithAudio(phoneNumber, body);
-          const aiDuration = Date.now() - aiStartTime;
-          
-          // Actualizar métricas de IA
-          metrics.aiProcessingTimeTotal += aiDuration;
-          metrics.aiProcessingCount++;
-          
-          if (audioResult.success && audioResult.response) {
-            // Guardar respuesta en BD
-            await saveMessageToDB({
-              messageId: audioResult.messageId || `resp_gptaudio_${Date.now()}`,
-              from: connectionState.phoneNumber || 'bot',
-              to: phoneNumber,
-              body: `🔊 ${audioResult.response}`,
-              direction: 'outbound',
-              aiResponse: audioResult.response
-            });
-            
-            waLogger.info({ 
-              to: phoneNumber, 
-              aiDuration,
-              responseType: 'gpt-audio-integrated'
-            }, 'GPT Audio response sent');
-          } else {
-            waLogger.warn({ error: audioResult.error }, 'GPT Audio failed, falling back to standard flow');
-            // Fallback al flujo tradicional
-            await fallbackToStandardAIFlow(body, phoneNumber, shouldRespondWithVoice);
-          }
-        } else {
-          // Flujo tradicional: AI Service + TTS separados
-          await fallbackToStandardAIFlow(body, phoneNumber, shouldRespondWithVoice);
-        }
-      } catch (aiError: any) {
-        waLogger.error({ error: aiError.message, phone: phoneNumber }, 'Error processing with AI');
-        metrics.messagesFailed++;
-      }
-    }
-
-  } catch (error: any) {
-    waLogger.error({ error: error.message }, 'Error handling incoming message');
-    metrics.messagesFailed++;
-  }
-}
-
-/**
- * Flujo tradicional de IA (WhatsAppAI + TTS separado)
- * Usado como fallback cuando GPT Audio no está disponible
- * 🆕 Ahora con chunking inteligente para respuestas largas
- */
-async function fallbackToStandardAIFlow(
-  body: string, 
-  phoneNumber: string, 
-  shouldRespondWithVoice: boolean
-): Promise<void> {
-  // Importar servicio de IA dinámicamente para evitar dependencias circulares
-  const WhatsAppAI = await import('./WhatsAppAIService');
-  
-  const aiStartTime = Date.now();
-  const result = await WhatsAppAI.processMessage(body, phoneNumber, []);
-  const aiDuration = Date.now() - aiStartTime;
-  
-  // Actualizar métricas de IA
-  metrics.aiProcessingTimeTotal += aiDuration;
-  metrics.aiProcessingCount++;
-  
-  // 🆕 Verificar si es respuesta silenciosa (silent token)
-  if (result.success && (result as any).silent) {
-    waLogger.info({ to: phoneNumber }, '🤫 Silent response - not sending message');
-    return;
-  }
-  
-  if (result.success && result.response) {
-    // 🆕 Aplicar chunking si la respuesta es muy larga
-    const responseChunks = needsChunking(result.response) 
-      ? chunkResponse(result.response, { mode: 'smart' }).chunks
-      : [result.response];
-    
-    waLogger.debug({ 
-      to: phoneNumber, 
-      responseLength: result.response.length,
-      chunksCount: responseChunks.length 
-    }, 'Response chunking applied');
-    
-    if (shouldRespondWithVoice) {
-      // Responder con nota de voz (TTS tradicional) - solo primer chunk
-      waLogger.info({ to: phoneNumber }, 'Responding with voice note (TTS flow)');
-      await sendVoiceNote(phoneNumber, responseChunks[0], false);
-      
-      // Guardar respuesta en BD
-      await saveMessageToDB({
-        messageId: `resp_voice_${Date.now()}`,
-        from: connectionState.phoneNumber || 'bot',
-        to: phoneNumber,
-        body: `🔊 ${result.response}`,
-        direction: 'outbound',
-        aiResponse: result.response
-      });
-    } else {
-      // 🆕 Responder con texto usando chunking si hay múltiples chunks
-      for (let i = 0; i < responseChunks.length; i++) {
-        const chunk = responseChunks[i];
-        await sendMessage(phoneNumber, chunk);
-        
-        // Pequeño delay entre chunks para evitar spam
-        if (i < responseChunks.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-      }
-      
-      // Guardar respuesta completa en BD
-      await saveMessageToDB({
-        messageId: `resp_${Date.now()}`,
-        from: connectionState.phoneNumber || 'bot',
-        to: phoneNumber,
-        body: result.response,
-        direction: 'outbound',
-        aiResponse: result.response
-      });
-    }
-    
-    waLogger.info({ 
-      to: phoneNumber, 
-      aiDuration,
-      toolCalls: result.toolCalls?.length || 0,
-      responseType: shouldRespondWithVoice ? 'voice-tts' : 'text',
-      chunksCount: responseChunks.length
-    }, 'AI response sent (standard flow)');
-  }
-}
-
-/**
- * Transcribir audio con retry y fallback
- */
-async function transcribeAudioWithRetry(
-  msg: proto.IWebMessageInfo,
-  audioMessage: proto.Message.IAudioMessage,
-  socket: WASocket,
-  maxRetries: number = 2
-): Promise<{ success: boolean; text?: string; error?: string; fallbackMessage?: string }> {
-  let lastError = '';
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      // Descargar el audio
-      const downloadableMessage = {
-        ...msg,
-        key: msg.key
-      } as Parameters<typeof downloadMediaMessage>[0];
-      
-      const audioBuffer = await downloadMediaMessage(
-        downloadableMessage,
-        'buffer',
-        {},
-        {
-          logger,
-          reuploadRequest: socket.updateMediaMessage
-        }
-      ) as Buffer;
-      
-      if (!audioBuffer || audioBuffer.length === 0) {
-        lastError = 'Buffer de audio vacío';
-        continue;
-      }
-      
-      waLogger.debug({ attempt, bufferSize: audioBuffer.length }, 'Audio downloaded for transcription');
-      
-      // Importar servicio de transcripción
-      const { transcribeAudio } = await import('./AudioTranscriptionService');
-      
-      const mimeType = audioMessage.mimetype || 'audio/ogg; codecs=opus';
-      const transcriptionResult = await transcribeAudio(audioBuffer, mimeType);
-      
-      if (transcriptionResult.success && transcriptionResult.text) {
-        return { success: true, text: transcriptionResult.text };
-      }
-      
-      lastError = transcriptionResult.error || 'Transcripción fallida';
-      
-    } catch (error: any) {
-      lastError = error.message;
-      waLogger.warn({ attempt, error: error.message }, 'Transcription attempt failed');
-    }
-    
-    // Esperar antes de reintentar
-    if (attempt < maxRetries) {
-      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-    }
-  }
-  
-  // Todos los intentos fallaron - retornar mensaje amigable
-  return {
-    success: false,
-    error: lastError,
-    fallbackMessage: '🎤 Recibí tu mensaje de voz pero no pude procesarlo. ¿Podrías escribirme tu consulta, por favor?'
-  };
-}
-
-/**
- * Enviar mensaje de texto
- */
-export async function sendMessage(to: string, text: string): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  try {
-    if (!connectionState.socket || connectionState.status !== 'connected') {
-      waLogger.warn({ to }, 'Cannot send message - WhatsApp not connected');
-      return { success: false, error: 'WhatsApp no conectado' };
-    }
-
-    // Formatear número
-    let jid = to;
-    if (!jid.includes('@')) {
-      // Limpiar número
-      jid = jid.replace(/\D/g, '');
-      // Añadir sufijo de WhatsApp
-      jid = `${jid}@s.whatsapp.net`;
-    }
-
-    waLogger.debug({ to: jid, textLength: text.length }, 'Sending message');
-
-    const result = await connectionState.socket.sendMessage(jid, { text });
-    
-    metrics.messagesSent++;
-    
-    return { 
-      success: true, 
-      messageId: result?.key?.id || `sent_${Date.now()}`
-    };
-  } catch (error: any) {
-    waLogger.error({ error: error.message, to }, 'Error sending message');
-    metrics.messagesFailed++;
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * Enviar nota de voz (mensaje de audio)
- * Convierte texto a audio usando el proveedor configurado (ElevenLabs, OpenAI TTS, GPT Audio)
- * @param useGPTAudio Si true, fuerza uso de gpt-audio-mini (ignorado si TTS_PROVIDER='elevenlabs')
- */
-export async function sendVoiceNote(
-  to: string, 
-  text: string,
-  useGPTAudio: boolean = false
-): Promise<{ success: boolean; messageId?: string; error?: string }> {
-  try {
-    if (!connectionState.socket || connectionState.status !== 'connected') {
-      waLogger.warn({ to }, 'Cannot send voice note - WhatsApp not connected');
-      return { success: false, error: 'WhatsApp no conectado' };
-    }
-
-    let audioBuffer: Buffer | undefined;
-    const ttsProvider = process.env.TTS_PROVIDER || 'openai';
-
-    // Prioridad: ElevenLabs > GPT Audio > OpenAI TTS
-    if (ttsProvider === 'elevenlabs') {
-      // Usar ElevenLabs TTS (voz colombiana natural)
-      const ElevenLabsTTS = await import('./ElevenLabsTTSService');
-      
-      waLogger.info({ to, textLength: text.length, provider: 'elevenlabs' }, 'Generating voice note with ElevenLabs');
-      
-      const elevenResult = await ElevenLabsTTS.generateWhatsAppVoiceNoteElevenLabs(text);
-      
-      if (elevenResult.success && elevenResult.audioBuffer) {
-        audioBuffer = elevenResult.audioBuffer;
-        waLogger.info({ 
-          to, 
-          audioSize: audioBuffer.length,
-          voice: elevenResult.voiceName,
-          duration: elevenResult.duration
-        }, 'ElevenLabs audio generated successfully');
-      } else {
-        waLogger.warn({ error: elevenResult.error }, 'ElevenLabs failed, falling back to OpenAI TTS');
-      }
-    } else if ((ttsProvider === 'gpt-audio' || useGPTAudio) && process.env.USE_GPT_AUDIO_MODEL === 'true') {
-      // Usar el nuevo modelo gpt-audio-mini-2025-12-15
-      const GPTAudioService = await import('./GPTAudioService');
-      
-      waLogger.info({ to, textLength: text.length, provider: 'gpt-audio' }, 'Generating voice note with GPT Audio model');
-      
-      const gptResult = await GPTAudioService.generateWhatsAppAudio(text, true);
-      
-      if (gptResult.success && gptResult.audioBuffer) {
-        audioBuffer = gptResult.audioBuffer;
-        waLogger.info({ to, audioSize: audioBuffer.length }, 'GPT Audio generated successfully');
-      } else {
-        waLogger.warn({ error: gptResult.error }, 'GPT Audio failed, falling back to TTS');
-      }
-    }
-
-    // Fallback a OpenAI TTS si no hay audio aún
-    if (!audioBuffer) {
-      const { generateWhatsAppVoiceNote } = await import('./TextToSpeechService');
-      
-      waLogger.info({ to, textLength: text.length, provider: 'openai-tts' }, 'Generating voice note with OpenAI TTS');
-      
-      const ttsResult = await generateWhatsAppVoiceNote(text);
-      
-      if (!ttsResult.success || !ttsResult.audioBuffer) {
-        waLogger.error({ error: ttsResult.error }, 'Failed to generate TTS audio');
-        return sendMessage(to, text);
-      }
-      
-      audioBuffer = ttsResult.audioBuffer;
-    }
-
-    // Formatear número
-    let jid = to;
-    if (!jid.includes('@')) {
-      jid = jid.replace(/\D/g, '');
-      jid = `${jid}@s.whatsapp.net`;
-    }
-
-    waLogger.debug({ to: jid, audioSize: audioBuffer.length }, 'Sending voice note');
-
-    // Determinar mimetype basado en el proveedor
-    // ElevenLabs ahora genera OGG/OPUS, OpenAI TTS genera OPUS directamente
-    const isElevenLabs = ttsProvider === 'elevenlabs';
-    const mimetype = isElevenLabs ? 'audio/ogg; codecs=opus' : 'audio/ogg; codecs=opus';
-
-    // Enviar como nota de voz (ptt = push to talk)
-    const result = await connectionState.socket.sendMessage(jid, {
-      audio: audioBuffer,
-      mimetype: mimetype, // OGG/OPUS para compatibilidad con WhatsApp PTT
-      ptt: true // Esto marca el audio como nota de voz
-    });
-    
-    metrics.messagesSent++;
-    
-    waLogger.info({ to, messageId: result?.key?.id, mimetype }, 'Voice note sent successfully');
-    
-    return { 
-      success: true, 
-      messageId: result?.key?.id || `voice_${Date.now()}`
-    };
-  } catch (error: any) {
-    waLogger.error({ error: error.message, to }, 'Error sending voice note');
-    metrics.messagesFailed++;
-    // Fallback: intentar enviar como texto
-    waLogger.info({ to }, 'Falling back to text message');
-    return sendMessage(to, text);
-  }
-}
-
-/**
- * Procesar mensaje y responder con audio usando gpt-audio-mini
- * Esta función combina IA + TTS en una sola llamada API
- */
-export async function processAndRespondWithAudio(
-  to: string,
-  userMessage: string,
-  conversationHistory: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [],
-  systemPrompt?: string
-): Promise<{ 
-  success: boolean; 
-  messageId?: string; 
-  response?: string; 
-  error?: string 
-}> {
-  try {
-    if (!connectionState.socket || connectionState.status !== 'connected') {
-      waLogger.warn({ to }, 'Cannot process - WhatsApp not connected');
-      return { success: false, error: 'WhatsApp no conectado' };
-    }
-
-    // Usar GPT Audio para generar respuesta + audio en una llamada
-    const GPTAudioService = await import('./GPTAudioService');
-    
-    waLogger.info({ to, messageLength: userMessage.length }, 'Processing with GPT Audio (chat + TTS integrated)');
-    
-    const startTime = Date.now();
-    const result = await GPTAudioService.generateChatWithAudio(
-      userMessage,
-      conversationHistory,
-      {
-        voice: 'nova',
-        format: 'mp3',
-        saveToFile: false,
-        systemPrompt
-      }
-    );
-    const duration = Date.now() - startTime;
-
-    if (!result.success || !result.audioBuffer) {
-      waLogger.error({ error: result.error }, 'GPT Audio processing failed');
-      return { success: false, error: result.error };
-    }
-
-    // Formatear número
-    let jid = to;
-    if (!jid.includes('@')) {
-      jid = jid.replace(/\D/g, '');
-      jid = `${jid}@s.whatsapp.net`;
-    }
-
-    // Enviar como nota de voz
-    const sendResult = await connectionState.socket.sendMessage(jid, {
-      audio: result.audioBuffer,
-      mimetype: 'audio/mpeg',
-      ptt: true
-    });
-
-    metrics.messagesSent++;
-
-    waLogger.info({ 
-      to, 
-      messageId: sendResult?.key?.id,
-      responseLength: result.text?.length,
-      durationMs: duration 
-    }, 'GPT Audio response sent successfully');
-
-    return {
-      success: true,
-      messageId: sendResult?.key?.id || `gpt_audio_${Date.now()}`,
-      response: result.text
-    };
-
-  } catch (error: any) {
-    waLogger.error({ error: error.message, to }, 'Error in processAndRespondWithAudio');
-    metrics.messagesFailed++;
-    return { success: false, error: error.message };
-  }
-}
-
-/**
- * Enviar respuesta (decide automáticamente si enviar texto o voz)
- * @param to Número de destino
- * @param text Texto a enviar
- * @param asVoice Si es true, envía como nota de voz
- */
-export async function sendResponse(
-  to: string, 
-  text: string, 
-  asVoice: boolean = false
-): Promise<{ success: boolean; messageId?: string; error?: string; type: 'text' | 'voice' }> {
-  if (asVoice && process.env.WHATSAPP_VOICE_RESPONSES === 'true') {
-    const result = await sendVoiceNote(to, text);
-    return { ...result, type: 'voice' };
-  }
-  const result = await sendMessage(to, text);
-  return { ...result, type: 'text' };
-}
-
-/**
- * Desconectar de WhatsApp
- */
-export async function disconnect(): Promise<{ success: boolean; message: string }> {
-  try {
-    waLogger.info('Disconnecting from WhatsApp');
-    
-    if (connectionState.socket) {
-      await connectionState.socket.logout();
-      connectionState.socket = null;
-    }
-    
-    connectionState.status = 'disconnected';
-    connectionState.qrCode = null;
-    connectionState.qrCodeImage = null;
-    connectionState.phoneNumber = null;
-    
-    await updateSessionInDB();
-    
-    waLogger.info('Successfully disconnected from WhatsApp');
-    return { success: true, message: 'Desconectado de WhatsApp' };
-  } catch (error: any) {
-    waLogger.error({ error: error.message }, 'Error disconnecting');
-    return { success: false, message: error.message };
-  }
-}
-
-/**
- * Obtener estado actual
- */
-export function getStatus(): {
-  connected: boolean;
-  status: string;
-  phoneNumber: string | null;
-  qrCode: string | null;
-  sessionId: string;
-  lastError: string | null;
-  reconnectAttempts: number;
-  metrics: WhatsAppMetrics & { avgAiProcessingTime: number };
+function extractMessageContent(mc: proto.IMessage | null | undefined): {
+  body: string;
+  isAudio: boolean;
+  isUnsupportedMedia: boolean;
 } {
-  return {
-    connected: connectionState.status === 'connected',
-    status: connectionState.status,
-    phoneNumber: connectionState.phoneNumber,
-    qrCode: connectionState.qrCodeImage,
-    sessionId: connectionState.sessionId,
-    lastError: connectionState.lastError,
-    reconnectAttempts: connectionState.reconnectAttempts,
-    metrics: getWhatsAppMetrics()
-  };
-}
+  if (!mc) return { body: '', isAudio: false, isUnsupportedMedia: false };
 
-/**
- * Forzar reset de intentos de reconexión (útil para admin)
- */
-export function resetReconnectAttempts(): void {
-  waLogger.info({ previousAttempts: connectionState.reconnectAttempts }, 'Resetting reconnect attempts');
-  connectionState.reconnectAttempts = 0;
-  connectionState.lastError = null;
-}
-
-/**
- * Limpiar credenciales almacenadas
- */
-async function clearCredentials(): Promise<void> {
-  try {
-    if (fs.existsSync(AUTH_FOLDER)) {
-      fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
-    }
-    fs.mkdirSync(AUTH_FOLDER, { recursive: true });
-    waLogger.info('Credentials cleared successfully');
-  } catch (error) {
-    waLogger.error({ error }, 'Error clearing credentials');
+  if (mc.conversation) {
+    return { body: mc.conversation, isAudio: false, isUnsupportedMedia: false };
   }
+  if (mc.extendedTextMessage?.text) {
+    return { body: mc.extendedTextMessage.text, isAudio: false, isUnsupportedMedia: false };
+  }
+  if (mc.imageMessage?.caption) {
+    return { body: mc.imageMessage.caption, isAudio: false, isUnsupportedMedia: false };
+  }
+  if (mc.videoMessage?.caption) {
+    return { body: mc.videoMessage.caption, isAudio: false, isUnsupportedMedia: false };
+  }
+  if (mc.buttonsResponseMessage?.selectedButtonId) {
+    return {
+      body: mc.buttonsResponseMessage.selectedDisplayText || mc.buttonsResponseMessage.selectedButtonId,
+      isAudio: false,
+      isUnsupportedMedia: false
+    };
+  }
+  if (mc.listResponseMessage?.singleSelectReply?.selectedRowId) {
+    return {
+      body: mc.listResponseMessage.title || mc.listResponseMessage.singleSelectReply.selectedRowId,
+      isAudio: false,
+      isUnsupportedMedia: false
+    };
+  }
+  if (mc.templateButtonReplyMessage?.selectedId) {
+    return {
+      body: mc.templateButtonReplyMessage.selectedDisplayText || mc.templateButtonReplyMessage.selectedId,
+      isAudio: false,
+      isUnsupportedMedia: false
+    };
+  }
+  if (mc.audioMessage) {
+    return { body: '', isAudio: true, isUnsupportedMedia: false };
+  }
+  if (mc.documentMessage || mc.stickerMessage || mc.contactMessage || mc.locationMessage) {
+    return { body: '', isAudio: false, isUnsupportedMedia: true };
+  }
+
+  return { body: '', isAudio: false, isUnsupportedMedia: false };
 }
 
-/**
- * Actualizar sesión en base de datos
- */
+// ============================================================================
+// BD — Guardar sesión
+// ============================================================================
+
 async function updateSessionInDB(): Promise<void> {
   try {
     await pool.execute(`
@@ -1156,20 +368,16 @@ async function updateSessionInDB(): Promise<void> {
         qr_code = VALUES(qr_code),
         last_activity = NOW(),
         updated_at = NOW()
-    `, [
-      connectionState.sessionId,
-      connectionState.phoneNumber,
-      connectionState.status,
-      connectionState.qrCode
-    ]);
-  } catch (error) {
-    waLogger.error({ error }, 'Error updating session in DB');
+    `, [conn.sessionId, conn.phoneNumber, conn.status, conn.qrCode]);
+  } catch (error: any) {
+    logError('Error updating session in DB', error?.message);
   }
 }
 
-/**
- * Guardar mensaje en base de datos
- */
+// ============================================================================
+// BD — Guardar mensaje
+// ============================================================================
+
 async function saveMessageToDB(data: {
   messageId: string;
   from: string;
@@ -1181,12 +389,12 @@ async function saveMessageToDB(data: {
 }): Promise<void> {
   try {
     await pool.execute<ResultSetHeader>(`
-      INSERT INTO wa_messages 
+      INSERT INTO wa_messages
       (session_id, message_id, from_number, to_number, body, direction, status, ai_response)
       VALUES (?, ?, ?, ?, ?, ?, 'delivered', ?)
       ON DUPLICATE KEY UPDATE updated_at = NOW()
     `, [
-      connectionState.sessionId,
+      conn.sessionId,
       data.messageId,
       data.from,
       data.to || null,
@@ -1195,120 +403,1032 @@ async function saveMessageToDB(data: {
       data.aiResponse || null
     ]);
 
-    // Actualizar o crear conversación
+    // Actualizar conversación
     const phone = data.direction === 'inbound' ? data.from : data.to;
     if (phone) {
       await pool.execute(`
         INSERT INTO wa_conversations (session_id, phone_number, last_message, last_activity, status)
         VALUES (?, ?, ?, NOW(), 'active')
-        ON DUPLICATE KEY UPDATE 
+        ON DUPLICATE KEY UPDATE
           last_message = VALUES(last_message),
           last_activity = NOW(),
           status = 'active'
-      `, [connectionState.sessionId, phone, data.body]);
+      `, [conn.sessionId, phone, data.body.substring(0, 500)]);
     }
-  } catch (error) {
-    waLogger.error({ error }, 'Error saving message to DB');
+  } catch (error: any) {
+    logError('Error saving message to DB', error?.message);
   }
 }
 
-/**
- * Intentar reconexión automática al iniciar si hay credenciales guardadas
- */
-async function autoReconnect(): Promise<void> {
+// ============================================================================
+// CONEXIÓN PRINCIPAL
+// ============================================================================
+
+export async function startConnection(): Promise<{ success: boolean; message: string; qrCode?: string }> {
   try {
-    // Verificar si hay credenciales guardadas
-    const credsPath = path.join(AUTH_FOLDER, 'creds.json');
-    if (fs.existsSync(credsPath)) {
-      waLogger.info('🔄 Credentials found, attempting auto-reconnect');
-      await startConnection();
-    } else {
-      waLogger.info('ℹ️ No saved credentials. Scan QR code to connect.');
+    logInfo(`=== startConnection() called (current status: ${conn.status}) ===`);
+
+    // Si ya está conectado, no hacer nada
+    if (conn.status === 'connected' && conn.socket) {
+      logInfo('Already connected to WhatsApp');
+      return { success: true, message: 'Ya conectado a WhatsApp' };
     }
-  } catch (error) {
-    waLogger.error({ error }, 'Error in auto-reconnect');
+
+    // Si está en proceso, retornar estado actual
+    if (conn.status === 'connecting' || conn.status === 'qr_pending') {
+      return {
+        success: true,
+        message: conn.status === 'qr_pending' ? 'Esperando escaneo de QR' : 'Conexión en progreso',
+        qrCode: conn.qrCodeImage || undefined
+      };
+    }
+
+    conn.reconnectAttempts = 0;
+    conn.status = 'connecting';
+    conn.lastError = null;
+    conn.sessionId = `session_${Date.now()}`;
+
+    // Asegurar que el directorio de autenticación exista
+    if (!fs.existsSync(AUTH_FOLDER)) {
+      fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+      logInfo(`Created auth folder: ${AUTH_FOLDER}`);
+    }
+
+    await updateSessionInDB();
+
+    // Iniciar conexión en background (no bloquear)
+    connectToWhatsApp().catch(err => {
+      logError('Error in background connectToWhatsApp', err?.message || err);
+      conn.status = 'disconnected';
+      conn.lastError = err?.message || 'Error desconocido al conectar';
+    });
+
+    // Dar tiempo al QR para generarse
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    return {
+      success: true,
+      message: conn.status === 'qr_pending' ? 'QR generado, escanee con WhatsApp' : 'Iniciando conexión...',
+      qrCode: conn.qrCodeImage || undefined
+    };
+  } catch (error: any) {
+    logError('Error in startConnection', error?.message);
+    conn.status = 'disconnected';
+    conn.lastError = error?.message;
+    await updateSessionInDB();
+    return { success: false, message: error?.message || 'Error desconocido' };
+  }
+}
+
+export async function forceRestartWithCleanSession(): Promise<{ success: boolean; message: string; qrCode?: string }> {
+  try {
+    logWarn('Force restart requested: cleaning auth session and regenerating QR');
+
+    if (conn.socket) {
+      try {
+        await disconnect();
+      } catch (disconnectErr: any) {
+        logWarn('Force restart: disconnect failed (continuing)', disconnectErr?.message);
+      }
+    }
+
+    await clearCredentials();
+
+    conn.socket = null;
+    conn.status = 'disconnected';
+    conn.qrCode = null;
+    conn.qrCodeImage = null;
+    conn.phoneNumber = null;
+    conn.lastError = null;
+    conn.reconnectAttempts = 0;
+    conn.lastReconnectAt = 0;
+    conn.sessionId = `session_${Date.now()}`;
+
+    await updateSessionInDB();
+
+    return await startConnection();
+  } catch (error: any) {
+    logError('Error in forceRestartWithCleanSession', error?.message);
+    conn.status = 'disconnected';
+    conn.lastError = error?.message || 'Error forzando reinicio limpio';
+    await updateSessionInDB();
+    return { success: false, message: conn.lastError };
   }
 }
 
 /**
- * Health check periódico: verifica que el WebSocket de Baileys esté realmente activo.
- * Si el status dice "connected" pero el socket está muerto, fuerza reconexión.
+ * Conexión real a WhatsApp usando Baileys v7.
+ * Esta función configura el socket, registra TODOS los event handlers
+ * y maneja reconexiones.
  */
-const HEALTH_CHECK_INTERVAL_MS = 60_000; // cada 60 segundos
+async function connectToWhatsApp(): Promise<void> {
+  try {
+    logInfo('Connecting to WhatsApp via Baileys v7...');
+
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+    const { version } = await fetchLatestBaileysVersion();
+    logInfo(`Baileys version: ${version.join('.')}, Auth folder: ${AUTH_FOLDER}`);
+
+    const socket = makeWASocket({
+      version,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, baileysLogger)
+      },
+      printQRInTerminal: true,
+      logger: baileysLogger,
+      browser: ['Biosanar IPS', 'Chrome', '120.0.0'],
+      generateHighQualityLinkPreview: false,
+      syncFullHistory: false,
+      markOnlineOnConnect: true,
+
+      // *** CRÍTICO: getMessage callback requerido por Baileys v7 ***
+      // Sin esto, Baileys no puede re-enviar mensajes fallidos ni confirmar
+      // recepción de mensajes, lo que puede resultar en pérdida silenciosa.
+      getMessage: async (key: WAMessageKey) => {
+        logDebug('getMessage callback invoked', { remoteJid: key.remoteJid, id: key.id });
+        const msg = getMessageFromStore(key);
+        if (msg) return msg;
+        // Fallback: retornar mensaje vacío (no undefined) para evitar errores en Baileys
+        return { conversation: '' };
+      }
+    });
+
+    conn.socket = socket;
+    logInfo('WASocket created, registering event handlers...');
+
+    // =======================================================================
+    // EVENT: connection.update
+    // =======================================================================
+    socket.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      logInfo('connection.update', {
+        connection: connection || 'N/A',
+        hasQr: !!qr,
+        hasLastDisconnect: !!lastDisconnect
+      });
+
+      // --- QR Code ---
+      if (qr) {
+        logInfo('New QR code generated — scan with WhatsApp to connect');
+        conn.qrCode = qr;
+        conn.status = 'qr_pending';
+
+        try {
+          const qrImage = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
+          conn.qrCodeImage = qrImage;
+          whatsappEvents.emit('qr', { qr, qrImage });
+          await updateSessionInDB();
+        } catch (qrErr: any) {
+          logError('Error generating QR image', qrErr?.message);
+        }
+      }
+
+      // --- Connected ---
+      if (connection === 'open') {
+        logInfo('*** WhatsApp CONNECTED successfully! ***');
+        conn.status = 'connected';
+        conn.qrCode = null;
+        conn.qrCodeImage = null;
+        conn.reconnectAttempts = 0;
+        metrics.lastConnectedAt = new Date();
+
+        if (socket.user?.id) {
+          conn.phoneNumber = socket.user.id.split(':')[0].replace('@s.whatsapp.net', '');
+          logInfo(`Connected phone: ${conn.phoneNumber}`);
+        }
+
+        whatsappEvents.emit('connected', { phoneNumber: conn.phoneNumber });
+        await updateSessionInDB();
+      }
+
+      // --- Disconnected ---
+      if (connection === 'close') {
+        const wasAwaitingQr = conn.status === 'qr_pending' || (conn.status === 'connecting' && !conn.phoneNumber);
+        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        logWarn(`Connection CLOSED (statusCode: ${statusCode}, shouldReconnect: ${shouldReconnect})`);
+
+        // Limpiar socket
+        conn.socket = null;
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          logInfo('Session logged out — clearing credentials');
+          await clearCredentials();
+          conn.status = 'disconnected';
+          conn.phoneNumber = null;
+          whatsappEvents.emit('logout');
+          await updateSessionInDB();
+          return;
+        }
+
+        if (shouldReconnect && conn.reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          const fastQrRetry = statusCode === 408 && wasAwaitingQr;
+
+          if (!fastQrRetry) {
+            conn.reconnectAttempts++;
+            metrics.reconnectAttempts++;
+          }
+
+          conn.status = 'connecting';
+          conn.lastReconnectAt = Date.now();
+
+          const delay = fastQrRetry
+            ? QUICK_QR_RECONNECT_DELAY_MS
+            : calculateReconnectDelay(conn.reconnectAttempts);
+
+          logInfo(
+            fastQrRetry
+              ? `Scheduling fast QR reconnect in ${Math.round(delay / 1000)}s (statusCode=408)`
+              : `Scheduling reconnect ${conn.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${Math.round(delay / 1000)}s`
+          );
+
+          setTimeout(() => {
+            connectToWhatsApp().catch(err => {
+              logError('Error during scheduled reconnection', err?.message || err);
+            });
+          }, delay);
+        } else {
+          conn.status = 'disconnected';
+          conn.lastError = `Reconnect limit reached (${MAX_RECONNECT_ATTEMPTS}) or loggedOut`;
+          logError(`Cannot reconnect: ${conn.lastError}`);
+          await notifyAdminConnectionFailure(conn.lastError);
+        }
+
+        await updateSessionInDB();
+      }
+    });
+
+    // =======================================================================
+    // EVENT: creds.update — guardar credenciales
+    // =======================================================================
+    socket.ev.on('creds.update', saveCreds);
+
+    // =======================================================================
+    // EVENT: messages.upsert — RECEPCIÓN DE MENSAJES (PARTE MÁS CRÍTICA)
+    // =======================================================================
+    socket.ev.on('messages.upsert', async (upsert) => {
+      const { messages: msgs, type } = upsert;
+
+      logInfo(`>>> messages.upsert: type=${type}, count=${msgs.length}`);
+
+      // IMPORTANTE: Solo procesar 'notify' (mensajes nuevos en tiempo real)
+      // No procesar 'append' (history sync) para evitar reprocesar mensajes antiguos
+      if (type !== 'notify') {
+        logDebug(`Skipping messages.upsert type="${type}" (not notify)`);
+        return;
+      }
+
+      for (const msg of msgs) {
+        try {
+          // Guardar SIEMPRE en store (para getMessage callback)
+          storeMessage(msg);
+
+          // Ignorar mensajes propios
+          if (msg.key.fromMe) {
+            logDebug(`Skipping own message: ${msg.key.id}`);
+            continue;
+          }
+
+          // Ignorar sin contenido
+          if (!msg.message) {
+            logDebug(`Skipping message without content: ${msg.key.id}`);
+            continue;
+          }
+
+          // Ignorar grupos
+          const remoteJid = msg.key.remoteJid;
+          if (!remoteJid || isJidGroup(remoteJid)) {
+            logDebug(`Skipping group/null jid: ${remoteJid}`);
+            continue;
+          }
+
+          // Ignorar protocolo / reacciones / encuestas
+          if (msg.message.protocolMessage || msg.message.reactionMessage || msg.message.pollCreationMessage) {
+            logDebug('Skipping protocol/reaction/poll message');
+            continue;
+          }
+
+          const phoneNumber = remoteJid.replace('@s.whatsapp.net', '');
+          const pushName = msg.pushName || 'Usuario';
+          // --- Extraer texto usando función centralizada ---
+          const extracted = extractMessageContent(msg.message);
+
+          if (extracted.isAudio) {
+            logInfo(`Audio message received from ${phoneNumber} (${pushName})`);
+            // Audio: procesar directamente sin debounce
+            await handleIncomingMessage(msg, socket);
+            continue;
+          }
+
+          if (extracted.isUnsupportedMedia) {
+            logDebug(`Unsupported media type from ${phoneNumber}, skipping`);
+            continue;
+          }
+
+          let body = extracted.body;
+          if (!body.trim()) {
+            logDebug(`Empty body from ${phoneNumber} after extraction, skipping`);
+            continue;
+          }
+
+          // Normalizar
+          body = normalizeIncomingText(body);
+
+          logInfo(`Message from ${phoneNumber} (${pushName}): "${body.substring(0, 100)}${body.length > 100 ? '...' : ''}"`);
+
+          // Agregar al debounce (usando MessageDebouncer singleton)
+          messageDebouncer.addMessage(
+            {
+              phone: phoneNumber,
+              text: body,
+              messageId: msg.key.id || `msg_${Date.now()}`,
+              profileName: pushName,
+              timestamp: Date.now()
+            },
+            async (messages: DebouncerMessage[]) => {
+              await handleDebouncedMessages(messages, socket);
+            }
+          );
+
+        } catch (msgErr: any) {
+          logError(`Error processing message ${msg?.key?.id} from ${msg?.key?.remoteJid}`, msgErr?.message);
+          logError(`Stack trace:`, msgErr?.stack);
+        }
+      }
+    });
+
+    // =======================================================================
+    // EVENT: messages.update — status updates (read receipts, etc.)
+    // =======================================================================
+    socket.ev.on('messages.update', (updates) => {
+      for (const update of updates) {
+        logDebug(`Message status update: ${update.key.id} -> ${update.update?.status}`);
+      }
+    });
+
+    logInfo('All Baileys event handlers registered successfully');
+
+  } catch (error: any) {
+    logError('FATAL: Error in connectToWhatsApp', error?.message);
+    logError('Stack:', error?.stack);
+    throw error;
+  }
+}
+
+// ============================================================================
+// PROCESAR MENSAJES DEBOUNCED (agrupados)
+// ============================================================================
+
+async function handleDebouncedMessages(messages: PendingMessage[], socket: WASocket): Promise<void> {
+  if (messages.length === 0) return;
+
+  const phone = messages[0].phone;
+
+  // Serializar procesamiento por teléfono para evitar race conditions
+  await withPhoneLock(phone, async () => {
+    const profileName = messages[0].profileName;
+    const combinedText = messages.map(m => m.text).join('\n');
+
+    logInfo(`Processing ${messages.length} debounced msg(s) from ${phone}: "${combinedText.substring(0, 120)}"`);
+
+    // Construir mensaje sintético
+    const syntheticMsg: proto.IWebMessageInfo = {
+      key: {
+        remoteJid: `${phone}@s.whatsapp.net`,
+        id: messages[messages.length - 1].messageId
+      },
+      pushName: profileName,
+      message: {
+        conversation: combinedText
+      }
+    } as proto.IWebMessageInfo;
+
+    await handleIncomingMessage(syntheticMsg, socket);
+  }); // fin withPhoneLock
+}
+
+// ============================================================================
+// HANDLER PRINCIPAL DE MENSAJES ENTRANTES
+// ============================================================================
+
+async function handleIncomingMessage(msg: proto.IWebMessageInfo, socket: WASocket): Promise<void> {
+  const startTime = Date.now();
+  const from = msg.key?.remoteJid;
+  if (!from) return;
+
+  metrics.messagesReceived++;
+
+  const phoneNumber = from.replace('@s.whatsapp.net', '').replace('@g.us', '');
+  const pushName = msg.pushName || 'Usuario';
+  const messageId = msg.key?.id || `msg_${Date.now()}`;
+
+  try {
+    let body = '';
+    let isAudioMessage = false;
+    let audioTranscription = '';
+
+    // Extraer contenido usando función centralizada
+    const extracted = extractMessageContent(msg.message);
+    body = extracted.body;
+    isAudioMessage = extracted.isAudio;
+
+    if (isAudioMessage && msg.message?.audioMessage) {
+      logInfo(`Transcribing audio from ${phoneNumber}...`);
+
+      const result = await transcribeAudioSafe(msg, msg.message.audioMessage, socket);
+      if (result.success && result.text) {
+        audioTranscription = result.text;
+        body = audioTranscription;
+        metrics.audioTranscriptions++;
+        logInfo(`Audio transcribed: "${body.substring(0, 100)}"`);
+      } else {
+        metrics.audioTranscriptionsFailed++;
+        logWarn(`Audio transcription failed for ${phoneNumber}: ${result.error}`);
+        body = result.fallbackText || '[Audio no procesable]';
+      }
+    }
+
+    if (!body.trim()) {
+      logDebug(`No processable content from ${phoneNumber}`);
+      return;
+    }
+
+    body = normalizeIncomingText(body);
+
+    logInfo(`Processing for ${phoneNumber}: audio=${isAudioMessage}, text="${body.substring(0, 100)}"`);
+
+    // Guardar mensaje entrante en BD
+    const bodyToSave = isAudioMessage && audioTranscription ? `🎤 ${body}` : body;
+    await saveMessageToDB({
+      messageId,
+      from: phoneNumber,
+      body: bodyToSave,
+      direction: 'inbound',
+      profileName: pushName
+    });
+
+    // Emitir evento para listeners externos
+    whatsappEvents.emit('message', {
+      from: phoneNumber,
+      body,
+      messageId,
+      profileName: pushName,
+      isAudio: isAudioMessage
+    });
+
+    // ---- Procesar con IA si auto-reply está habilitado ----
+    const autoReply = process.env.WHATSAPP_AUTO_REPLY === 'true';
+    if (!autoReply) {
+      logInfo(`Auto-reply DISABLED, message stored but not responded to`);
+      return;
+    }
+
+    // Verificar horario de atención si está configurado
+    if (process.env.WHATSAPP_BUSINESS_HOURS_ONLY === 'true') {
+      // Usar hora Colombia (UTC-5) en lugar de UTC del servidor
+      const colombiaNow = new Date(new Date().toLocaleString('en-US', { timeZone: COLOMBIA_TIMEZONE }));
+      const hour = colombiaNow.getHours();
+      const day = colombiaNow.getDay(); // 0=domingo
+      // Horario: L-V 7am-7pm, S 8am-1pm
+      const isBusinessHours =
+        (day >= 1 && day <= 5 && hour >= 7 && hour < 19) ||
+        (day === 6 && hour >= 8 && hour < 13);
+
+      if (!isBusinessHours) {
+        logInfo(`Outside business hours, sending auto-reply to ${phoneNumber}`);
+        await sendMessage(phoneNumber, 'Gracias por comunicarse con Fundación Biosanar IPS. En este momento estamos fuera de nuestro horario de atención. Nuestro horario es de lunes a viernes de 7am a 7pm y sábados de 8am a 1pm. Le responderemos lo más pronto posible.');
+        return;
+      }
+    }
+
+    const shouldRespondWithVoice = isAudioMessage && process.env.WHATSAPP_VOICE_RESPONSES === 'true';
+    const useGPTAudioIntegrated = shouldRespondWithVoice && process.env.USE_GPT_AUDIO_MODEL === 'true';
+
+    if (useGPTAudioIntegrated) {
+      await handleGPTAudioFlow(phoneNumber, body);
+    } else {
+      await handleStandardAIFlow(body, phoneNumber, shouldRespondWithVoice);
+    }
+
+    const totalMs = Date.now() - startTime;
+    logInfo(`Message processed for ${phoneNumber} in ${totalMs}ms`);
+
+  } catch (error: any) {
+    logError(`CRITICAL error handling message from ${phoneNumber}: ${error?.message}`);
+    logError(`Stack: ${error?.stack}`);
+    metrics.messagesFailed++;
+
+    // Intentar enviar mensaje de disculpa
+    try {
+      await sendMessage(phoneNumber, 'Disculpa, tuve un problema procesando tu mensaje. Por favor intenta de nuevo.');
+    } catch (sendErr: any) {
+      logError(`Failed to send error fallback to ${phoneNumber}: ${sendErr?.message}`);
+    }
+  }
+}
+
+// ============================================================================
+// FLUJO IA ESTÁNDAR (Groq / ChatGPT)
+// ============================================================================
+
+async function handleStandardAIFlow(body: string, phoneNumber: string, respondWithVoice: boolean): Promise<void> {
+  logInfo(`AI flow started for ${phoneNumber}...`);
+
+  const aiStartTime = Date.now();
+
+  // Import dinámico para evitar dependencias circulares
+  const WhatsAppAI = await import('./WhatsAppAIService');
+
+  const result = await WhatsAppAI.processMessage(body, phoneNumber, []);
+
+  const aiDuration = Date.now() - aiStartTime;
+  metrics.aiProcessingTimeTotal += aiDuration;
+  metrics.aiProcessingCount++;
+
+  logInfo(`AI processed in ${aiDuration}ms, success=${result.success}, hasResponse=${!!result.response}, tools=${result.toolCalls?.length || 0}`);
+
+  // Respuesta silenciosa (e.g., el AI decidió no responder)
+  if (result.success && (result as any).silent) {
+    logInfo(`Silent response for ${phoneNumber}`);
+    return;
+  }
+
+  if (!result.success || !result.response) {
+    logWarn(`AI returned no response for ${phoneNumber}`, { success: result.success, error: (result as any).error });
+    return;
+  }
+
+  // Enviar respuesta
+  if (respondWithVoice) {
+    logInfo(`Sending voice response to ${phoneNumber}`);
+    await sendVoiceNote(phoneNumber, result.response, false);
+    await saveMessageToDB({
+      messageId: `resp_voice_${Date.now()}`,
+      from: conn.phoneNumber || 'bot',
+      to: phoneNumber,
+      body: `🔊 ${result.response}`,
+      direction: 'outbound',
+      aiResponse: result.response
+    });
+  } else {
+    const chunks = chunkResponse(result.response);
+    logDebug(`Sending ${chunks.length} chunk(s) to ${phoneNumber}`);
+
+    for (let i = 0; i < chunks.length; i++) {
+      const sendResult = await sendMessage(phoneNumber, chunks[i]);
+      logDebug(`Chunk ${i + 1}/${chunks.length} sent: ${sendResult.success}`);
+      // Pausa entre chunks para no saturar
+      if (i < chunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    await saveMessageToDB({
+      messageId: `resp_${Date.now()}`,
+      from: conn.phoneNumber || 'bot',
+      to: phoneNumber,
+      body: result.response,
+      direction: 'outbound',
+      aiResponse: result.response
+    });
+  }
+
+  logInfo(`Response sent to ${phoneNumber}: "${result.response.substring(0, 80)}..." (${aiDuration}ms)`);
+}
+
+// ============================================================================
+// FLUJO GPT AUDIO (respuesta de voz integrada)
+// ============================================================================
+
+async function handleGPTAudioFlow(phoneNumber: string, body: string): Promise<void> {
+  logInfo(`GPT Audio flow started for ${phoneNumber}`);
+
+  const aiStartTime = Date.now();
+
+  try {
+    const audioResult = await processAndRespondWithAudio(phoneNumber, body);
+    const aiDuration = Date.now() - aiStartTime;
+    metrics.aiProcessingTimeTotal += aiDuration;
+    metrics.aiProcessingCount++;
+
+    if (audioResult.success && audioResult.response) {
+      await saveMessageToDB({
+        messageId: audioResult.messageId || `resp_gptaudio_${Date.now()}`,
+        from: conn.phoneNumber || 'bot',
+        to: phoneNumber,
+        body: `🔊 ${audioResult.response}`,
+        direction: 'outbound',
+        aiResponse: audioResult.response
+      });
+      logInfo(`GPT Audio response sent to ${phoneNumber} in ${aiDuration}ms`);
+    } else {
+      logWarn(`GPT Audio failed: ${audioResult.error}, falling back to standard flow`);
+      await handleStandardAIFlow(body, phoneNumber, false);
+    }
+  } catch (err: any) {
+    logError(`GPT Audio flow error: ${err?.message}`);
+    await handleStandardAIFlow(body, phoneNumber, false);
+  }
+}
+
+// ============================================================================
+// TRANSCRIPCIÓN DE AUDIO (con retry)
+// ============================================================================
+
+async function transcribeAudioSafe(
+  msg: proto.IWebMessageInfo,
+  audioMessage: proto.Message.IAudioMessage,
+  socket: WASocket,
+  maxRetries: number = 2
+): Promise<{ success: boolean; text?: string; error?: string; fallbackText?: string }> {
+  let lastError = '';
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const downloadable = { ...msg, key: msg.key } as Parameters<typeof downloadMediaMessage>[0];
+      const audioBuffer = await downloadMediaMessage(downloadable, 'buffer', {}, {
+        logger: baileysLogger,
+        reuploadRequest: socket.updateMediaMessage
+      }) as Buffer;
+
+      if (!audioBuffer || audioBuffer.length === 0) {
+        lastError = 'Audio buffer vacío';
+        continue;
+      }
+
+      logDebug(`Audio downloaded: ${audioBuffer.length} bytes (attempt ${attempt})`);
+
+      const { transcribeAudio } = await import('./AudioTranscriptionService');
+      const mimeType = audioMessage.mimetype || 'audio/ogg; codecs=opus';
+      const result = await transcribeAudio(audioBuffer, mimeType);
+
+      if (result.success && result.text) {
+        return { success: true, text: result.text };
+      }
+
+      lastError = result.error || 'Transcripción fallida';
+    } catch (err: any) {
+      lastError = err?.message || 'Error desconocido';
+      logWarn(`Audio transcription attempt ${attempt} failed: ${lastError}`);
+    }
+
+    // Esperar antes de reintentar
+    if (attempt < maxRetries) {
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+
+  return {
+    success: false,
+    error: lastError,
+    fallbackText: '🎤 Recibí tu mensaje de voz pero no pude procesarlo. ¿Podrías escribirme tu consulta?'
+  };
+}
+
+// ============================================================================
+// ENVIAR MENSAJE DE TEXTO
+// ============================================================================
+
+export async function sendMessage(
+  to: string,
+  text: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    if (!conn.socket || conn.status !== 'connected') {
+      logWarn(`Cannot send to ${to} — not connected (status: ${conn.status})`);
+      return { success: false, error: 'WhatsApp no conectado' };
+    }
+
+    const jid = phoneToJid(to);
+    logDebug(`Sending text to ${jid}: "${text.substring(0, 60)}..."`);
+
+    const result = await conn.socket.sendMessage(jid, { text });
+    metrics.messagesSent++;
+
+    logDebug(`Message sent to ${to}, id=${result?.key?.id}`);
+    return { success: true, messageId: result?.key?.id || `sent_${Date.now()}` };
+  } catch (error: any) {
+    logError(`Error sending message to ${to}: ${error?.message}`);
+    metrics.messagesFailed++;
+    return { success: false, error: error?.message };
+  }
+}
+
+// ============================================================================
+// ENVIAR NOTA DE VOZ
+// ============================================================================
+
+export async function sendVoiceNote(
+  to: string,
+  text: string,
+  useGPTAudio: boolean = false
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    if (!conn.socket || conn.status !== 'connected') {
+      logWarn(`Cannot send voice note to ${to} — not connected`);
+      return { success: false, error: 'WhatsApp no conectado' };
+    }
+
+    let audioBuffer: Buffer | undefined;
+    const ttsProvider = process.env.TTS_PROVIDER || 'openai';
+
+    // Intentar generar audio con el proveedor configurado
+    try {
+      if (ttsProvider === 'elevenlabs') {
+        const ElevenLabsTTS = await import('./ElevenLabsTTSService');
+        const result = await ElevenLabsTTS.generateWhatsAppVoiceNoteElevenLabs(text);
+        if (result.success && result.audioBuffer) audioBuffer = result.audioBuffer;
+      } else if ((ttsProvider === 'gpt-audio' || useGPTAudio) && process.env.USE_GPT_AUDIO_MODEL === 'true') {
+        const GPTAudioService = await import('./GPTAudioService');
+        const result = await GPTAudioService.generateWhatsAppAudio(text, true);
+        if (result.success && result.audioBuffer) audioBuffer = result.audioBuffer;
+      }
+    } catch (ttsErr: any) {
+      logWarn(`TTS provider "${ttsProvider}" failed: ${ttsErr?.message}`);
+    }
+
+    // Fallback a OpenAI TTS estándar
+    if (!audioBuffer) {
+      try {
+        const { generateWhatsAppVoiceNote } = await import('./TextToSpeechService');
+        const ttsResult = await generateWhatsAppVoiceNote(text);
+        if (ttsResult.success && ttsResult.audioBuffer) {
+          audioBuffer = ttsResult.audioBuffer;
+        }
+      } catch (fallbackErr: any) {
+        logWarn(`Fallback TTS failed: ${fallbackErr?.message}`);
+      }
+    }
+
+    // Si no se pudo generar audio, fallback a texto
+    if (!audioBuffer) {
+      logWarn(`All TTS providers failed, falling back to text for ${to}`);
+      return sendMessage(to, text);
+    }
+
+    const jid = phoneToJid(to);
+    const result = await conn.socket.sendMessage(jid, {
+      audio: audioBuffer,
+      mimetype: 'audio/ogg; codecs=opus',
+      ptt: true
+    });
+
+    metrics.messagesSent++;
+    logInfo(`Voice note sent to ${to}`);
+    return { success: true, messageId: result?.key?.id || `voice_${Date.now()}` };
+  } catch (error: any) {
+    logError(`Error sending voice note to ${to}: ${error?.message}`);
+    metrics.messagesFailed++;
+    // Fallback a texto
+    return sendMessage(to, text);
+  }
+}
+
+// ============================================================================
+// PROCESAR Y RESPONDER CON AUDIO (GPT Audio)
+// ============================================================================
+
+export async function processAndRespondWithAudio(
+  to: string,
+  userMessage: string,
+  conversationHistory: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [],
+  systemPrompt?: string
+): Promise<{ success: boolean; messageId?: string; response?: string; error?: string }> {
+  try {
+    if (!conn.socket || conn.status !== 'connected') {
+      return { success: false, error: 'WhatsApp no conectado' };
+    }
+
+    const GPTAudioService = await import('./GPTAudioService');
+
+    const result = await GPTAudioService.generateChatWithAudio(userMessage, conversationHistory, {
+      voice: 'nova',
+      format: 'mp3',
+      saveToFile: false,
+      systemPrompt
+    });
+
+    if (!result.success || !result.audioBuffer) {
+      return { success: false, error: result.error || 'No se generó audio' };
+    }
+
+    const jid = phoneToJid(to);
+    const sendResult = await conn.socket.sendMessage(jid, {
+      audio: result.audioBuffer,
+      mimetype: 'audio/mpeg',
+      ptt: true
+    });
+
+    metrics.messagesSent++;
+
+    return {
+      success: true,
+      messageId: sendResult?.key?.id || `gpt_audio_${Date.now()}`,
+      response: result.text
+    };
+  } catch (error: any) {
+    logError(`Error in processAndRespondWithAudio for ${to}: ${error?.message}`);
+    metrics.messagesFailed++;
+    return { success: false, error: error?.message };
+  }
+}
+
+// ============================================================================
+// ENVIAR RESPUESTA (selecciona text/voice automáticamente)
+// ============================================================================
+
+export async function sendResponse(
+  to: string,
+  text: string,
+  asVoice: boolean = false
+): Promise<{ success: boolean; messageId?: string; error?: string; type: 'text' | 'voice' }> {
+  if (asVoice && process.env.WHATSAPP_VOICE_RESPONSES === 'true') {
+    const result = await sendVoiceNote(to, text);
+    return { ...result, type: 'voice' };
+  }
+  const result = await sendMessage(to, text);
+  return { ...result, type: 'text' };
+}
+
+// ============================================================================
+// DESCONECTAR
+// ============================================================================
+
+export async function disconnect(): Promise<{ success: boolean; message: string }> {
+  try {
+    logInfo('Disconnecting from WhatsApp...');
+
+    if (conn.socket) {
+      try {
+        await conn.socket.logout();
+      } catch (logoutErr: any) {
+        logWarn(`Logout error (non-fatal): ${logoutErr?.message}`);
+        // Intentar cerrar de otra manera
+        try {
+          conn.socket.end(undefined);
+        } catch (_) { /* ignore */ }
+      }
+      conn.socket = null;
+    }
+
+    conn.status = 'disconnected';
+    conn.qrCode = null;
+    conn.qrCodeImage = null;
+    conn.phoneNumber = null;
+    conn.lastError = null;
+
+    await updateSessionInDB();
+
+    logInfo('Successfully disconnected from WhatsApp');
+    return { success: true, message: 'Desconectado de WhatsApp' };
+  } catch (error: any) {
+    logError(`Error disconnecting: ${error?.message}`);
+    return { success: false, message: error?.message || 'Error al desconectar' };
+  }
+}
+
+// ============================================================================
+// OBTENER ESTADO
+// ============================================================================
+
+export function getStatus(): {
+  connected: boolean;
+  status: string;
+  phoneNumber: string | null;
+  qrCode: string | null;
+  sessionId: string;
+  lastError: string | null;
+  reconnectAttempts: number;
+  metrics: WhatsAppMetrics & { avgAiProcessingTime: number };
+} {
+  return {
+    connected: conn.status === 'connected',
+    status: conn.status,
+    phoneNumber: conn.phoneNumber,
+    qrCode: conn.qrCodeImage,
+    sessionId: conn.sessionId,
+    lastError: conn.lastError,
+    reconnectAttempts: conn.reconnectAttempts,
+    metrics: getWhatsAppMetrics()
+  };
+}
+
+export function resetReconnectAttempts(): void {
+  logInfo(`Resetting reconnect attempts (was ${conn.reconnectAttempts})`);
+  conn.reconnectAttempts = 0;
+  conn.lastError = null;
+}
+
+// ============================================================================
+// CREDENCIALES
+// ============================================================================
+
+async function clearCredentials(): Promise<void> {
+  try {
+    if (fs.existsSync(AUTH_FOLDER)) {
+      fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+    }
+    fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+    logInfo('Auth credentials cleared');
+  } catch (error: any) {
+    logError(`Error clearing credentials: ${error?.message}`);
+  }
+}
+
+// ============================================================================
+// NOTIFICAR ADMINISTRADOR
+// ============================================================================
+
+async function notifyAdminConnectionFailure(reason: string): Promise<void> {
+  try {
+    logError(`ADMIN ALERT: WhatsApp connection failure — ${reason}`);
+    await pool.execute(`
+      INSERT INTO wa_messages (session_id, message_id, from_number, to_number, body, direction, status, metadata)
+      VALUES (?, ?, 'SYSTEM', 'ADMIN', ?, 'outbound', 'failed', ?)
+    `, [
+      conn.sessionId,
+      `alert_${Date.now()}`,
+      `⚠️ ALERTA: WhatsApp desconectado. Razón: ${reason}. Intentos: ${conn.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`,
+      JSON.stringify({ type: 'connection_failure', reason, timestamp: new Date().toISOString() })
+    ]);
+    whatsappEvents.emit('admin_alert', { type: 'connection_failure', reason });
+  } catch (error: any) {
+    logError('Failed to store admin alert in DB', error?.message);
+  }
+}
+
+// ============================================================================
+// HEALTH CHECK PERIÓDICO
+// ============================================================================
+
 let healthCheckTimer: NodeJS.Timeout | null = null;
 
 function startHealthCheck(): void {
   if (healthCheckTimer) clearInterval(healthCheckTimer);
-  
+
   healthCheckTimer = setInterval(async () => {
     try {
-      // Solo verificar si se supone que estamos conectados
-      if (connectionState.status !== 'connected') return;
-      
-      const socket = connectionState.socket;
-      
-      // Verificar si el socket existe y el WebSocket interno está activo
-      const wsState = (socket as any)?.ws?.readyState;
-      const isSocketAlive = socket && (wsState === undefined || wsState === 1); // 1 = OPEN, undefined = Baileys internals vary
-      
-      if (!socket) {
-        waLogger.warn('⚠️ Health check: status=connected but socket is null. Forcing reconnection.');
-        connectionState.status = 'disconnected';
-        connectionState.lastError = null;
-        connectionState.reconnectAttempts = 0;
+      if (conn.status !== 'connected') {
+        logDebug(`Health check: not connected (status=${conn.status})`);
+        return;
+      }
+
+      if (!conn.socket) {
+        logWarn('Health check: status=connected but socket=null! Triggering reconnect...');
+        conn.status = 'disconnected';
+        conn.reconnectAttempts = 0;
         await startConnection();
         return;
       }
-      
-      // Intentar un "ping" ligero: verificar que podemos acceder al user info
-      try {
-        const user = socket.user;
-        if (!user?.id) {
-          waLogger.warn('⚠️ Health check: socket exists but user info is empty. Possible zombie connection.');
-          // Dar una oportunidad antes de reconectar - podría ser temporal
-        }
-      } catch (pingError) {
-        waLogger.warn({ error: pingError }, '⚠️ Health check: socket error on user access. Forcing reconnection.');
-        connectionState.status = 'disconnected';
-        connectionState.lastError = null;
-        connectionState.reconnectAttempts = 0;
-        try {
-          socket.end(undefined);
-        } catch (e) { /* ignore */ }
-        await startConnection();
-        return;
+
+      // Verificar que el socket tiene user info (indicador de sesión viva)
+      const user = conn.socket.user;
+      if (!user?.id) {
+        logWarn('Health check: socket exists but user info is empty (zombie connection)');
+        // No reconectar inmediatamente, puede ser temporal
+      } else {
+        logDebug(`Health check OK: connected as ${user.id.split(':')[0]}, uptime=${getWhatsAppMetrics().connectionUptime}s`);
       }
-      
-      // Verificar si el WebSocket subyacente está cerrado
-      if (wsState !== undefined && wsState !== 1) {
-        waLogger.warn({ wsState }, '⚠️ Health check: WebSocket not OPEN (state=' + wsState + '). Forcing reconnection.');
-        connectionState.status = 'disconnected';
-        connectionState.lastError = null;
-        connectionState.reconnectAttempts = 0;
-        try {
-          socket.end(undefined);
-        } catch (e) { /* ignore */ }
-        await startConnection();
-        return;
-      }
-      
-    } catch (error) {
-      waLogger.error({ error }, 'Error in health check');
+    } catch (err: any) {
+      logError(`Health check error: ${err?.message}`);
     }
   }, HEALTH_CHECK_INTERVAL_MS);
-  
-  waLogger.info({ intervalMs: HEALTH_CHECK_INTERVAL_MS }, '🏥 WhatsApp health check started');
+
+  logInfo(`Health check started (every ${HEALTH_CHECK_INTERVAL_MS / 1000}s)`);
 }
 
-// Ejecutar auto-reconexión al cargar el módulo (con pequeño delay para que el servidor esté listo)
-setTimeout(() => {
-  autoReconnect().catch(err => waLogger.error({ error: err }, 'Error starting auto-reconnect'));
+// ============================================================================
+// AUTO-INICIO al cargar el módulo
+// ============================================================================
+
+setTimeout(async () => {
+  logInfo('=== WhatsApp Service STARTING ===');
+
+  try {
+    const credsPath = path.join(AUTH_FOLDER, 'creds.json');
+    if (fs.existsSync(credsPath)) {
+      logInfo('Saved credentials found, auto-connecting...');
+      await startConnection();
+    } else {
+      logInfo('No saved credentials found. Scan QR code via /api/whatsapp/connect to start.');
+    }
+  } catch (err: any) {
+    logError(`Auto-connect error: ${err?.message}`);
+  }
+
   startHealthCheck();
 }, 3000);
 
-// Exportar instancia singleton
+// ============================================================================
+// DEFAULT EXPORT (singleton usado por las rutas)
+// ============================================================================
+
 export default {
   startConnection,
+  forceRestartWithCleanSession,
   sendMessage,
   sendVoiceNote,
   sendResponse,

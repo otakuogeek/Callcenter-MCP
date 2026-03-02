@@ -5,8 +5,32 @@ import WhatsAppAI from '../services/WhatsAppAIService';
 import MCPTools from '../services/MCPToolsClient';
 import WhatsAppConnection, { whatsappEvents } from '../services/WhatsAppConnection';
 import { normalizeIncomingText } from '../utils/whatsappUtils';
+import { resetState } from '../services/WhatsAppStateManager';
+import * as ChatMemoryService from '../services/ChatMemoryService';
+import { resetConversationData } from '../services/ConversationPersistence';
 
 const router = Router();
+
+const phoneProcessingQueue = new Map<string, Promise<any>>();
+
+async function runWithPhoneLock<T>(phone: string, task: () => Promise<T>): Promise<T> {
+  const key = (phone || '').replace(/@.*/, '').trim();
+  const previous = phoneProcessingQueue.get(key) || Promise.resolve();
+
+  const current = previous
+    .catch(() => undefined)
+    .then(task);
+
+  phoneProcessingQueue.set(key, current as Promise<any>);
+
+  try {
+    return await current;
+  } finally {
+    if (phoneProcessingQueue.get(key) === current) {
+      phoneProcessingQueue.delete(key);
+    }
+  }
+}
 
 // ============================================================================
 // RATE LIMITING POR NÚMERO DE TELÉFONO
@@ -488,28 +512,15 @@ router.post('/connect', async (req: Request, res: Response) => {
 router.post('/force-restart', async (req: Request, res: Response) => {
   try {
     console.log('[WhatsApp] Forzando reinicio completo...');
-    
-    // 1. Desconectar si hay socket activo
-    try {
-      await WhatsAppConnection.disconnect();
-    } catch (e) {
-      // Ignorar error de desconexión
-    }
-    
-    // 2. Resetear contador de intentos
-    WhatsAppConnection.resetReconnectAttempts();
-    
-    // 3. Esperar un momento para que se limpie
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // 4. Iniciar nueva conexión
-    const result = await WhatsAppConnection.startConnection();
+    const result = await WhatsAppConnection.forceRestartWithCleanSession();
     
     res.json({
       success: result.success,
       data: {
         ...WhatsAppConnection.getStatus(),
-        message: 'Reconexión forzada iniciada'
+        message: result.success
+          ? 'Reconexión forzada iniciada con sesión limpia'
+          : (result.message || 'Error en reinicio forzado')
       }
     });
   } catch (error: any) {
@@ -1375,50 +1386,50 @@ router.post('/webhook', async (req: Request, res: Response) => {
     
     console.log(`[WhatsApp Webhook] Mensaje de ${from}: ${body.substring(0, 100)}...`);
 
-    // Procesar mensaje con IA (Valeria)
-    let aiResponse: string | null = null;
-    const autoReply = process.env.WHATSAPP_AUTO_REPLY === 'true';
-    const aiStartTime = Date.now();
+    // Procesar por teléfono de forma serializada para evitar carreras de estado
+    const aiResponse = await runWithPhoneLock(from, async () => {
+      let responseText: string | null = null;
+      const autoReply = process.env.WHATSAPP_AUTO_REPLY === 'true';
+      const aiStartTime = Date.now();
 
-    if (autoReply && WhatsAppAI.isConfigured()) {
-      try {
-        const result = await WhatsAppAI.processMessage(body, from, []);
-        const aiDuration = Date.now() - aiStartTime;
-        
-        if (result.success && result.response) {
-          aiResponse = result.response;
-          // Registrar métrica de éxito
-          recordIntentMetric(result.intent || 'unknown', true, aiDuration);
-        } else {
-          // Registrar métrica de fallo
-          recordIntentMetric(result.intent || 'unknown', false, aiDuration, result.error);
+      if (autoReply && WhatsAppAI.isConfigured()) {
+        try {
+          const result = await WhatsAppAI.processMessage(body, from, []);
+          const aiDuration = Date.now() - aiStartTime;
+
+          if (result.success && result.response) {
+            responseText = result.response;
+            recordIntentMetric(result.intent || 'unknown', true, aiDuration);
+          } else {
+            recordIntentMetric(result.intent || 'unknown', false, aiDuration, result.error);
+          }
+          console.log(`[WhatsApp Webhook] Respuesta IA generada: ${responseText?.substring(0, 100)}...`);
+        } catch (aiError: any) {
+          const aiDuration = Date.now() - aiStartTime;
+          recordIntentMetric('error', false, aiDuration, aiError.message);
+          console.error('[WhatsApp Webhook] Error en IA:', aiError);
         }
-        console.log(`[WhatsApp Webhook] Respuesta IA generada: ${aiResponse?.substring(0, 100)}...`);
-      } catch (aiError: any) {
-        const aiDuration = Date.now() - aiStartTime;
-        recordIntentMetric('error', false, aiDuration, aiError.message);
-        console.error('[WhatsApp Webhook] Error en IA:', aiError);
-      }
-    } else {
-      // Si no hay auto-reply, guardamos el mensaje sin procesar IA
-      const msgId = messageId || `msg_${Date.now()}`;
-      
-      await pool.execute<ResultSetHeader>(`
-        INSERT INTO wa_messages 
-        (session_id, message_id, from_number, body, media_url, media_type, direction, status)
-        VALUES ('default', ?, ?, ?, ?, ?, 'inbound', 'delivered')
-      `, [msgId, from, body, mediaUrl || null, mediaType || null]);
+      } else {
+        const msgId = messageId || `msg_${Date.now()}`;
 
-      // Actualizar conversación
-      await pool.execute(`
-        INSERT INTO wa_conversations (session_id, phone_number, last_message, last_activity)
-        VALUES ('default', ?, ?, NOW())
-        ON DUPLICATE KEY UPDATE 
-          last_message = VALUES(last_message),
-          last_activity = NOW(),
-          status = 'active'
-      `, [from, body]);
-    }
+        await pool.execute<ResultSetHeader>(`
+          INSERT INTO wa_messages 
+          (session_id, message_id, from_number, body, media_url, media_type, direction, status)
+          VALUES ('default', ?, ?, ?, ?, ?, 'inbound', 'delivered')
+        `, [msgId, from, body, mediaUrl || null, mediaType || null]);
+
+        await pool.execute(`
+          INSERT INTO wa_conversations (session_id, phone_number, last_message, last_activity)
+          VALUES ('default', ?, ?, NOW())
+          ON DUPLICATE KEY UPDATE 
+            last_message = VALUES(last_message),
+            last_activity = NOW(),
+            status = 'active'
+        `, [from, body]);
+      }
+
+      return responseText;
+    });
 
     res.json({
       success: true,
@@ -1479,7 +1490,9 @@ router.post('/chat', async (req: Request, res: Response) => {
     }
 
     const startTime = Date.now();
-    const result = await WhatsAppAI.processMessage(normalizedMessage, phone, []);
+    const result = await runWithPhoneLock(phone, async () => {
+      return await WhatsAppAI.processMessage(normalizedMessage, phone, []);
+    });
     const responseTime = Date.now() - startTime;
 
     res.json({
@@ -1514,11 +1527,16 @@ router.post('/reset-conversation', async (req: Request, res: Response) => {
       return;
     }
 
-    WhatsAppAI.resetConversation(phone);
+    const cleanPhone = String(phone).replace(/@.*/, '').trim();
+
+    WhatsAppAI.resetConversation(cleanPhone);
+    resetState(cleanPhone);
+    await ChatMemoryService.resetSessionCompletely(cleanPhone);
+    await resetConversationData(cleanPhone);
 
     res.json({
       success: true,
-      message: `Conversación reseteada para ${phone}`
+      message: `Conversación reseteada integralmente para ${cleanPhone}`
     });
   } catch (error) {
     res.status(500).json({

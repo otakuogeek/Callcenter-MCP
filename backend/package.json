@@ -19,6 +19,7 @@
     "sync:initial": "ts-node-dev --transpile-only scripts/syncInitial.ts",
     "sync:calls": "ts-node-dev --transpile-only scripts/syncInitial.ts",
     "test:features": "ts-node-dev --transpile-only scripts/test-new-features.ts",
+    "test:whatsapp:checklist": "NODE_ENV=production DOTENV_CONFIG_PATH=.env node -r dotenv/config -r ts-node/register/transpile-only scripts/whatsapp-guided-checklist.ts",
     "test": "jest --runInBand",
     "archive:calls": "ts-node-dev --transpile-only scripts/archive-calls.ts",
     "recalc:appointments": "ts-node-dev --transpile-only scripts/recalc-appointments.ts",
@@ -26,7 +27,10 @@
     "lint:fix": "eslint src/**/*.ts --fix --config .eslintrc.json",
     "format": "prettier --write src/**/*.ts",
     "format:check": "prettier --check src/**/*.ts",
-    "health": "curl -s http://localhost:$PORT/health || true"
+    "health": "curl -s http://localhost:$PORT/health || true",
+    "deploy:pm2": "bash ./scripts/deploy-backend.sh",
+    "deploy:pm2:tail": "bash ./scripts/deploy-backend.sh cita-central-backend 200",
+    "deploy:pm2:skip-gate": "SKIP_WHATSAPP_CHECKLIST=true bash ./scripts/deploy-backend.sh"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.12.2",

@@ -225,7 +225,7 @@ class MessageDebouncer {
     logger.info({
       phone,
       originalCount: buffer.items.length,
-      combinedLength: combinedMessage.body.length,
+        combinedLength: combinedMessage.text.length,
       waitTime: Date.now() - buffer.firstMessageTime
     }, 'Flushing buffered messages');
 

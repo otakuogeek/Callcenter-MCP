@@ -3,6 +3,7 @@
 // ==============================================
 
 import express from 'express';
+import { randomInt } from 'crypto';
 import { requireAuth, requireRole } from '../middleware/auth';
 import pool from '../db/pool';
 import { sendPatientRegistrationEmail } from '../utils/emailService';
@@ -84,6 +85,44 @@ interface PatientRegistrationData {
 }
 
 const router = express.Router();
+
+type OtpEntry = {
+  code: string;
+  patientId: number;
+  document: string;
+  phone: string;
+  expiresAt: number;
+  attempts: number;
+  requestedAt: number;
+};
+
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const otpStore = new Map<string, OtpEntry>();
+
+function normalizeDocument(document: string): string {
+  return document.trim().replace(/\s+/g, '').replace(/[.-]/g, '').toUpperCase();
+}
+
+function normalizePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length === 10 && digits.startsWith('3')) return `+57${digits}`;
+  if (digits.startsWith('57') && digits.length === 12) return `+${digits}`;
+  if (digits.startsWith('58') && digits.length >= 12) return `+${digits}`;
+  if (digits.length >= 10) return `+${digits}`;
+  return phone;
+}
+
+function maskPhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 4) return phone;
+  return `***${digits.slice(-4)}`;
+}
+
+function generateOtpCode(): string {
+  return randomInt(100000, 1000000).toString();
+}
 
 // Función auxiliar para obtener el nombre de la EPS
 async function getEpsName(epsId: number): Promise<string | undefined> {
@@ -766,6 +805,194 @@ router.get('/search', async (req, res) => {
   } catch (e) {
     console.error('Error search patients:', e);
     res.status(500).json({ success: false, message: 'Error en búsqueda de pacientes' });
+  }
+});
+
+// ===== AUTENTICACIÓN PORTAL PACIENTE POR OTP (SMS) =====
+// POST /api/patients-v2/public/auth/request-otp
+// Body: { document: string, phone?: string }
+router.post('/public/auth/request-otp', async (req, res) => {
+  try {
+    const rawDocument = (req.body?.document || '').toString();
+    const rawPhone = (req.body?.phone || '').toString();
+
+    if (!rawDocument.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'El documento es requerido'
+      });
+    }
+
+    const document = normalizeDocument(rawDocument);
+
+    const [rows] = await pool.execute(
+      `SELECT id, name, document, phone
+       FROM patients
+       WHERE status = 'Activo' AND document = ?
+       LIMIT 1`,
+      [document]
+    );
+
+    if ((rows as any[]).length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'No se encontró un paciente activo con ese documento'
+      });
+    }
+
+    const patient = (rows as any[])[0];
+    const currentPhone = patient.phone ? normalizePhone(patient.phone) : '';
+    const requestedPhone = rawPhone.trim() ? normalizePhone(rawPhone) : '';
+    const phoneToUse = requestedPhone || currentPhone;
+
+    if (!phoneToUse || phoneToUse.replace(/\D/g, '').length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'No hay un número de teléfono válido para enviar el OTP'
+      });
+    }
+
+    const existingOtp = otpStore.get(document);
+    const now = Date.now();
+    if (existingOtp && (now - existingOtp.requestedAt) < OTP_RESEND_COOLDOWN_MS) {
+      const waitSeconds = Math.ceil((OTP_RESEND_COOLDOWN_MS - (now - existingOtp.requestedAt)) / 1000);
+      return res.status(429).json({
+        success: false,
+        error: `Espere ${waitSeconds} segundos antes de solicitar un nuevo código`,
+        retry_after_seconds: waitSeconds,
+        masked_phone: maskPhone(existingOtp.phone)
+      });
+    }
+
+    if (requestedPhone && requestedPhone !== currentPhone) {
+      await pool.execute(
+        'UPDATE patients SET phone = ? WHERE id = ?',
+        [requestedPhone, patient.id]
+      );
+    }
+
+    const code = generateOtpCode();
+    const message = `Fundacion Biosanar IPS: su codigo de verificacion es ${code}. Vence en 10 minutos. No lo comparta.`;
+
+    const smsResult = await labsmobileService.sendSMS({
+      number: phoneToUse,
+      message,
+      recipient_name: patient.name,
+      patient_id: patient.id,
+      template_id: 'portal_patient_login_otp'
+    });
+
+    if (!smsResult.success) {
+      return res.status(500).json({
+        success: false,
+        error: smsResult.error || 'No se pudo enviar el código OTP'
+      });
+    }
+
+    otpStore.set(document, {
+      code,
+      patientId: patient.id,
+      document,
+      phone: phoneToUse,
+      expiresAt: now + OTP_TTL_MS,
+      attempts: 0,
+      requestedAt: now
+    });
+
+    return res.json({
+      success: true,
+      data: {
+        document,
+        patient_id: patient.id,
+        masked_phone: maskPhone(phoneToUse),
+        phone: phoneToUse,
+        expires_in_seconds: Math.floor(OTP_TTL_MS / 1000),
+        resend_cooldown_seconds: Math.floor(OTP_RESEND_COOLDOWN_MS / 1000)
+      },
+      message: 'Código OTP enviado por SMS'
+    });
+  } catch (error: any) {
+    console.error('❌ Error solicitando OTP de portal paciente:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error interno solicitando OTP',
+      details: error.message
+    });
+  }
+});
+
+// POST /api/patients-v2/public/auth/verify-otp
+// Body: { document: string, code: string }
+router.post('/public/auth/verify-otp', async (req, res) => {
+  try {
+    const rawDocument = (req.body?.document || '').toString();
+    const rawCode = (req.body?.code || '').toString();
+
+    if (!rawDocument.trim() || !rawCode.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Documento y código OTP son requeridos'
+      });
+    }
+
+    const document = normalizeDocument(rawDocument);
+    const code = rawCode.replace(/\D/g, '').trim();
+    const otpEntry = otpStore.get(document);
+
+    if (!otpEntry) {
+      return res.status(400).json({
+        success: false,
+        error: 'No hay un OTP activo para este documento'
+      });
+    }
+
+    const now = Date.now();
+    if (now > otpEntry.expiresAt) {
+      otpStore.delete(document);
+      return res.status(400).json({
+        success: false,
+        error: 'El código OTP expiró. Solicite uno nuevo.'
+      });
+    }
+
+    if (otpEntry.attempts >= OTP_MAX_ATTEMPTS) {
+      otpStore.delete(document);
+      return res.status(429).json({
+        success: false,
+        error: 'Se excedió el máximo de intentos. Solicite un nuevo código.'
+      });
+    }
+
+    if (otpEntry.code !== code) {
+      otpEntry.attempts += 1;
+      otpStore.set(document, otpEntry);
+      const remainingAttempts = Math.max(0, OTP_MAX_ATTEMPTS - otpEntry.attempts);
+
+      return res.status(400).json({
+        success: false,
+        error: `Código inválido. Intentos restantes: ${remainingAttempts}`
+      });
+    }
+
+    otpStore.delete(document);
+
+    return res.json({
+      success: true,
+      data: {
+        document,
+        patient_id: otpEntry.patientId,
+        phone: otpEntry.phone,
+        verified: true
+      },
+      message: 'OTP verificado correctamente'
+    });
+  } catch (error: any) {
+    console.error('❌ Error verificando OTP de portal paciente:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error interno verificando OTP',
+      details: error.message
+    });
   }
 });
 

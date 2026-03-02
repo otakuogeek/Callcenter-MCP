@@ -8,6 +8,7 @@
 import { useEffect, useRef, useCallback, useState, createContext, useContext } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
+import { clearAdminSession, getAdminToken } from '@/lib/authStorage';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,14 +61,14 @@ export function SessionProvider({ children }: SessionProviderProps) {
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
   // No aplicar en rutas públicas
-  const publicRoutes = ['/login', '/doctor-login', '/portal', '/verify', '/support-panel-login'];
+  const publicRoutes = ['/login', '/admin/login', '/doctor-login', '/portal', '/verify', '/support-panel-login'];
   const isPublicRoute = publicRoutes.some(route => location.pathname.startsWith(route));
 
   const handleLogout = useCallback(() => {
     setShowWarning(false);
     
     // Obtener token ANTES de borrarlo para registrar el logout
-    const token = localStorage.getItem('token');
+    const token = getAdminToken();
     
     // Registrar logout si hay token
     if (token) {
@@ -81,10 +82,9 @@ export function SessionProvider({ children }: SessionProviderProps) {
     }
     
     // Ahora sí limpiar localStorage
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
+    clearAdminSession();
     
-    navigate('/login', { replace: true });
+    navigate('/admin/login', { replace: true });
     toast({
       title: 'Sesión cerrada',
       description: 'Su sesión ha expirado por inactividad (5 minutos)',
@@ -108,7 +108,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
   }, [updateActivity, toast]);
 
   const sendHeartbeat = useCallback(async () => {
-    const token = localStorage.getItem('token');
+    const token = getAdminToken();
     if (!token) {
       console.log('[SessionProvider] No token, skipping heartbeat');
       return;
@@ -145,7 +145,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
   }, [handleLogout]);
 
   const checkInactivity = useCallback(() => {
-    const token = localStorage.getItem('token');
+    const token = getAdminToken();
     if (!token) return;
 
     const now = Date.now();
@@ -169,7 +169,7 @@ export function SessionProvider({ children }: SessionProviderProps) {
     // No ejecutar en rutas públicas
     if (isPublicRoute) return;
 
-    const token = localStorage.getItem('token');
+    const token = getAdminToken();
     if (!token) return;
 
     // Registrar eventos de actividad del usuario

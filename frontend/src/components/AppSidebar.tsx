@@ -5,6 +5,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
+import { clearAdminSession } from "@/lib/authStorage";
 
 import {
   Sidebar,
@@ -570,8 +571,8 @@ export function AppSidebar() {
             <SidebarMenuButton 
               className="hover:bg-red-50 hover:text-red-700 cursor-pointer"
               onClick={() => {
-                localStorage.removeItem('token');
-                navigate('/login');
+                clearAdminSession();
+                navigate('/admin/login');
               }}
             >
               <div className="flex items-center space-x-3">

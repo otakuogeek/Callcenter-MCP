@@ -148,6 +148,36 @@ const host = process.env.HOST || '0.0.0.0';
 
 app.listen(port, host as any, () => {
   appLogger.info('API listening', { port, host, origins });
+  
+  // ⚠️ AUTO-LIMPIEZA: Marcar disponibilidades pasadas como 'Completa' al arrancar
+  (async () => {
+    try {
+      const pool = (await import('./db')).default;
+      const [result]: any = await pool.query(
+        "UPDATE availabilities SET status = 'Completa' WHERE date < CURDATE() AND status = 'Activa'"
+      );
+      if (result.affectedRows > 0) {
+        appLogger.info({ cleaned: result.affectedRows }, '🧹 Auto-limpieza: disponibilidades pasadas marcadas como Completa');
+      }
+    } catch (err: any) {
+      appLogger.warn({ error: err.message }, 'Error en auto-limpieza de disponibilidades');
+    }
+  })();
+  
+  // ⚠️ CRON DIARIO: Repetir cada 24 horas a medianoche (UTC-5)
+  setInterval(async () => {
+    try {
+      const pool = (await import('./db')).default;
+      const [result]: any = await pool.query(
+        "UPDATE availabilities SET status = 'Completa' WHERE date < CURDATE() AND status = 'Activa'"
+      );
+      if (result.affectedRows > 0) {
+        appLogger.info({ cleaned: result.affectedRows }, '🧹 Cron: disponibilidades pasadas limpiadas');
+      }
+    } catch (err: any) {
+      appLogger.warn({ error: err.message }, 'Error en cron de limpieza');
+    }
+  }, 24 * 60 * 60 * 1000); // Cada 24 horas
 });
 
 // Graceful shutdown

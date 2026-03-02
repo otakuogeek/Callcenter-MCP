@@ -27,12 +27,14 @@ import {
   MoreVertical,
   Maximize2,
   Expand,
-  Phone
+  Phone,
+  FileText
 } from "lucide-react";
 import { format } from "date-fns";
 import { es } from "date-fns/locale";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateTimeColombia } from "@/utils/dateHelpers";
+import FileBulkSMSModal from "@/components/FileBulkSMSModal";
 import {
   Select,
   SelectContent,
@@ -96,6 +98,7 @@ const SMS = () => {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isFileBulkOpen, setIsFileBulkOpen] = useState(false);
   const [patientSearch, setPatientSearch] = useState("");
   const [selectedPatients, setSelectedPatients] = useState<Patient[]>([]);
   const [message, setMessage] = useState("");
@@ -451,6 +454,16 @@ const SMS = () => {
                     Formatear BD
                   </>
                 )}
+              </Button>
+
+              {/* File Bulk SMS Button */}
+              <Button 
+                variant="outline"
+                onClick={() => setIsFileBulkOpen(true)}
+                className="border-orange-600 text-orange-600 hover:bg-orange-50"
+              >
+                <FileText className="w-4 h-4 mr-2" />
+                SMS desde Archivo
               </Button>
 
               {/* Send Message Button */}
@@ -949,6 +962,15 @@ const SMS = () => {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Modal SMS masivo desde archivo */}
+      <FileBulkSMSModal
+        isOpen={isFileBulkOpen}
+        onClose={() => setIsFileBulkOpen(false)}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['sms-history'] });
+        }}
+      />
 
     </SidebarProvider>
     </TooltipProvider>

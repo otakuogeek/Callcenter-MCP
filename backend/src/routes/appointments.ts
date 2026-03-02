@@ -879,7 +879,8 @@ router.get('/conflicts', requireAuth, async (req: Request, res: Response) => {
 // Recalcular booked_slots de todas las disponibilidades (uso administrativo)
 router.post('/recalc', requireAuth, async (_req: Request, res: Response) => {
   try {
-    const [availRows]: any = await pool.query('SELECT id FROM availabilities');
+    // ⚠️ OPTIMIZACIÓN: Solo recalcular agendas actuales y futuras
+    const [availRows]: any = await pool.query('SELECT id FROM availabilities WHERE date >= CURDATE()');
     for (const a of (Array.isArray(availRows) ? availRows : [])) {
       try {
         await pool.query('CALL recalc_availability_slots(?)', [a.id]);
@@ -1428,7 +1429,7 @@ router.post('/waiting-list/by-specialty', requireAuth, async (req: Request, res:
       SELECT COUNT(*) + 1 as queue_position
       FROM appointments_waiting_list
       WHERE (specialty_id = ? OR availability_id IN (
-        SELECT id FROM availabilities WHERE specialty_id = ?
+        SELECT id FROM availabilities WHERE specialty_id = ? AND date >= CURDATE()
       ))
       AND status = 'pending'
     `, [specialty_id, specialty_id]);
@@ -1970,14 +1971,14 @@ router.post('/waiting-list/assign', requireAuth, async (req: Request, res: Respo
       INNER JOIN specialties s ON a.specialty_id = s.id
       INNER JOIN doctors d ON a.doctor_id = d.id
       INNER JOIN locations l ON a.location_id = l.id
-      WHERE a.id = ? AND a.status = 'Activa' AND (a.capacity - a.booked_slots) > 0`,
+      WHERE a.id = ? AND a.status = 'Activa' AND (a.capacity - a.booked_slots) > 0 AND a.date >= CURDATE()`,
       [availability_id]
     );
 
     if (!newAvailability || newAvailability.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'La agenda seleccionada no está disponible o no tiene cupos'
+        message: 'La agenda seleccionada no está disponible, no tiene cupos o la fecha ya pasó'
       });
     }
 

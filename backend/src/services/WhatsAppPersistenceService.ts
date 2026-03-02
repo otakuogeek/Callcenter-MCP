@@ -125,14 +125,78 @@ export async function getLastScheduledAppointment(
 ): Promise<ScheduledAppointmentDB | null> {
   try {
     const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT * FROM whatsapp_scheduled_appointments 
-       WHERE phone = ? AND status IN ('scheduled', 'confirmed')
-       ORDER BY created_at DESC LIMIT 1`,
+      `SELECT wsa.*
+       FROM whatsapp_scheduled_appointments wsa
+       LEFT JOIN appointments a ON a.appointment_id = wsa.appointment_id
+       WHERE wsa.phone = ?
+         AND wsa.status IN ('scheduled', 'confirmed')
+         AND (
+           a.appointment_id IS NULL
+           OR COALESCE(a.status, '') NOT IN ('Cancelada', 'cancelled', 'canceled', 'Cancelled')
+         )
+       ORDER BY wsa.created_at DESC
+       LIMIT 1`,
       [phone]
     );
     return rows.length > 0 ? rows[0] as ScheduledAppointmentDB : null;
   } catch (error: any) {
     persistenceLogger.error({ error: error.message }, 'Error obteniendo última cita');
+    return null;
+  }
+}
+
+/**
+ * Obtiene una cita activa reciente para deduplicación contextual.
+ * Permite filtrar por paciente, availability y especialidad para evitar
+ * bloquear por citas antiguas/no relacionadas.
+ */
+export async function getRecentActiveScheduledAppointment(
+  phone: string,
+  minutesAgo: number = 5,
+  filters?: {
+    patientId?: number;
+    availabilityId?: number;
+    specialtyName?: string;
+  }
+): Promise<ScheduledAppointmentDB | null> {
+  try {
+    const whereClauses: string[] = [
+      'wsa.phone = ?',
+      'wsa.status IN (\'scheduled\', \'confirmed\')',
+      'wsa.created_at > DATE_SUB(NOW(), INTERVAL ? MINUTE)',
+      `(a.appointment_id IS NULL OR COALESCE(a.status, '') NOT IN ('Cancelada', 'cancelled', 'canceled', 'Cancelled'))`
+    ];
+
+    const params: any[] = [phone, minutesAgo];
+
+    if (filters?.patientId) {
+      whereClauses.push('wsa.patient_id = ?');
+      params.push(filters.patientId);
+    }
+
+    if (filters?.availabilityId) {
+      whereClauses.push('wsa.availability_id = ?');
+      params.push(filters.availabilityId);
+    }
+
+    if (filters?.specialtyName) {
+      whereClauses.push("LOWER(COALESCE(wsa.specialty_name, '')) = LOWER(?)");
+      params.push(filters.specialtyName);
+    }
+
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT wsa.*
+       FROM whatsapp_scheduled_appointments wsa
+       LEFT JOIN appointments a ON a.appointment_id = wsa.appointment_id
+       WHERE ${whereClauses.join(' AND ')}
+       ORDER BY wsa.created_at DESC
+       LIMIT 1`,
+      params
+    );
+
+    return rows.length > 0 ? rows[0] as ScheduledAppointmentDB : null;
+  } catch (error: any) {
+    persistenceLogger.error({ error: error.message }, 'Error obteniendo cita activa reciente');
     return null;
   }
 }
@@ -221,16 +285,8 @@ export async function wasScheduleAppointmentExecuted(
   minutesAgo: number = 5
 ): Promise<boolean> {
   try {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT id FROM whatsapp_tool_calls 
-       WHERE phone = ? 
-         AND tool_name = 'scheduleAppointment' 
-         AND success = 1
-         AND created_at > DATE_SUB(NOW(), INTERVAL ? MINUTE)
-       LIMIT 1`,
-      [phone, minutesAgo]
-    );
-    return rows.length > 0;
+    const recent = await getRecentActiveScheduledAppointment(phone, minutesAgo);
+    return !!recent;
   } catch (error: any) {
     persistenceLogger.error({ error: error.message }, 'Error verificando scheduleAppointment');
     return false;

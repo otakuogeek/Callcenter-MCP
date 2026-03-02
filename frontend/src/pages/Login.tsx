@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { HeadphonesIcon, Eye, EyeOff, Shield, CheckCircle, AlertCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
+import { hasAdminSession } from "@/lib/authStorage";
 import { EnhancedAnimatedContainer } from "@/components/ui/enhanced-animated-container";
 import { AnimatedForm, AnimatedInputField } from "@/components/ui/animated-form";
 import { AnimatedButton } from "@/components/ui/animated-button";
@@ -25,6 +26,12 @@ const Login = () => {
   const { toast } = useToast();
 
   const { login } = useAuth();
+
+  useEffect(() => {
+    if (hasAdminSession()) {
+      navigate('/admin', { replace: true });
+    }
+  }, [navigate]);
 
   // Validación en tiempo real
   const validateEmail = (email: string) => {

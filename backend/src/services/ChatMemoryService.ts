@@ -500,8 +500,18 @@ export async function resetSession(phone: string): Promise<void> {
     await pool.execute(
       `UPDATE whatsapp_chat_sessions 
        SET current_state = 'idle', 
+           patient_id = NULL,
+           patient_name = NULL,
+           patient_document = NULL,
            last_specialty_id = NULL, 
            last_location_id = NULL,
+           availability_id = NULL,
+           selected_doctor = NULL,
+           selected_doctor_id = NULL,
+           selected_date = NULL,
+           selected_time = NULL,
+           specialty_name = NULL,
+           last_appointment_id = NULL,
            metadata = NULL,
            updated_at = NOW()
        WHERE phone = ?`,
@@ -511,6 +521,32 @@ export async function resetSession(phone: string): Promise<void> {
     logger.info({ phone: cleanPhone }, 'Sesión reseteada');
   } catch (error: any) {
     logger.error({ error: error.message, phone: cleanPhone }, 'Error reseteando sesión');
+  }
+}
+
+/**
+ * Resetea completamente la sesión y elimina historial de mensajes/resúmenes.
+ */
+export async function resetSessionCompletely(phone: string): Promise<void> {
+  const cleanPhone = phone.replace(/@.*/, '');
+
+  try {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      'SELECT id FROM whatsapp_chat_sessions WHERE phone = ? LIMIT 1',
+      [cleanPhone]
+    );
+
+    if (rows.length > 0) {
+      const sessionId = rows[0].id;
+
+      await pool.execute('DELETE FROM whatsapp_chat_messages WHERE session_id = ?', [sessionId]);
+      await pool.execute('DELETE FROM whatsapp_chat_summaries WHERE session_id = ?', [sessionId]);
+    }
+
+    await resetSession(cleanPhone);
+    logger.info({ phone: cleanPhone }, 'Sesión completamente reseteada (incluyendo historial)');
+  } catch (error: any) {
+    logger.error({ error: error.message, phone: cleanPhone }, 'Error en reset completo de sesión');
   }
 }
 
@@ -593,6 +629,7 @@ export default {
   generateContextPrompt,
   messagesToAIFormat,
   resetSession,
+  resetSessionCompletely,
   pruneOldMessages,
   getChatStats
 };

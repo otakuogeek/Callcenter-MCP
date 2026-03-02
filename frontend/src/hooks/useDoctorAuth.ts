@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
+import { clearDoctorSession, getDoctorToken, setDoctorSession } from '@/lib/authStorage';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
@@ -34,10 +35,7 @@ export function useDoctorAuth() {
 
       const { token, doctor } = response.data.data;
       
-      // Guardar token y datos del doctor en localStorage
-      localStorage.setItem('doctorToken', token);
-      localStorage.setItem('doctor', JSON.stringify(doctor));
-      localStorage.setItem('isDoctorAuthenticated', 'true');
+      setDoctorSession(token, doctor);
       
       return doctor;
     } catch (e: any) {
@@ -50,7 +48,7 @@ export function useDoctorAuth() {
   }
 
   async function logout() {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (token) {
       try {
@@ -62,14 +60,11 @@ export function useDoctorAuth() {
       }
     }
     
-    // Limpiar localStorage
-    localStorage.removeItem('doctorToken');
-    localStorage.removeItem('doctor');
-    localStorage.removeItem('isDoctorAuthenticated');
+    clearDoctorSession();
   }
 
   async function changePassword(currentPassword: string, newPassword: string) {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -95,7 +90,7 @@ export function useDoctorAuth() {
   }
 
   async function getMe() {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -126,7 +121,7 @@ export function useDoctorAuth() {
     availability_id?: number;
     include_cancelled?: 'true' | 'false';
   }) {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -146,6 +141,8 @@ export function useDoctorAuth() {
       if (filters?.availability_id) params.append('availability_id', filters.availability_id.toString());
       if (filters?.include_cancelled) params.append('include_cancelled', filters.include_cancelled);
 
+      // Default limit alto para cargar suficientes citas
+      if (!filters?.limit) params.append('limit', '500');
       const url = `${API_URL}/doctor-auth/appointments?${params.toString()}`;
       console.log('🌐 URL de solicitud:', url);
 
@@ -169,7 +166,7 @@ export function useDoctorAuth() {
   }
 
   async function getTodayAppointments() {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -197,7 +194,7 @@ export function useDoctorAuth() {
   }
 
   async function getStats() {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -226,7 +223,7 @@ export function useDoctorAuth() {
 
   // Buscar pacientes
   async function searchPatients(query: string) {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token || !query || query.length < 2) {
       return [];
@@ -255,7 +252,7 @@ export function useDoctorAuth() {
 
   // Obtener historial completo del paciente
   async function getPatientHistory(patientId: number) {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -284,7 +281,7 @@ export function useDoctorAuth() {
 
   // Crear historia clínica
   async function createMedicalRecord(data: any) {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -314,7 +311,7 @@ export function useDoctorAuth() {
 
   // Transcribir audio a texto usando Whisper
   async function transcribeAudio(audioBlob: Blob): Promise<string> {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     
     if (!token) {
       throw new Error('No autenticado');
@@ -350,7 +347,7 @@ export function useDoctorAuth() {
 
   // Actualizar estado de una cita (por ejemplo: Confirmada -> Completada / Cancelada)
   async function updateAppointmentStatus(appointmentId: number, status: 'Completada' | 'Cancelada' | 'Confirmada' | 'Pendiente', extra?: { cancellation_reason?: string }) {
-    const token = localStorage.getItem('doctorToken');
+    const token = getDoctorToken();
     if (!token) throw new Error('No autenticado');
 
     setLoading(true);
@@ -375,6 +372,78 @@ export function useDoctorAuth() {
     }
   }
 
+  // Obtener estadísticas extendidas para el dashboard mejorado
+  async function getEnhancedStats() {
+    const token = getDoctorToken();
+    if (!token) throw new Error('No autenticado');
+
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await axios.get(
+        `${API_URL}/doctor-auth/enhanced-stats`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return response.data.data;
+    } catch (e: any) {
+      const errorMessage = e?.response?.data?.error || 'Error al obtener estadísticas extendidas';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Obtener historias clínicas del doctor (propias)
+  async function getMyMedicalRecords(filters?: { patient_id?: number; status?: string; limit?: number; offset?: number }) {
+    const token = getDoctorToken();
+    if (!token) throw new Error('No autenticado');
+
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (filters?.patient_id) params.append('patient_id', filters.patient_id.toString());
+      if (filters?.status) params.append('status', filters.status);
+      if (filters?.limit) params.append('limit', filters.limit.toString());
+      if (filters?.offset) params.append('offset', filters.offset.toString());
+
+      const response = await axios.get(
+        `${API_URL}/medical-records?${params.toString()}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return response.data.data || [];
+    } catch (e: any) {
+      const errorMessage = e?.response?.data?.error || 'Error al obtener historias clínicas';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Obtener agendas del doctor con datos de ocupación
+  async function getMyAvailabilities() {
+    const token = getDoctorToken();
+    if (!token) throw new Error('No autenticado');
+
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await axios.get(
+        `${API_URL}/doctor-auth/my-availabilities`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      return response.data.data;
+    } catch (e: any) {
+      const errorMessage = e?.response?.data?.error || 'Error al obtener agendas';
+      setError(errorMessage);
+      throw new Error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return { 
     login, 
     logout, 
@@ -383,9 +452,12 @@ export function useDoctorAuth() {
     getAppointments,
     getTodayAppointments,
     getStats,
+    getEnhancedStats,
+    getMyAvailabilities,
     searchPatients,
     getPatientHistory,
     createMedicalRecord,
+    getMyMedicalRecords,
     transcribeAudio,
     updateAppointmentStatus,
     loading, 

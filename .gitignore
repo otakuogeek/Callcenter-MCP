@@ -110,6 +110,15 @@ coverage/
 backend/uploads/*
 !backend/uploads/.gitkeep
 
+# WhatsApp Auth credentials (SENSITIVE)
+backend/.whatsapp-auth/
+
+# Conversation data
+data/conversations/
+
+# Cluster monitor logs
+cluster-monitor/logs/
+
 # Python venvs
 venv/
 *.pyc
@@ -118,6 +127,9 @@ __pycache__/
 # Logs
 backend/logs/*
 !backend/logs/.gitkeep
+
+# Backup files
+*.bak
 
 # IDE
 .vscode/

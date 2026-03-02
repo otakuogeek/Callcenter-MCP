@@ -587,7 +587,7 @@ const UNIFIED_TOOLS = [
   },
   {
     name: 'scheduleAppointment',
-    description: 'Asigna una cita médica al paciente. CITAS DOBLES EN ODONTOLOGÍA: Si el motivo contiene "cita doble", "doble cita" o "2 cupos", se reservan automáticamente 2 cupos consecutivos. Si no hay espacio suficiente, se sugiere otro día. Un paciente puede tener múltiples citas activas en DIFERENTES especialidades, pero solo 1 cita activa por especialidad. Si ya tiene una cita en la misma especialidad, se cancela automáticamente. Medicina General (ID 1) y Odontología (ID 5) permiten agendar en CUALQUIER DÍA mientras exista disponibilidad. Otras especialidades requieren que la fecha coincida exactamente con la availability.',
+    description: 'Asigna una cita médica al paciente. Si no se proporciona availability_id, registra al paciente en lista de espera por specialty_id (modo híbrido). CITAS DOBLES EN ODONTOLOGÍA: Si el motivo contiene "cita doble", "doble cita" o "2 cupos", se reservan automáticamente 2 cupos consecutivos. Si no hay espacio suficiente, se sugiere otro día. Un paciente puede tener múltiples citas activas en DIFERENTES especialidades, pero solo 1 cita activa por especialidad. Si ya tiene una cita en la misma especialidad, se cancela automáticamente. Medicina General (ID 1) y Odontología (ID 5) permiten agendar en CUALQUIER DÍA mientras exista disponibilidad. Otras especialidades requieren que la fecha coincida exactamente con la availability.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -597,7 +597,11 @@ const UNIFIED_TOOLS = [
         },
         availability_id: {
           type: 'number',
-          description: 'ID de la disponibilidad (obtenido de getAvailableAppointments o checkAvailabilityQuota)'
+          description: 'ID de la disponibilidad (obtenido de getAvailableAppointments o checkAvailabilityQuota). Opcional si se usará lista de espera por especialidad.'
+        },
+        specialty_id: {
+          type: 'number',
+          description: 'ID de la especialidad. Requerido cuando no se envía availability_id para registrar lista de espera.'
         },
         scheduled_date: {
           type: 'string',
@@ -624,7 +628,7 @@ const UNIFIED_TOOLS = [
           default: 'Normal'
         }
       },
-      required: ['patient_id', 'availability_id', 'reason']
+      required: ['patient_id', 'reason']
     }
   },
   {
@@ -2235,6 +2239,8 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
     const info = (specialtyInfo as any[])[0];
 
     // 2. Obtener TODAS las availabilities de esta especialidad en esta sede
+    // ⚠️ SIEMPRE filtrar fechas pasadas
+    const nowTZ = getNowInTimeZone();
     let availQuery = `
       SELECT 
         a.id as availability_id,
@@ -2251,9 +2257,10 @@ async function checkAvailabilityQuota(args: any): Promise<any> {
       WHERE a.specialty_id = ? 
         AND a.location_id = ? 
         AND a.status = 'Activa'
+        AND a.date >= ?
     `;
 
-    const queryParams: any[] = [specialty_id, location_id];
+    const queryParams: any[] = [specialty_id, location_id, nowTZ.date];
 
     if (day_date) {
       availQuery += ' AND a.date >= ?';
@@ -2430,6 +2437,7 @@ async function getAvailableTimeSlots(args: any): Promise<any> {
     }
 
     // 1. Obtener información de la availability
+    // ⚠️ FILTRO: Solo permitir agendas de hoy o futuras
     const [availInfo] = await connection.execute(`
       SELECT 
         a.id,
@@ -2448,7 +2456,7 @@ async function getAvailableTimeSlots(args: any): Promise<any> {
       INNER JOIN doctors d ON a.doctor_id = d.id
       INNER JOIN specialties s ON a.specialty_id = s.id
       INNER JOIN locations l ON a.location_id = l.id
-      WHERE a.id = ? AND a.status = 'Activa'
+      WHERE a.id = ? AND a.status = 'Activa' AND a.date >= CURDATE()
     `, [availability_id]);
 
     if ((availInfo as any[]).length === 0) {
@@ -2601,12 +2609,34 @@ async function scheduleAppointment(args: any): Promise<any> {
     const {
       patient_id,
       availability_id,
+      specialty_id,
       scheduled_date: providedScheduledDate,
       appointment_type = 'Presencial',
       reason,
       notes,
       priority_level = 'Normal'
     } = args;
+
+    // Modo híbrido: si no llega availability_id, registrar lista de espera por especialidad
+    if (!availability_id) {
+      await connection.rollback();
+
+      if (!specialty_id) {
+        return {
+          success: false,
+          error: 'Para agendar se requiere availability_id, o specialty_id para lista de espera.'
+        };
+      }
+
+      return await addToWaitingList({
+        patient_id,
+        specialty_id,
+        reason,
+        notes,
+        priority_level,
+        appointment_type
+      });
+    }
 
     // 1. Validar que el paciente existe y obtener su teléfono
     const [patientCheck] = await connection.execute(
@@ -6680,9 +6710,13 @@ async function getAvailabilities(args: any) {
   const filters: string[] = [];
   const values: any[] = [];
 
+  // ⚠️ SIEMPRE filtrar fechas pasadas por defecto (a menos que se pida una fecha específica)
   if (args.date) {
     filters.push('av.date = ?');
     values.push(args.date);
+  } else if (!args.include_past) {
+    // Por defecto, solo mostrar disponibilidades de hoy en adelante
+    filters.push('av.date >= CURDATE()');
   }
 
   if (args.doctor_id) {

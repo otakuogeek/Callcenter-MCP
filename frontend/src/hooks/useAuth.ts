@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import api from '@/lib/api';
+import { clearAdminSession, setAdminSession } from '@/lib/authStorage';
 
 export function useAuth() {
   const [loading, setLoading] = useState(false);
@@ -9,9 +10,7 @@ export function useAuth() {
     setLoading(true); setError(null);
     try {
       const { token, user } = await api.login(email, password);
-      localStorage.setItem('token', token);
-      localStorage.setItem('user', JSON.stringify(user));
-      localStorage.setItem('isAuthenticated', 'true');
+      setAdminSession(token, user);
       return user;
     } catch (e: any) {
       setError(e?.message || 'Error de autenticación');
@@ -22,9 +21,7 @@ export function useAuth() {
   }
 
   function logout() {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    localStorage.removeItem('isAuthenticated');
+    clearAdminSession();
   }
 
   return { login, logout, loading, error };

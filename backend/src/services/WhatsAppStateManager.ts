@@ -10,6 +10,7 @@
  */
 
 import pino from 'pino';
+import { saveStateToRedis, loadStateFromRedis, deleteStateFromRedis } from './WhatsAppStateRedis';
 
 // Logger estructurado para StateManager
 const stateLogger = pino({
@@ -23,6 +24,7 @@ export enum ConversationState {
   AWAITING_PATIENT_DATA = 'awaiting_patient_data',
   AWAITING_PHONE_CONFIRMATION = 'awaiting_phone_confirmation',
   AWAITING_SPECIALTY = 'awaiting_specialty',
+  AWAITING_LOCATION = 'awaiting_location',  // Selección de sede
   AWAITING_DOCTOR_SELECTION = 'awaiting_doctor_selection',  // NUEVO: Selección de doctor
   AWAITING_DATE = 'awaiting_date',
   AWAITING_TIME_PREFERENCE = 'awaiting_time_preference',  // NUEVO: Preferencia mañana/tarde
@@ -33,13 +35,16 @@ export enum ConversationState {
   CANCELING_APPOINTMENT = 'canceling_appointment',  // NUEVO: Cancelando cita
   RESCHEDULING = 'rescheduling',  // NUEVO: Reprogramando cita
   WAITING_LIST = 'waiting_list',  // NUEVO: Gestionando lista de espera
+  AWAITING_BENEFICIARY = 'awaiting_beneficiary',  // NUEVO: ¿La cita es para ti o para otra persona?
   COMPLETED = 'completed',
   ERROR = 'error'
 }
 
-interface StateContext {
+export interface StateContext {
   currentState: ConversationState;
   previousState?: ConversationState;
+  suppressAutoIdentifyUntil?: number; // Si existe y es futuro, NO auto-identificar por teléfono
+  confirmationRequestedAt?: number; // Timestamp cuando se pidió confirmar cita (AWAITING_CONFIRMATION)
   patientId?: number;
   patientName?: string;
   patientDocument?: string;
@@ -50,6 +55,8 @@ interface StateContext {
   specialtyName?: string;  // NUEVO: Nombre de especialidad
   selectedDoctor?: string;  // NUEVO: Doctor seleccionado
   selectedDoctorId?: number;  // NUEVO: ID del doctor seleccionado
+  selectedLocation?: string;  // Nombre de la sede seleccionada
+  selectedLocationId?: number;  // ID de la sede seleccionada
   selectedDate?: string;
   selectedTime?: string;
   scheduledDatetime?: string;  // Fecha y hora completa para scheduleAppointment (YYYY-MM-DD HH:MM:SS)
@@ -62,6 +69,22 @@ interface StateContext {
   lastAppointmentId?: number;  // ID de la última cita agendada para evitar duplicados
   appointmentToCancel?: number;  // NUEVO: ID de cita a cancelar
   appointmentToReschedule?: number;  // NUEVO: ID de cita a reprogramar
+  pendingIntent?: string;  // Intent pendiente (ej: 'cancel') para continuar tras identificar paciente
+  reason?: string;  // Motivo de consulta (guardado entre AWAITING_REASON y AWAITING_CONFIRMATION)
+  cancelAll?: boolean;  // Flag para cancelación masiva de citas
+  // Beneficiario (tercero)
+  isThirdParty?: boolean;               // ¿La cita es para otra persona?
+  requestorPatientId?: number;           // ID del paciente que llama (solicitante)
+  requestorPatientName?: string;         // Nombre del solicitante
+  requestorPatientDocument?: string;     // Cédula del solicitante
+  // Datos de registro de paciente nuevo (flujo conversacional)
+  regStep?: 'name' | 'birth_date' | 'gender' | 'phone' | 'eps' | 'confirm';
+  regName?: string;
+  regBirthDate?: string;            // YYYY-MM-DD
+  regGender?: string;               // M / F
+  regPhone?: string;
+  regEpsId?: number;
+  regEpsName?: string;
   retryCount: number;
   lastError?: string;
   timestamp: number;
@@ -85,17 +108,81 @@ const MAX_STATE_CONTEXTS = 1000; // Límite máximo de estados en memoria
 /**
  * Obtener o crear contexto de estado
  */
+/**
+ * Obtener o crear contexto de estado.
+ * L1: Map en memoria (microsegundos)
+ * L2: Redis (fallback tras restart)
+ */
 export function getStateContext(phone: string): StateContext {
   let context = stateContexts.get(phone);
 
   // Limpiar si el estado está muy antiguo
   if (context && (Date.now() - context.timestamp) > STATE_TIMEOUT) {
     stateLogger.info({ phone, lastState: context.currentState }, 'State expired, resetting');
+    deleteStateFromRedis(phone).catch(() => {}); // Limpiar Redis también
     context = undefined;
   }
 
   if (!context) {
     // Evict oldest entries if at capacity
+    if (stateContexts.size >= MAX_STATE_CONTEXTS) {
+      let oldestPhone = '';
+      let oldestTime = Infinity;
+      for (const [p, c] of stateContexts.entries()) {
+        if (c.timestamp < oldestTime) {
+          oldestTime = c.timestamp;
+          oldestPhone = p;
+        }
+      }
+      if (oldestPhone) stateContexts.delete(oldestPhone);
+    }
+
+    const now = Date.now();
+    context = {
+      currentState: ConversationState.IDLE,
+      retryCount: 0,
+      timestamp: now,
+      createdAt: now,
+      stateTransitions: 0
+    };
+    stateContexts.set(phone, context);
+  }
+
+  return context;
+}
+
+/**
+ * Versión async de getStateContext que intenta recuperar de Redis
+ * si no hay estado en memoria (post-restart).
+ * Usar desde processWhatsAppMessage antes del flujo principal.
+ */
+export async function getStateContextAsync(phone: string): Promise<StateContext> {
+  let context = stateContexts.get(phone);
+
+  // Limpiar si está expirado
+  if (context && (Date.now() - context.timestamp) > STATE_TIMEOUT) {
+    stateLogger.info({ phone, lastState: context.currentState }, 'State expired, resetting');
+    deleteStateFromRedis(phone).catch(() => {});
+    context = undefined;
+  }
+
+  // Si no hay en memoria, intentar Redis (post-restart recovery)
+  if (!context) {
+    try {
+      const redisState = await loadStateFromRedis(phone);
+      if (redisState && redisState.currentState && (Date.now() - redisState.timestamp) <= STATE_TIMEOUT) {
+        context = redisState as StateContext;
+        stateContexts.set(phone, context);
+        stateLogger.info({ phone, state: context.currentState }, '🔄 State restored from Redis after restart');
+        return context;
+      }
+    } catch (err) {
+      stateLogger.warn({ phone }, 'Failed to load state from Redis, creating new');
+    }
+  }
+
+  if (!context) {
+    // Evict si está lleno
     if (stateContexts.size >= MAX_STATE_CONTEXTS) {
       let oldestPhone = '';
       let oldestTime = Infinity;
@@ -168,6 +255,9 @@ export function updateState(
   }
 
   stateContexts.set(phone, context);
+
+  // Write-through: persistir en Redis (fire-and-forget)
+  saveStateToRedis(phone, context).catch(() => {});
 }
 
 /**
@@ -204,6 +294,9 @@ export function resetState(phone: string): void {
     stateTransitions: 0
   };
   stateContexts.set(phone, context);
+
+  // Limpiar Redis
+  deleteStateFromRedis(phone).catch(() => {});
 
   stateLogger.info({
     phone,

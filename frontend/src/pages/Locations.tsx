@@ -319,8 +319,22 @@ const Locations = () => {
     })();
   }, []);
 
+  // Mapeo de status inglés → español para mostrar en UI
+  const STATUS_DISPLAY: Record<string, string> = {
+    'active': 'Activa',
+    'maintenance': 'En Mantenimiento',
+    'inactive': 'Inactiva',
+    // Aceptar también español directo por retrocompatibilidad
+    'Activa': 'Activa',
+    'En Mantenimiento': 'En Mantenimiento',
+    'Inactiva': 'Inactiva',
+  };
+
+  const displayStatus = (status: string) => STATUS_DISPLAY[status] || status;
+
   const getStatusColor = (status: string) => {
-    switch (status) {
+    const normalized = STATUS_DISPLAY[status] || status;
+    switch (normalized) {
       case "Activa":
         return "bg-success-100 text-success-800";
       case "En Mantenimiento":
@@ -633,7 +647,7 @@ const Locations = () => {
                           className={`${getStatusColor(location.status)} cursor-pointer hover:opacity-80`}
                           onClick={() => handleStatusConfig(location)}
                         >
-                          {location.status}
+                          {displayStatus(location.status)}
                         </Badge>
                         <Button
                           variant="ghost"
@@ -739,7 +753,7 @@ const Locations = () => {
                 <div>
                   <Label>Estado Actual</Label>
                   <Badge className={`${getStatusColor(selectedLocation?.status || "")} ml-2`}>
-                    {selectedLocation?.status}
+                    {displayStatus(selectedLocation?.status || "")}
                   </Badge>
                 </div>
                 
@@ -991,7 +1005,7 @@ const Locations = () => {
                     <div>
                       <Label className="text-sm font-medium text-gray-700">Estado</Label>
                       <Badge className={getStatusColor(selectedLocation.status)}>
-                        {selectedLocation.status}
+                        {displayStatus(selectedLocation.status)}
                       </Badge>
                     </div>
                   </div>

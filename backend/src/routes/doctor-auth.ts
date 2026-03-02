@@ -383,7 +383,7 @@ router.get('/appointments', async (req: Request, res: Response) => {
     }
 
     const doctorId = decoded.id;
-    const { status, date, limit = 50, include_cancelled = 'false', availability_id } = req.query;
+    const { status, date, limit = 500, include_cancelled = 'false', availability_id } = req.query;
 
     // Query base
     let query = `
@@ -397,7 +397,10 @@ router.get('/appointments', async (req: Request, res: Response) => {
         a.status,
         a.reason,
         a.notes,
+        a.appointment_source,
         a.created_at,
+        a.created_by_user_id,
+        u.name as created_by_name,
         p.name as patient_name,
         p.document as patient_document,
         p.phone as patient_phone,
@@ -409,6 +412,7 @@ router.get('/appointments', async (req: Request, res: Response) => {
       LEFT JOIN patients p ON a.patient_id = p.id
       LEFT JOIN specialties s ON a.specialty_id = s.id
       LEFT JOIN locations l ON a.location_id = l.id
+      LEFT JOIN users u ON a.created_by_user_id = u.id
       WHERE a.doctor_id = ?
     `;
 
@@ -655,6 +659,362 @@ router.get('/stats', async (req: Request, res: Response) => {
       success: false,
       error: 'Error al obtener estadísticas'
     });
+  }
+});
+
+/**
+ * GET /api/doctor-auth/enhanced-stats
+ * Estadísticas extendidas para el dashboard del doctor
+ */
+router.get('/enhanced-stats', async (req: Request, res: Response) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ success: false, error: 'Token no proporcionado' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'supersecretkey_at_least_16_characters_for_security') as any;
+    if (decoded.type !== 'doctor') {
+      return res.status(403).json({ success: false, error: 'No autorizado' });
+    }
+
+    const doctorId = decoded.id;
+
+    // ---- Ejecutar todas las queries en paralelo ----
+    const [
+      [todayRows],
+      [weekRows],
+      [monthRows],
+      [totalPatientsRows],
+      [completedRows],
+      [pendingTodayRows],
+      [confirmedTodayRows],
+      [completedTodayRows],
+      [nextAppointmentRows],
+      [recentPatientsRows],
+      [recordsCountRows],
+      [avgDurationRows],
+      [weeklyTrendRows]
+    ] = await Promise.all([
+      // Citas de hoy (no canceladas, sin sistema-pausa)
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND DATE(a.scheduled_at) = CURDATE()
+           AND a.status != 'Cancelada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Citas esta semana
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND YEARWEEK(a.scheduled_at, 1) = YEARWEEK(CURDATE(), 1)
+           AND a.status != 'Cancelada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Citas este mes
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND MONTH(a.scheduled_at) = MONTH(CURDATE())
+           AND YEAR(a.scheduled_at) = YEAR(CURDATE())
+           AND a.status != 'Cancelada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Total pacientes únicos
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(DISTINCT a.patient_id) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND a.status != 'Cancelada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Citas completadas total
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND a.status = 'Completada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Pendientes hoy
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND DATE(a.scheduled_at) = CURDATE()
+           AND a.status = 'Pendiente' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Confirmadas hoy
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND DATE(a.scheduled_at) = CURDATE()
+           AND a.status = 'Confirmada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Completadas hoy
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND DATE(a.scheduled_at) = CURDATE()
+           AND a.status = 'Completada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Próxima cita
+      pool.query<RowDataPacket[]>(
+        `SELECT 
+           a.id,
+           DATE_FORMAT(DATE(a.scheduled_at), '%Y-%m-%d') as scheduled_date,
+           TIME_FORMAT(TIME(a.scheduled_at), '%H:%i') as start_time,
+           p.name as patient_name,
+           s.name as specialty_name
+         FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         LEFT JOIN specialties s ON a.specialty_id = s.id
+         WHERE a.doctor_id = ? AND a.scheduled_at >= NOW()
+           AND a.status IN ('Pendiente', 'Confirmada') AND p.document != 'SISTEMA-PAUSA'
+         ORDER BY a.scheduled_at ASC LIMIT 1`,
+        [doctorId]
+      ),
+      // Últimos 5 pacientes atendidos
+      pool.query<RowDataPacket[]>(
+        `SELECT DISTINCT
+           p.id as patient_id, p.name, p.document, p.phone,
+           p.birth_date, p.gender,
+           TIMESTAMPDIFF(YEAR, p.birth_date, CURDATE()) as age,
+           ie.name as eps_name,
+           MAX(a.scheduled_at) as last_visit,
+           (SELECT COUNT(*) FROM appointments a2 WHERE a2.patient_id = p.id AND a2.doctor_id = ? AND a2.status != 'Cancelada') as visit_count
+         FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         LEFT JOIN eps ie ON p.insurance_eps_id = ie.id
+         WHERE a.doctor_id = ? AND a.status = 'Completada' AND p.document != 'SISTEMA-PAUSA'
+         GROUP BY p.id, p.name, p.document, p.phone, p.birth_date, p.gender, ie.name
+         ORDER BY last_visit DESC LIMIT 5`,
+        [doctorId, doctorId]
+      ),
+      // Total de historias clínicas creadas
+      pool.query<RowDataPacket[]>(
+        `SELECT COUNT(*) as count FROM medical_records WHERE doctor_id = ?`,
+        [doctorId]
+      ),
+      // Duración promedio de consulta (basado en duration_minutes)
+      pool.query<RowDataPacket[]>(
+        `SELECT AVG(a.duration_minutes) as avg_duration FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND a.status = 'Completada' AND p.document != 'SISTEMA-PAUSA'`,
+        [doctorId]
+      ),
+      // Tendencia semanal (últimas 4 semanas)
+      pool.query<RowDataPacket[]>(
+        `SELECT 
+           YEARWEEK(a.scheduled_at, 1) as week_number,
+           DATE_FORMAT(MIN(DATE(a.scheduled_at)), '%Y-%m-%d') as week_start,
+           COUNT(*) as total,
+           SUM(CASE WHEN a.status = 'Completada' THEN 1 ELSE 0 END) as completed,
+           COUNT(DISTINCT a.patient_id) as unique_patients
+         FROM appointments a
+         LEFT JOIN patients p ON a.patient_id = p.id
+         WHERE a.doctor_id = ? AND a.scheduled_at >= DATE_SUB(CURDATE(), INTERVAL 4 WEEK)
+           AND a.status != 'Cancelada' AND p.document != 'SISTEMA-PAUSA'
+         GROUP BY YEARWEEK(a.scheduled_at, 1)
+         ORDER BY week_number DESC
+         LIMIT 4`,
+        [doctorId]
+      ),
+    ]);
+
+    const todayTotal = todayRows[0]?.count || 0;
+    const completedTotal = completedRows[0]?.count || 0;
+    const monthTotal = monthRows[0]?.count || 0;
+    const allTotalNonCancelled = completedTotal + (todayTotal); // approximation
+    const completionRate = allTotalNonCancelled > 0 ? Math.round((completedTotal / allTotalNonCancelled) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        today: {
+          total: todayTotal,
+          pending: pendingTodayRows[0]?.count || 0,
+          confirmed: confirmedTodayRows[0]?.count || 0,
+          completed: completedTodayRows[0]?.count || 0,
+        },
+        week: {
+          total: weekRows[0]?.count || 0,
+        },
+        month: {
+          total: monthTotal,
+        },
+        overall: {
+          totalPatients: totalPatientsRows[0]?.count || 0,
+          totalCompleted: completedTotal,
+          totalRecords: recordsCountRows[0]?.count || 0,
+          avgDurationMinutes: Math.round(avgDurationRows[0]?.avg_duration || 0),
+          completionRate,
+        },
+        nextAppointment: nextAppointmentRows[0] || null,
+        recentPatients: recentPatientsRows || [],
+        weeklyTrend: weeklyTrendRows || [],
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error al obtener estadísticas extendidas:', error);
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(401).json({ success: false, error: 'Token inválido o expirado' });
+    }
+    res.status(500).json({ success: false, error: 'Error al obtener estadísticas' });
+  }
+});
+
+/**
+ * GET /api/doctor-auth/my-availabilities
+ * Obtener las agendas del doctor con datos de ocupación (vista similar al panel admin)
+ */
+router.get('/my-availabilities', async (req: Request, res: Response) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      return res.status(401).json({ success: false, error: 'Token no proporcionado' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'supersecretkey_at_least_16_characters_for_security') as any;
+    if (decoded.type !== 'doctor') {
+      return res.status(403).json({ success: false, error: 'No autorizado' });
+    }
+
+    const doctorId = decoded.id;
+
+    // Obtener todas las agendas futuras del doctor con datos de ocupación
+    const [availabilities] = await pool.query<RowDataPacket[]>(`
+      SELECT 
+        av.id as availability_id,
+        av.date,
+        av.start_time,
+        av.end_time,
+        av.capacity,
+        av.status,
+        l.name as location_name,
+        l.address as location_address,
+        s.id as specialty_id,
+        s.name as specialty_name,
+        COALESCE(confirmed.confirmed_count, 0) as confirmed_appointments,
+        COALESCE(cancelled.cancelled_count, 0) as cancelled_appointments
+      FROM availabilities av
+      JOIN specialties s ON av.specialty_id = s.id
+      LEFT JOIN locations l ON av.location_id = l.id
+      LEFT JOIN (
+        SELECT 
+          availability_id,
+          COUNT(*) as confirmed_count
+        FROM appointments
+        WHERE status NOT IN ('Cancelada', 'No asistió')
+          AND availability_id IS NOT NULL
+        GROUP BY availability_id
+      ) confirmed ON confirmed.availability_id = av.id
+      LEFT JOIN (
+        SELECT 
+          availability_id,
+          COUNT(*) as cancelled_count
+        FROM appointments
+        WHERE status IN ('Cancelada', 'No asistió')
+          AND availability_id IS NOT NULL
+        GROUP BY availability_id
+      ) cancelled ON cancelled.availability_id = av.id
+      WHERE av.doctor_id = ?
+        AND av.date >= CURDATE()
+        AND av.status IN ('Activa', 'Completa')
+      ORDER BY av.date ASC, av.start_time ASC
+    `, [doctorId]);
+
+    // Agrupar por especialidad
+    const specialtyMap: Record<number, {
+      specialty_id: number;
+      specialty_name: string;
+      availabilities: any[];
+      summary: { totalCapacity: number; totalConfirmed: number; totalCancelled: number; availableSlots: number; occupancyRate: number; totalAvailabilities: number };
+    }> = {};
+
+    for (const av of availabilities) {
+      const specId = av.specialty_id;
+      if (!specialtyMap[specId]) {
+        specialtyMap[specId] = {
+          specialty_id: specId,
+          specialty_name: av.specialty_name,
+          availabilities: [],
+          summary: { totalCapacity: 0, totalConfirmed: 0, totalCancelled: 0, availableSlots: 0, occupancyRate: 0, totalAvailabilities: 0 }
+        };
+      }
+
+      // Formatear fecha
+      let dateStr = av.date;
+      if (av.date instanceof Date) {
+        dateStr = av.date.toISOString().split('T')[0];
+      } else if (typeof av.date === 'string' && av.date.includes('T')) {
+        dateStr = av.date.split('T')[0];
+      }
+
+      const confirmed = av.confirmed_appointments;
+      const available = Math.max(0, av.capacity - confirmed);
+      const occupancy = av.capacity > 0 ? Math.round((confirmed / av.capacity) * 100) : 0;
+
+      specialtyMap[specId].availabilities.push({
+        id: av.availability_id,
+        date: dateStr,
+        startTime: av.start_time,
+        endTime: av.end_time,
+        location: av.location_name || 'Sin sede',
+        locationAddress: av.location_address || '',
+        capacity: av.capacity,
+        confirmedAppointments: confirmed,
+        cancelledAppointments: av.cancelled_appointments,
+        availableSlots: available,
+        occupancyRate: occupancy,
+        status: av.status,
+        isOverbooked: confirmed > av.capacity
+      });
+
+      specialtyMap[specId].summary.totalCapacity += av.capacity;
+      specialtyMap[specId].summary.totalConfirmed += confirmed;
+      specialtyMap[specId].summary.totalCancelled += av.cancelled_appointments;
+      specialtyMap[specId].summary.totalAvailabilities++;
+    }
+
+    // Calcular resúmenes
+    const specialties = Object.values(specialtyMap).map(spec => {
+      spec.summary.availableSlots = spec.summary.totalCapacity - spec.summary.totalConfirmed;
+      spec.summary.occupancyRate = spec.summary.totalCapacity > 0
+        ? Math.round((spec.summary.totalConfirmed / spec.summary.totalCapacity) * 100)
+        : 0;
+      return spec;
+    });
+
+    // Resumen global
+    const globalSummary = specialties.reduce((acc, spec) => {
+      acc.totalCapacity += spec.summary.totalCapacity;
+      acc.totalConfirmed += spec.summary.totalConfirmed;
+      acc.totalAvailabilities += spec.summary.totalAvailabilities;
+      return acc;
+    }, { totalCapacity: 0, totalConfirmed: 0, totalAvailabilities: 0, availableSlots: 0, occupancyRate: 0 });
+
+    globalSummary.availableSlots = globalSummary.totalCapacity - globalSummary.totalConfirmed;
+    globalSummary.occupancyRate = globalSummary.totalCapacity > 0
+      ? Math.round((globalSummary.totalConfirmed / globalSummary.totalCapacity) * 100)
+      : 0;
+
+    res.json({
+      success: true,
+      data: {
+        globalSummary,
+        specialties
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error al obtener agendas del doctor:', error);
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(401).json({ success: false, error: 'Token inválido o expirado' });
+    }
+    res.status(500).json({ success: false, error: 'Error al obtener agendas' });
   }
 });
 

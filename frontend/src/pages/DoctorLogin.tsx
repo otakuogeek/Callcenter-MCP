@@ -10,6 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDoctorAuth } from "@/hooks/useDoctorAuth";
 import { EnhancedAnimatedContainer } from "@/components/ui/enhanced-animated-container";
 import { AnimatedForm } from "@/components/ui/animated-form";
+import { hasDoctorSession } from "@/lib/authStorage";
 
 const DoctorLogin = () => {
   const [email, setEmail] = useState("");
@@ -26,8 +27,7 @@ const DoctorLogin = () => {
 
   // Verificar si ya está autenticado
   useEffect(() => {
-    const token = localStorage.getItem('doctorToken');
-    if (token) {
+    if (hasDoctorSession()) {
       navigate('/doctor-dashboard', { replace: true });
     }
   }, [navigate]);

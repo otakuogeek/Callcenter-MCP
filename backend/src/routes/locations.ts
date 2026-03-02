@@ -5,6 +5,30 @@ import { requireAuth } from '../middleware/auth';
 
 const router = Router();
 
+// Mapeo de status inglés → español (DB ENUM) para aceptar ambos formatos
+const STATUS_MAP_TO_DB: Record<string, string> = {
+  'active': 'Activa',
+  'maintenance': 'En Mantenimiento',
+  'inactive': 'Inactiva',
+};
+
+function normalizeLocationBody(body: any): any {
+  if (!body || typeof body !== 'object') return body;
+  const result = { ...body };
+  if (result.status && typeof result.status === 'string') {
+    // Si viene en inglés, convertir a español para que coincida con el ENUM de la BD
+    result.status = STATUS_MAP_TO_DB[result.status] || result.status;
+  }
+  // Asegurar que capacity sea numérico
+  if (result.capacity !== undefined) {
+    result.capacity = Number(result.capacity) || 0;
+  }
+  if (result.current_patients !== undefined) {
+    result.current_patients = Number(result.current_patients) || 0;
+  }
+  return result;
+}
+
 const schema = z.object({
   municipality_id: z.number().int().optional().nullable(),
   name: z.string().min(1),
@@ -12,7 +36,7 @@ const schema = z.object({
   phone: z.string().optional().nullable(),
   // Validaremos este campo contra location_types en runtime para permitir tipos dinámicos
   type: z.string().min(1).default('Sucursal'),
-  status: z.enum(['active','maintenance','inactive']).default('active'),
+  status: z.enum(['Activa','En Mantenimiento','Inactiva']).default('Activa'),
   capacity: z.number().int().min(0).default(0),
   current_patients: z.number().int().min(0).default(0),
   hours: z.string().optional().nullable(),
@@ -174,7 +198,7 @@ router.put('/:id/specialties', requireAuth, async (req: Request, res: Response) 
 });
 
 router.post('/', requireAuth, async (req: Request, res: Response) => {
-  const parsed = schema.safeParse(req.body);
+  const parsed = schema.safeParse(normalizeLocationBody(req.body));
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
   try {
@@ -201,7 +225,7 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
 
 router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   const id = Number(req.params.id); if (Number.isNaN(id)) return res.status(400).json({ message: 'Invalid id' });
-  const parsed = schema.partial().safeParse(req.body);
+  const parsed = schema.partial().safeParse(normalizeLocationBody(req.body));
   if (!parsed.success) return res.status(400).json({ message: 'Invalid payload', errors: parsed.error.flatten() });
   const d = parsed.data;
   try {

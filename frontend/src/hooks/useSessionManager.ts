@@ -7,6 +7,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useToast } from '@/hooks/use-toast';
+import { clearAdminSession, getAdminToken } from '@/lib/authStorage';
 
 const INACTIVITY_TIMEOUT = 5 * 60 * 1000; // 5 minutos
 const HEARTBEAT_INTERVAL = 60 * 1000; // 1 minuto
@@ -21,9 +22,8 @@ export function useSessionManager() {
   const inactivityCheckRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleLogout = useCallback(() => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    navigate('/login', { replace: true });
+    clearAdminSession();
+    navigate('/admin/login', { replace: true });
     toast({
       title: 'Sesión cerrada',
       description: 'Su sesión ha expirado por inactividad',
@@ -37,7 +37,7 @@ export function useSessionManager() {
   }, []);
 
   const sendHeartbeat = useCallback(async () => {
-    const token = localStorage.getItem('token');
+    const token = getAdminToken();
     if (!token) return;
 
     try {
@@ -61,7 +61,7 @@ export function useSessionManager() {
   }, [handleLogout]);
 
   const checkSessionValidity = useCallback(async () => {
-    const token = localStorage.getItem('token');
+    const token = getAdminToken();
     if (!token) return;
 
     try {

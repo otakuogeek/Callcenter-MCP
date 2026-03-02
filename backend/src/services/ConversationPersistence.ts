@@ -208,17 +208,7 @@ class ConversationPersistenceService {
     const filePath = this.getFilePath(normalized);
     
     try {
-      // 1. Intentar cargar desde archivo JSON (más rápido)
-      try {
-        const content = await fsPromises.readFile(filePath, 'utf-8');
-        const data = JSON.parse(content) as ConversationData;
-        console.log(`[ConversationPersistence] Conversación cargada desde archivo: ${normalized}`);
-        return data;
-      } catch {
-        // Archivo no existe, continuar a BD
-      }
-      
-      // 2. Buscar en base de datos
+      // 1. Buscar en base de datos (fuente canónica)
       const [rows] = await pool.query<RowDataPacket[]>(
         `SELECT * FROM whatsapp_conversation_persistence WHERE phone_number = ?`,
         [normalized]
@@ -226,12 +216,26 @@ class ConversationPersistenceService {
       
       if (rows.length > 0) {
         const dbRecord = rows[0];
+
+        // Priorizar snapshot JSON persistido en BD si existe
+        if (dbRecord.conversation_json) {
+          try {
+            const data = JSON.parse(dbRecord.conversation_json) as ConversationData;
+            await fsPromises.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
+            console.log(`[ConversationPersistence] Conversación cargada desde BD (snapshot): ${normalized}`);
+            return data;
+          } catch {
+            // Si el JSON en BD está corrupto, continuar con reconstrucción
+          }
+        }
         
-        // Si existe en BD pero no el archivo, recrear archivo
+        // Si existe en BD, intentar cargar archivo como fallback secundario
         if (dbRecord.json_file_path) {
           try {
             const content = await fsPromises.readFile(dbRecord.json_file_path, 'utf-8');
-            return JSON.parse(content) as ConversationData;
+            const parsed = JSON.parse(content) as ConversationData;
+            console.log(`[ConversationPersistence] Conversación cargada desde archivo fallback: ${normalized}`);
+            return parsed;
           } catch {
             // Archivo de BD no existe, recrear desde datos
           }
@@ -251,12 +255,12 @@ class ConversationPersistenceService {
         conversation.messageCount = dbRecord.message_count || 0;
         conversation.conversationSummary = dbRecord.conversation_summary || '';
         
-        // Guardar archivo
+        // Guardar snapshot reconstruido
         await this.saveConversation(conversation);
         return conversation;
       }
       
-      // 3. Crear nueva conversación
+      // 2. Crear nueva conversación
       console.log(`[ConversationPersistence] Creando nueva conversación para: ${normalized}`);
       const newConversation = createEmptyConversation(normalized);
       
@@ -268,7 +272,7 @@ class ConversationPersistenceService {
         [normalized, filePath]
       );
       
-      // Guardar archivo
+      // Guardar en archivo + BD
       await this.saveConversation(newConversation);
       
       return newConversation;
@@ -291,37 +295,77 @@ class ConversationPersistenceService {
       // 1. Guardar archivo JSON (async)
       await fsPromises.writeFile(filePath, JSON.stringify(conversation, null, 2), 'utf-8');
       
-      // 2. Actualizar BD
-      await pool.query(
-        `UPDATE whatsapp_conversation_persistence SET
-          patient_id = ?,
-          document_number = ?,
-          patient_name = ?,
-          patient_first_name = ?,
-          patient_eps = ?,
-          conversation_state = ?,
-          last_specialty_requested = ?,
-          message_count = ?,
-          last_message_at = NOW(),
-          conversation_summary = ?,
-          appointments_scheduled = ?,
-          updated_at = NOW()
-        WHERE phone_number = ?`,
-        [
-          conversation.patient.patientId || null,
-          conversation.patient.documentNumber || null,
-          conversation.patient.fullName || null,
-          conversation.patient.firstName || null,
-          conversation.patient.eps || null,
-          conversation.currentContext.state === 'completed' ? 'completed' : 
-            conversation.isIdentified ? 'identified' : 'new',
-          conversation.currentContext.selectedSpecialty || null,
-          conversation.messageCount,
-          conversation.conversationSummary,
-          JSON.stringify(conversation.appointments),
-          conversation.phoneNumber
-        ]
-      );
+      // 2. Actualizar BD (con snapshot JSON canónico cuando exista la columna)
+      try {
+        await pool.query(
+          `UPDATE whatsapp_conversation_persistence SET
+            patient_id = ?,
+            document_number = ?,
+            patient_name = ?,
+            patient_first_name = ?,
+            patient_eps = ?,
+            conversation_state = ?,
+            last_specialty_requested = ?,
+            message_count = ?,
+            last_message_at = NOW(),
+            conversation_summary = ?,
+            appointments_scheduled = ?,
+            conversation_json = ?,
+            updated_at = NOW()
+          WHERE phone_number = ?`,
+          [
+            conversation.patient.patientId || null,
+            conversation.patient.documentNumber || null,
+            conversation.patient.fullName || null,
+            conversation.patient.firstName || null,
+            conversation.patient.eps || null,
+            conversation.currentContext.state === 'completed' ? 'completed' : 
+              conversation.isIdentified ? 'identified' : 'new',
+            conversation.currentContext.selectedSpecialty || null,
+            conversation.messageCount,
+            conversation.conversationSummary,
+            JSON.stringify(conversation.appointments),
+            JSON.stringify(conversation),
+            conversation.phoneNumber
+          ]
+        );
+      } catch (error: any) {
+        // Compatibilidad con entornos donde aún no se ha aplicado la migración
+        if (error?.code === 'ER_BAD_FIELD_ERROR') {
+          await pool.query(
+            `UPDATE whatsapp_conversation_persistence SET
+              patient_id = ?,
+              document_number = ?,
+              patient_name = ?,
+              patient_first_name = ?,
+              patient_eps = ?,
+              conversation_state = ?,
+              last_specialty_requested = ?,
+              message_count = ?,
+              last_message_at = NOW(),
+              conversation_summary = ?,
+              appointments_scheduled = ?,
+              updated_at = NOW()
+            WHERE phone_number = ?`,
+            [
+              conversation.patient.patientId || null,
+              conversation.patient.documentNumber || null,
+              conversation.patient.fullName || null,
+              conversation.patient.firstName || null,
+              conversation.patient.eps || null,
+              conversation.currentContext.state === 'completed' ? 'completed' : 
+                conversation.isIdentified ? 'identified' : 'new',
+              conversation.currentContext.selectedSpecialty || null,
+              conversation.messageCount,
+              conversation.conversationSummary,
+              JSON.stringify(conversation.appointments),
+              conversation.phoneNumber
+            ]
+          );
+        } else {
+          throw error;
+        }
+      }
       
       console.log(`[ConversationPersistence] Conversación guardada: ${conversation.phoneNumber}`);
       
@@ -815,5 +859,25 @@ export const generateContextAsync = (phone: string) => conversationPersistence.g
 export const updateContext = (phone: string, ctx: Partial<ConversationData['currentContext']>) => conversationPersistence.updateContext(phone, ctx);
 export const markQuestion = (phone: string, q: keyof AskedQuestions) => conversationPersistence.markQuestionAsked(phone, q);
 export const saveAnswer = (phone: string, key: string, value: string) => conversationPersistence.saveCollectedAnswer(phone, key, value);
+
+/**
+ * Resetea la conversación persistente para iniciar desde cero.
+ */
+export async function resetConversationData(phone: string): Promise<void> {
+  const normalized = normalizePhone(phone);
+
+  try {
+    // Garantizar que exista registro base para el teléfono
+    await conversationPersistence.getOrCreateConversation(normalized);
+
+    // Reemplazar por estructura vacía
+    const emptyConversation = createEmptyConversation(normalized);
+    clearCache(normalized);
+    updateCache(normalized, emptyConversation);
+    await conversationPersistence.saveConversation(emptyConversation);
+  } catch (error) {
+    console.error('[ConversationPersistence] Error reseteando conversación:', error);
+  }
+}
 
 export default conversationPersistence;

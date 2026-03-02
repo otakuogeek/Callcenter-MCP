@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+// Separator removed - unused
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog,
@@ -26,12 +26,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Progress } from "@/components/ui/progress";
 import {
   Stethoscope,
   Calendar,
-  Users,
   LogOut,
-  Settings,
   Clock,
   FileText,
   Activity,
@@ -42,18 +41,33 @@ import {
   Mail,
   User,
   ChevronDown,
+  ChevronUp,
   Heart,
   Thermometer,
   Clipboard,
   Pill,
   CalendarCheck,
   AlertCircle,
+  LayoutDashboard,
+  Search,
+  BookOpen,
+  BarChart3,
+  RefreshCw,
+  Loader2,
+  Users,
+  CheckCircle,
+  XCircle,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useDoctorAuth } from "@/hooks/useDoctorAuth";
 import VoiceDictationButton from "@/components/VoiceDictationButton";
 import DoctorDateNavigationCards from "@/components/DoctorDateNavigationCards";
-import { format, startOfWeek, endOfWeek, eachDayOfInterval, addDays } from "date-fns";
+import DoctorEnhancedStats from "@/components/DoctorEnhancedStats";
+import DoctorPatientSearch from "@/components/DoctorPatientSearch";
+import DoctorMyRecords from "@/components/DoctorMyRecords";
+import PatientDetailPanel from "@/components/PatientDetailPanel";
+import { convertUTCToColombiaTime, formatDateColombia, formatDateTimeColombia, formatFullDateColombia } from "@/utils/dateHelpers";
+import { format } from "date-fns";
 import { es } from "date-fns/locale";
 
 interface Doctor {
@@ -67,6 +81,7 @@ interface Doctor {
 interface Appointment {
   id: number;
   patient_id: number;
+  availability_id?: number;
   scheduled_date: string;
   start_time: string;
   end_time: string;
@@ -75,9 +90,13 @@ interface Appointment {
   patient_name: string;
   patient_phone: string;
   patient_document: string;
+  patient_email?: string;
   specialty_name: string;
   location_name: string;
   location_address: string;
+  appointment_source?: string;
+  created_by_name?: string;
+  created_at?: string;
 }
 
 interface Stats {
@@ -95,6 +114,7 @@ const DoctorDashboard = () => {
   const [showChangePassword, setShowChangePassword] = useState(false);
     const [showMedicalRecord, setShowMedicalRecord] = useState(false);
     const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
+    const [showPatientInfoBeforeRecord, setShowPatientInfoBeforeRecord] = useState(false);
     // Estados para acciones de doctor sobre cita
     const [showConfirmStatusDialog, setShowConfirmStatusDialog] = useState(false);
     const [confirmAction, setConfirmAction] = useState<'Completada' | 'Cancelada' | null>(null);
@@ -147,10 +167,56 @@ const DoctorDashboard = () => {
   const [changingPassword, setChangingPassword] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { logout, getMe, getStats, getAppointments, changePassword, createMedicalRecord, transcribeAudio, updateAppointmentStatus } = useDoctorAuth();
+  const { logout, getMe, getStats, getAppointments, changePassword, createMedicalRecord, transcribeAudio, updateAppointmentStatus, getEnhancedStats, getMyAvailabilities, searchPatients, getPatientHistory, getMyMedicalRecords } = useDoctorAuth();
+
+  // Tab activa del dashboard principal
+  const [activeMainTab, setActiveMainTab] = useState("resumen");
+  // Patient detail view from patient search or recent patients
+  const [patientDetailId, setPatientDetailId] = useState<number | null>(null);
+
+  // Agendas del doctor con ocupación
+  interface AvailabilityItem {
+    id: number;
+    date: string;
+    startTime: string;
+    endTime: string;
+    location: string;
+    locationAddress: string;
+    capacity: number;
+    confirmedAppointments: number;
+    cancelledAppointments: number;
+    availableSlots: number;
+    occupancyRate: number;
+    status: string;
+    isOverbooked: boolean;
+  }
+  interface SpecialtyAgenda {
+    specialty_id: number;
+    specialty_name: string;
+    availabilities: AvailabilityItem[];
+    summary: {
+      totalCapacity: number;
+      totalConfirmed: number;
+      totalCancelled: number;
+      availableSlots: number;
+      occupancyRate: number;
+      totalAvailabilities: number;
+    };
+  }
+  const [doctorAgendas, setDoctorAgendas] = useState<SpecialtyAgenda[]>([]);
+  const [globalAgendaSummary, setGlobalAgendaSummary] = useState<{
+    totalCapacity: number;
+    totalConfirmed: number;
+    totalAvailabilities: number;
+    availableSlots: number;
+    occupancyRate: number;
+  } | null>(null);
+  const [selectedAvailabilityId, setSelectedAvailabilityId] = useState<number | null>(null);
+  const [loadingAgendas, setLoadingAgendas] = useState(false);
 
   useEffect(() => {
     loadDoctorData();
+    loadDoctorAgendas();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -202,6 +268,19 @@ const DoctorDashboard = () => {
       }, 2000);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadDoctorAgendas = async () => {
+    try {
+      setLoadingAgendas(true);
+      const data = await getMyAvailabilities();
+      setDoctorAgendas(data.specialties || []);
+      setGlobalAgendaSummary(data.globalSummary || null);
+    } catch (error) {
+      console.error('Error al cargar agendas:', error);
+    } finally {
+      setLoadingAgendas(false);
     }
   };
 
@@ -401,7 +480,7 @@ const DoctorDashboard = () => {
   };
 
   // Función para agrupar citas por día
-  const groupAppointmentsByDay = (appointments: Appointment[]) => {
+  const _groupAppointmentsByDay = (appointments: Appointment[]) => {
     const grouped = appointments.reduce((acc, appointment) => {
       const date = new Date(appointment.scheduled_date).toLocaleDateString('es-ES', {
         weekday: 'long',
@@ -440,7 +519,7 @@ const DoctorDashboard = () => {
   };
 
   // Función para formatear fechas de forma segura
-  const formatSafeDate = (dateString: string) => {
+  const _formatSafeDate = (dateString: string) => {
     try {
       if (!dateString) return 'Fecha no disponible';
       
@@ -469,7 +548,7 @@ const DoctorDashboard = () => {
   };
 
   // Función para agrupar citas por agenda dentro de cada día
-  const groupAppointmentsByAgenda = (appointments: any[]) => {
+  const _groupAppointmentsByAgenda = (appointments: any[]) => {
     const grouped: { [key: string]: { [agendaId: string]: any[] } } = {};
 
     appointments.forEach(apt => {
@@ -504,7 +583,7 @@ const DoctorDashboard = () => {
   };
 
   // Función para separar citas futuras (hoy y futuro) vs históricas (pasadas)
-  const getFutureAppointments = () => {
+  const _getFutureAppointments = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
@@ -515,7 +594,7 @@ const DoctorDashboard = () => {
     });
   };
 
-  const getHistoricAppointments = () => {
+  const _getHistoricAppointments = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     
@@ -594,7 +673,7 @@ const DoctorDashboard = () => {
   }, [allAppointments]);
 
   // Manejadores del calendario
-  const handleCreateAvailability = (date: string) => {
+  const _handleCreateAvailability = (_date: string) => {
     toast({
       title: "Información",
       description: "La creación de agendas se realiza desde el panel de administración",
@@ -626,7 +705,7 @@ const DoctorDashboard = () => {
       console.log('⚠️ No hay citas para este día');
       toast({
         title: "Sin citas",
-        description: `No hay citas programadas para el ${format(new Date(date), "d 'de' MMMM", { locale: es })}`,
+        description: `No hay citas programadas para el ${formatDateColombia(date + 'T12:00:00')}`,
         variant: "default"
       });
     }
@@ -695,37 +774,6 @@ const DoctorDashboard = () => {
     );
   }
 
-  const dashboardCards = [
-    {
-      title: "Citas de Hoy",
-      icon: Calendar,
-      value: stats.todayAppointments.toString(),
-      description: "Agenda del día",
-      color: "from-blue-400 to-blue-600",
-    },
-    {
-      title: "Pacientes",
-      icon: Users,
-      value: stats.totalPatients.toString(),
-      description: "Total asignados",
-      color: "from-green-400 to-green-600",
-    },
-    {
-      title: "Consultas",
-      icon: FileText,
-      value: stats.monthConsultations.toString(),
-      description: "Este mes",
-      color: "from-purple-400 to-purple-600",
-    },
-    {
-      title: "Actividad",
-      icon: Activity,
-      value: "Activo",
-      description: "Estado del sistema",
-      color: "from-orange-400 to-orange-600",
-    },
-  ];
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-blue-100">
       {/* Header */}
@@ -773,107 +821,589 @@ const DoctorDashboard = () => {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Dashboard Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          {dashboardCards.map((card, index) => (
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        {/* Main Navigation Tabs */}
+        <Tabs value={activeMainTab} onValueChange={setActiveMainTab} className="w-full">
+          <TabsList className="grid w-full grid-cols-4 mb-6 h-12">
+            <TabsTrigger value="resumen" className="flex items-center gap-2 text-sm">
+              <LayoutDashboard className="h-4 w-4" />
+              <span className="hidden sm:inline">Resumen</span>
+            </TabsTrigger>
+            <TabsTrigger value="agenda" className="flex items-center gap-2 text-sm">
+              <Calendar className="h-4 w-4" />
+              <span className="hidden sm:inline">Mi Agenda</span>
+            </TabsTrigger>
+            <TabsTrigger value="pacientes" className="flex items-center gap-2 text-sm">
+              <Search className="h-4 w-4" />
+              <span className="hidden sm:inline">Pacientes</span>
+            </TabsTrigger>
+            <TabsTrigger value="historiales" className="flex items-center gap-2 text-sm">
+              <BookOpen className="h-4 w-4" />
+              <span className="hidden sm:inline">Mis Historiales</span>
+            </TabsTrigger>
+          </TabsList>
+
+          {/* ==================== TAB: RESUMEN ==================== */}
+          <TabsContent value="resumen" className="space-y-6">
+            <DoctorEnhancedStats
+              getEnhancedStats={getEnhancedStats}
+              onPatientClick={(id) => { setPatientDetailId(id); setActiveMainTab("pacientes"); }}
+            />
+
+            {/* Mis Agendas - Panel interactivo con ocupación */}
             <motion.div
-              key={card.title}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: index * 0.1 }}
+              transition={{ duration: 0.5, delay: 0.6 }}
             >
-              <Card className="hover:shadow-lg transition-shadow duration-300">
+              <Card className="shadow-lg">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
-                    <CardDescription className="text-sm font-medium">
-                      {card.title}
-                    </CardDescription>
-                    <div
-                      className={`w-10 h-10 rounded-lg bg-gradient-to-br ${card.color} flex items-center justify-center shadow-md`}
-                    >
-                      <card.icon className="h-5 w-5 text-white" />
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <BarChart3 className="h-5 w-5 text-indigo-600" />
+                        Mis Agendas
+                      </CardTitle>
+                      <CardDescription>
+                        Resumen de ocupación de tus agendas programadas
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {globalAgendaSummary && (
+                        <Badge className={`text-sm px-3 py-1 ${globalAgendaSummary.occupancyRate >= 90 ? 'bg-red-600' : globalAgendaSummary.occupancyRate >= 70 ? 'bg-amber-600' : 'bg-green-600'}`}>
+                          {globalAgendaSummary.occupancyRate}% Ocupación
+                        </Badge>
+                      )}
+                      <Button variant="outline" size="sm" onClick={loadDoctorAgendas} disabled={loadingAgendas}>
+                        {loadingAgendas ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                      </Button>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <div className="text-2xl font-bold text-gray-900 mb-1">
-                    {card.value}
-                  </div>
-                  <p className="text-xs text-gray-500">{card.description}</p>
+                  {loadingAgendas ? (
+                    <div className="text-center py-8">
+                      <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mx-auto mb-2" />
+                      <p className="text-gray-500 text-sm">Cargando agendas...</p>
+                    </div>
+                  ) : doctorAgendas.length === 0 ? (
+                    <div className="text-center py-8">
+                      <Calendar className="h-14 w-14 text-gray-200 mx-auto mb-3" />
+                      <p className="text-gray-500 text-base font-medium">No tienes agendas programadas</p>
+                      <p className="text-gray-400 text-sm mt-1">Contacta al administrador para crear agendas</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {/* Resumen global */}
+                      {globalAgendaSummary && (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                          <div className="bg-indigo-50 p-3 rounded-lg border border-indigo-100">
+                            <div className="text-xs text-indigo-600 font-medium">Agendas</div>
+                            <div className="text-xl font-bold text-indigo-900">{globalAgendaSummary.totalAvailabilities}</div>
+                          </div>
+                          <div className="bg-blue-50 p-3 rounded-lg border border-blue-100">
+                            <div className="text-xs text-blue-600 font-medium">Capacidad Total</div>
+                            <div className="text-xl font-bold text-blue-900">{globalAgendaSummary.totalCapacity}</div>
+                          </div>
+                          <div className="bg-green-50 p-3 rounded-lg border border-green-100">
+                            <div className="text-xs text-green-600 font-medium">Confirmadas</div>
+                            <div className="text-xl font-bold text-green-700">{globalAgendaSummary.totalConfirmed}</div>
+                          </div>
+                          <div className="bg-amber-50 p-3 rounded-lg border border-amber-100">
+                            <div className="text-xs text-amber-600 font-medium">Disponibles</div>
+                            <div className="text-xl font-bold text-amber-700">{globalAgendaSummary.availableSlots}</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Por Especialidad */}
+                      {doctorAgendas.map((specAgenda) => (
+                        <div key={specAgenda.specialty_id} className="border rounded-lg overflow-hidden">
+                          {/* Header de especialidad */}
+                          <div className="bg-gray-50 px-4 py-3 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Stethoscope className="h-4 w-4 text-indigo-600" />
+                              <span className="font-semibold text-gray-900">{specAgenda.specialty_name}</span>
+                              <Badge variant="outline" className="text-xs">
+                                {specAgenda.summary.totalAvailabilities} agendas
+                              </Badge>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-sm text-gray-500">
+                                {specAgenda.summary.totalConfirmed}/{specAgenda.summary.totalCapacity}
+                              </span>
+                              <div className="w-24">
+                                <Progress 
+                                  value={Math.min(specAgenda.summary.occupancyRate, 100)} 
+                                  className="h-2"
+                                />
+                              </div>
+                              <span className={`text-sm font-bold ${
+                                specAgenda.summary.occupancyRate >= 90 ? 'text-red-600' :
+                                specAgenda.summary.occupancyRate >= 70 ? 'text-amber-600' :
+                                'text-green-600'
+                              }`}>
+                                {specAgenda.summary.occupancyRate}%
+                              </span>
+                            </div>
+                          </div>
+                          
+                          {/* Tabla de agendas */}
+                          <div className="max-h-64 overflow-y-auto">
+                            <table className="w-full text-sm">
+                              <thead className="bg-gray-100 sticky top-0">
+                                <tr>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Fecha</th>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Horario</th>
+                                  <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Sede</th>
+                                  <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Cupos</th>
+                                  <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Agendadas</th>
+                                  <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">Disponible</th>
+                                  <th className="px-3 py-2 text-center text-xs font-medium text-gray-500">%</th>
+                                  <th className="px-3 py-2 text-center text-xs font-medium text-gray-500"></th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y">
+                                {specAgenda.availabilities.map((av) => (
+                                  <tr 
+                                    key={av.id} 
+                                    className={`${
+                                      selectedAvailabilityId === av.id ? 'bg-indigo-50 ring-1 ring-indigo-300' :
+                                      av.isOverbooked ? 'bg-amber-50' : 'bg-white'
+                                    } hover:bg-gray-50 cursor-pointer transition-colors`}
+                                    onClick={() => {
+                                      setSelectedAvailabilityId(selectedAvailabilityId === av.id ? null : av.id);
+                                    }}
+                                  >
+                                    <td className="px-3 py-2 font-medium">
+                                      {formatDateColombia(av.date + 'T12:00:00')}
+                                    </td>
+                                    <td className="px-3 py-2 text-gray-600">
+                                      {convertUTCToColombiaTime(av.startTime)} - {convertUTCToColombiaTime(av.endTime)}
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="flex items-center gap-1">
+                                        <MapPin className="w-3 h-3 text-gray-400" />
+                                        <span className="truncate max-w-[140px] text-gray-600">{av.location}</span>
+                                      </div>
+                                    </td>
+                                    <td className="px-3 py-2 text-center font-medium">{av.capacity}</td>
+                                    <td className="px-3 py-2 text-center">
+                                      <span className={`font-medium ${av.isOverbooked ? 'text-amber-600' : 'text-green-600'}`}>
+                                        {av.confirmedAppointments}
+                                      </span>
+                                      {av.cancelledAppointments > 0 && (
+                                        <span className="text-red-400 ml-1 text-xs">(+{av.cancelledAppointments} canc.)</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2 text-center">
+                                      <span className={`font-medium ${av.availableSlots === 0 ? 'text-gray-400' : 'text-blue-600'}`}>
+                                        {av.availableSlots}
+                                      </span>
+                                    </td>
+                                    <td className="px-3 py-2 text-center">
+                                      {av.isOverbooked ? (
+                                        <Badge variant="destructive" className="text-xs">{av.occupancyRate}%</Badge>
+                                      ) : av.occupancyRate >= 90 ? (
+                                        <Badge className="bg-amber-100 text-amber-700 text-xs border-amber-200">{av.occupancyRate}%</Badge>
+                                      ) : av.occupancyRate >= 70 ? (
+                                        <Badge className="bg-yellow-100 text-yellow-700 text-xs border-yellow-200">{av.occupancyRate}%</Badge>
+                                      ) : (
+                                        <span className="text-gray-600">{av.occupancyRate}%</span>
+                                      )}
+                                    </td>
+                                    <td className="px-3 py-2 text-center">
+                                      <Button 
+                                        variant="ghost" 
+                                        size="sm" 
+                                        className="h-6 w-6 p-0" 
+                                        onClick={(e) => { 
+                                          e.stopPropagation(); 
+                                          setSelectedAvailabilityId(selectedAvailabilityId === av.id ? null : av.id); 
+                                        }}
+                                      >
+                                        {selectedAvailabilityId === av.id ? 
+                                          <ChevronUp className="h-4 w-4 text-indigo-600" /> : 
+                                          <ChevronDown className="h-4 w-4 text-gray-400" />
+                                        }
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </motion.div>
-          ))}
-        </div>
 
-        {/* Mis Citas - Con Pestañas */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.5 }}
-        >
-          <Card className="shadow-lg">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <Calendar className="h-5 w-5 text-blue-600" />
-                    Mis Citas
-                  </CardTitle>
-                  <CardDescription>
-                    Gestiona tus citas programadas e historial
-                  </CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {/* Calendario semanal de navegación */}
-              <DoctorDateNavigationCards
-                date={selectedDate}
-                setDate={setSelectedDate}
-                summary={calendarSummary}
-                onViewAppointments={handleViewAppointments}
-              />
-            </CardContent>
-          </Card>
-        </motion.div>
+            {/* Panel de citas de la agenda seleccionada */}
+            {selectedAvailabilityId && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.3 }}
+              >
+                <Card className="shadow-lg border-indigo-200">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        {(() => {
+                          const selectedAv = doctorAgendas.flatMap(s => s.availabilities).find(a => a.id === selectedAvailabilityId);
+                          return selectedAv ? (
+                            <>
+                              <CardTitle className="flex items-center gap-2">
+                                <CalendarCheck className="h-5 w-5 text-indigo-600" />
+                                Citas de la Agenda - {formatDateColombia(selectedAv.date + 'T12:00:00')}
+                              </CardTitle>
+                              <CardDescription>
+                                {convertUTCToColombiaTime(selectedAv.startTime)} - {convertUTCToColombiaTime(selectedAv.endTime)} · {selectedAv.location}
+                              </CardDescription>
+                            </>
+                          ) : null;
+                        })()}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-indigo-600 text-sm px-3 py-1">
+                          {allAppointments.filter(apt => apt.availability_id === selectedAvailabilityId).length} citas
+                        </Badge>
+                        <Button variant="outline" size="sm" onClick={() => setSelectedAvailabilityId(null)}>
+                          <XCircle className="h-4 w-4 mr-1" /> Cerrar
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <ScrollArea className="h-[400px] pr-4">
+                      {allAppointments
+                        .filter(apt => apt.availability_id === selectedAvailabilityId)
+                        .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
+                        .length > 0 ? (
+                        <div className="space-y-2">
+                          {allAppointments
+                            .filter(apt => apt.availability_id === selectedAvailabilityId)
+                            .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
+                            .map((appointment, index) => (
+                              <motion.div
+                                key={appointment.id}
+                                initial={{ opacity: 0, x: -20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: index * 0.03 }}
+                              >
+                                <Card
+                                  className={`hover:shadow-md transition-all cursor-pointer border-l-4 ${
+                                    appointment.status === 'Completada' ? 'border-l-green-500 bg-green-50/30' :
+                                    appointment.status === 'Cancelada' ? 'border-l-red-500 bg-red-50/30' :
+                                    'border-l-indigo-500 hover:border-l-indigo-600'
+                                  }`}
+                                  onClick={() => {
+                                    setSelectedAppointment(appointment);
+                                    setShowPatientInfoBeforeRecord(true);
+                                  }}
+                                >
+                                  <CardContent className="p-3">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center gap-3 min-w-[100px]">
+                                        <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center">
+                                          <Clock className="h-5 w-5 text-indigo-600" />
+                                        </div>
+                                        <div>
+                                          <p className="text-base font-bold text-indigo-600">
+                                            {convertUTCToColombiaTime(appointment.start_time)}
+                                          </p>
+                                          <p className="text-xs text-gray-400">
+                                            {convertUTCToColombiaTime(appointment.end_time)}
+                                          </p>
+                                        </div>
+                                      </div>
 
-        {/* Lista de Pacientes de Hoy */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, delay: 0.6 }}
-          className="mt-8"
-        >
-          <Card className="shadow-lg">
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="flex items-center gap-2">
-                    <CalendarCheck className="h-5 w-5 text-green-600" />
-                    Agenda de Hoy
-                  </CardTitle>
-                  <CardDescription>
-                    Pacientes a atender el día de hoy ({format(new Date(), "d 'de' MMMM 'de' yyyy", { locale: es })})
-                  </CardDescription>
+                                      <div className="flex-1 px-3">
+                                        <div className="flex items-center gap-2 mb-0.5">
+                                          <User className="h-3.5 w-3.5 text-gray-400" />
+                                          <span className="font-semibold text-sm text-gray-900">
+                                            {appointment.patient_name}
+                                          </span>
+                                          <span className="text-xs text-gray-400">{appointment.patient_document}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                                          {appointment.appointment_source && (
+                                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-700 border-amber-200">
+                                              {appointment.appointment_source === 'Sistema_Inteligente' ? '🤖 Bot' : 
+                                               appointment.appointment_source === 'Web' ? '🌐 Web' : 
+                                               appointment.appointment_source === 'Manual' ? '✋ Manual' :
+                                               appointment.appointment_source === 'Llamada' ? '📞 Llamada' :
+                                               appointment.appointment_source}
+                                            </Badge>
+                                          )}
+                                          {appointment.created_by_name && (
+                                            <span className="text-[10px] text-gray-400">por {appointment.created_by_name}</span>
+                                          )}
+                                          {appointment.reason && (
+                                            <span className="truncate max-w-[200px]">{appointment.reason}</span>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-2">
+                                        <Badge
+                                          variant={
+                                            appointment.status === 'Confirmada' ? 'default' :
+                                            appointment.status === 'Completada' ? 'default' :
+                                            appointment.status === 'Pendiente' ? 'secondary' : 'destructive'
+                                          }
+                                          className={`text-xs ${appointment.status === 'Completada' ? 'bg-green-600' : ''}`}
+                                        >
+                                          {appointment.status}
+                                        </Badge>
+                                        {appointment.status === 'Confirmada' && (
+                                          <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={(e: any) => e.stopPropagation()}>
+                                                <ChevronDown className="h-4 w-4" />
+                                              </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent>
+                                              <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Completada'); setShowConfirmStatusDialog(true); }}>
+                                                <CheckCircle className="h-4 w-4 mr-2 text-green-600" /> Marcar completada
+                                              </DropdownMenuItem>
+                                              <DropdownMenuSeparator />
+                                              <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Cancelada'); setShowConfirmStatusDialog(true); }}>
+                                                <XCircle className="h-4 w-4 mr-2 text-red-600" /> Cancelar cita
+                                              </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                          </DropdownMenu>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              </motion.div>
+                            ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-10">
+                          <Users className="h-14 w-14 text-gray-200 mx-auto mb-3" />
+                          <p className="text-gray-500 text-base font-medium">No hay citas en esta agenda</p>
+                          <p className="text-gray-400 text-sm mt-1">Aún no se han agendado pacientes para este bloque</p>
+                        </div>
+                      )}
+                    </ScrollArea>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
+
+            {/* Agenda de Hoy (compact) - se muestra solo si no hay agenda seleccionada */}
+            {!selectedAvailabilityId && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.8 }}
+              >
+                <Card className="shadow-lg">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <CardTitle className="flex items-center gap-2">
+                          <CalendarCheck className="h-5 w-5 text-green-600" />
+                          Agenda de Hoy
+                        </CardTitle>
+                        <CardDescription>
+                          {formatFullDateColombia(new Date())}
+                        </CardDescription>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className="bg-green-600 text-sm px-3 py-1">
+                          {allAppointments.filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd')).length} citas
+                        </Badge>
+                        <Button variant="outline" size="sm" onClick={() => setActiveMainTab("agenda")}>
+                          Ver todo
+                          <ChevronDown className="h-4 w-4 ml-1 -rotate-90" />
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <ScrollArea className="h-[400px] pr-4">
+                      {allAppointments
+                        .filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd'))
+                        .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
+                        .length > 0 ? (
+                        <div className="space-y-2">
+                          {allAppointments
+                            .filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd'))
+                            .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
+                            .map((appointment, index) => (
+                              <motion.div
+                                key={appointment.id}
+                                initial={{ opacity: 0, x: -20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: index * 0.03 }}
+                              >
+                                <Card
+                                  className={`hover:shadow-md transition-all cursor-pointer border-l-4 ${
+                                    appointment.status === 'Completada' ? 'border-l-green-500 bg-green-50/30' :
+                                    appointment.status === 'Cancelada' ? 'border-l-red-500 bg-red-50/30' :
+                                    'border-l-blue-500 hover:border-l-blue-600'
+                                  }`}
+                                  onClick={() => {
+                                    setSelectedAppointment(appointment);
+                                    setShowPatientInfoBeforeRecord(true);
+                                  }}
+                                >
+                                  <CardContent className="p-3">
+                                    <div className="flex items-center justify-between">
+                                      <div className="flex items-center gap-3 min-w-[100px]">
+                                        <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                                          <Clock className="h-5 w-5 text-blue-600" />
+                                        </div>
+                                        <div>
+                                          <p className="text-base font-bold text-blue-600">
+                                            {convertUTCToColombiaTime(appointment.start_time)}
+                                          </p>
+                                          <p className="text-xs text-gray-400">
+                                            {convertUTCToColombiaTime(appointment.end_time)}
+                                          </p>
+                                        </div>
+                                      </div>
+
+                                      <div className="flex-1 px-3">
+                                        <div className="flex items-center gap-2 mb-0.5">
+                                          <User className="h-3.5 w-3.5 text-gray-400" />
+                                          <span className="font-semibold text-sm text-gray-900">
+                                            {appointment.patient_name}
+                                          </span>
+                                          <span className="text-xs text-gray-400">{appointment.patient_document}</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-xs text-gray-500">
+                                          {appointment.appointment_source && (
+                                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-700 border-amber-200">
+                                              {appointment.appointment_source === 'Sistema_Inteligente' ? '🤖 Bot' : 
+                                               appointment.appointment_source === 'Web' ? '🌐 Web' : 
+                                               appointment.appointment_source === 'Manual' ? '✋ Manual' :
+                                               appointment.appointment_source === 'Llamada' ? '📞 Llamada' :
+                                               appointment.appointment_source}
+                                            </Badge>
+                                          )}
+                                          {appointment.created_by_name && (
+                                            <span className="text-[10px] text-gray-400">por {appointment.created_by_name}</span>
+                                          )}
+                                          {appointment.reason && (
+                                            <span className="truncate max-w-[200px]">{appointment.reason}</span>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      <div className="flex items-center gap-2">
+                                        <Badge
+                                          variant={
+                                            appointment.status === 'Confirmada' ? 'default' :
+                                            appointment.status === 'Completada' ? 'default' :
+                                            appointment.status === 'Pendiente' ? 'secondary' : 'destructive'
+                                          }
+                                          className={`text-xs ${appointment.status === 'Completada' ? 'bg-green-600' : ''}`}
+                                        >
+                                          {appointment.status}
+                                        </Badge>
+                                        <Badge variant="outline" className="text-xs hidden md:flex">
+                                          <MapPin className="h-2.5 w-2.5 mr-1" />
+                                          {appointment.location_name}
+                                        </Badge>
+                                        {appointment.status === 'Confirmada' && (
+                                          <DropdownMenu>
+                                            <DropdownMenuTrigger asChild>
+                                              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={(e: any) => e.stopPropagation()}>
+                                                <ChevronDown className="h-4 w-4" />
+                                              </Button>
+                                            </DropdownMenuTrigger>
+                                            <DropdownMenuContent>
+                                              <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Completada'); setShowConfirmStatusDialog(true); }}>
+                                                Marcar completada
+                                              </DropdownMenuItem>
+                                              <DropdownMenuSeparator />
+                                              <DropdownMenuItem onClick={(e: any) => { e.stopPropagation(); setActionTargetAppointment(appointment); setConfirmAction('Cancelada'); setShowConfirmStatusDialog(true); }}>
+                                                Cancelar cita
+                                              </DropdownMenuItem>
+                                            </DropdownMenuContent>
+                                          </DropdownMenu>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </CardContent>
+                                </Card>
+                              </motion.div>
+                            ))}
+                        </div>
+                      ) : (
+                        <div className="text-center py-10">
+                          <CalendarCheck className="h-14 w-14 text-gray-200 mx-auto mb-3" />
+                          <p className="text-gray-500 text-base font-medium">No hay citas programadas para hoy</p>
+                          <p className="text-gray-400 text-sm mt-1">Revisa el calendario para ver citas en otras fechas</p>
+                        </div>
+                      )}
+                    </ScrollArea>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
+          </TabsContent>
+
+          {/* ==================== TAB: MI AGENDA ==================== */}
+          <TabsContent value="agenda" className="space-y-6">
+            {/* Calendario semanal */}
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Calendar className="h-5 w-5 text-blue-600" />
+                  Calendario de Citas
+                </CardTitle>
+                <CardDescription>
+                  Navega por semana para ver tus citas programadas
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <DoctorDateNavigationCards
+                  date={selectedDate}
+                  setDate={setSelectedDate}
+                  summary={calendarSummary}
+                  onViewAppointments={handleViewAppointments}
+                />
+              </CardContent>
+            </Card>
+
+            {/* Agenda de Hoy completa */}
+            <Card className="shadow-lg">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <CalendarCheck className="h-5 w-5 text-green-600" />
+                      Agenda de Hoy
+                    </CardTitle>
+                    <CardDescription>
+                      Pacientes a atender el día de hoy ({formatDateColombia(new Date())})
+                    </CardDescription>
+                  </div>
+                  <Badge className="bg-green-600 text-lg px-4 py-2">
+                    {allAppointments.filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd')).length} citas
+                  </Badge>
                 </div>
-                <Badge className="bg-green-600 text-lg px-4 py-2">
-                  {allAppointments.filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd')).length} citas
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-[500px] pr-4">
-                {allAppointments
-                  .filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd'))
-                  .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
-                  .length > 0 ? (
-                  <div className="space-y-3">
-                    {allAppointments
-                      .filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd'))
-                      .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
-                      .map((appointment, index) => (
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px] pr-4">
+                  {allAppointments
+                    .filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd'))
+                    .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
+                    .length > 0 ? (
+                    <div className="space-y-3">
+                      {allAppointments
+                        .filter(apt => normalizeDateString(apt.scheduled_date) === format(new Date(), 'yyyy-MM-dd'))
+                        .sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))
+                        .map((appointment, index) => (
                         <motion.div
                           key={appointment.id}
                           initial={{ opacity: 0, x: -20 }}
@@ -881,10 +1411,14 @@ const DoctorDashboard = () => {
                           transition={{ delay: index * 0.05 }}
                         >
                           <Card
-                            className="hover:shadow-md transition-all cursor-pointer border-l-4 border-l-green-500 hover:border-l-green-600"
+                            className={`hover:shadow-md transition-all cursor-pointer border-l-4 ${
+                              appointment.status === 'Completada' ? 'border-l-green-500 bg-green-50/30' :
+                              appointment.status === 'Cancelada' ? 'border-l-red-500 bg-red-50/30' :
+                              'border-l-green-500 hover:border-l-green-600'
+                            }`}
                             onClick={() => {
                               setSelectedAppointment(appointment);
-                              setShowMedicalRecord(true);
+                              setShowPatientInfoBeforeRecord(true);
                             }}
                           >
                             <CardContent className="p-4">
@@ -896,10 +1430,10 @@ const DoctorDashboard = () => {
                                   </div>
                                   <div>
                                     <p className="text-lg font-bold text-green-600">
-                                      {appointment.start_time?.substring(0, 5)}
+                                      {convertUTCToColombiaTime(appointment.start_time)}
                                     </p>
                                     <p className="text-xs text-gray-500">
-                                      {appointment.end_time?.substring(0, 5)}
+                                      {convertUTCToColombiaTime(appointment.end_time)}
                                     </p>
                                   </div>
                                 </div>
@@ -911,7 +1445,6 @@ const DoctorDashboard = () => {
                                     <span className="font-semibold text-gray-900">
                                       {appointment.patient_name}
                                     </span>
-                                    {/* Badge de Agenda */}
                                     <Badge variant="outline" className="bg-purple-50 text-purple-700 border-purple-300 text-xs">
                                       <Clipboard className="h-3 w-3 mr-1" />
                                       Agenda #{appointment.availability_id || 'N/A'}
@@ -935,19 +1468,36 @@ const DoctorDashboard = () => {
                                       {appointment.reason}
                                     </p>
                                   )}
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {appointment.appointment_source && (
+                                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-700 border-amber-200">
+                                        {appointment.appointment_source === 'Sistema_Inteligente' ? '🤖 Bot/IA' : 
+                                         appointment.appointment_source === 'Web' ? '🌐 Portal Web' : 
+                                         appointment.appointment_source === 'Manual' ? '✋ Manual' :
+                                         appointment.appointment_source === 'Llamada' ? '📞 Llamada' :
+                                         appointment.appointment_source}
+                                      </Badge>
+                                    )}
+                                    {appointment.created_by_name && (
+                                      <span className="text-[10px] text-gray-400">Agendó: {appointment.created_by_name}</span>
+                                    )}
+                                    {appointment.created_at && (
+                                      <span className="text-[10px] text-gray-300">
+                                        {formatDateTimeColombia(appointment.created_at)}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
 
                                 {/* Estado y Especialidad */}
                                 <div className="flex flex-col items-end gap-2 min-w-[180px]">
                                   <Badge
                                     variant={
-                                      appointment.status === 'Confirmada'
-                                        ? 'default'
-                                        : appointment.status === 'Pendiente'
-                                        ? 'secondary'
-                                        : 'destructive'
+                                      appointment.status === 'Confirmada' ? 'default' :
+                                      appointment.status === 'Completada' ? 'default' :
+                                      appointment.status === 'Pendiente' ? 'secondary' : 'destructive'
                                     }
-                                    className="text-xs"
+                                    className={`text-xs ${appointment.status === 'Completada' ? 'bg-green-600' : ''}`}
                                   >
                                     {appointment.status}
                                   </Badge>
@@ -960,7 +1510,7 @@ const DoctorDashboard = () => {
                                   </div>
                                 </div>
 
-                                {/* Acciones del doctor: marcar completada / cancelar */}
+                                {/* Acciones del doctor */}
                                 <div className="ml-4 flex-shrink-0 flex items-center gap-2">
                                   {appointment.status === 'Confirmada' && (
                                     <DropdownMenu>
@@ -983,7 +1533,6 @@ const DoctorDashboard = () => {
                                   )}
                                 </div>
 
-                                {/* Indicador de clic */}
                                 <ChevronDown className="h-5 w-5 text-gray-400 rotate-[-90deg]" />
                               </div>
                             </CardContent>
@@ -1005,7 +1554,92 @@ const DoctorDashboard = () => {
               </ScrollArea>
             </CardContent>
           </Card>
-        </motion.div>
+          </TabsContent>
+
+          {/* ==================== TAB: PACIENTES ==================== */}
+          <TabsContent value="pacientes">
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Search className="h-5 w-5 text-blue-600" />
+                  Buscar Pacientes
+                </CardTitle>
+                <CardDescription>
+                  Busca pacientes por nombre, cédula o teléfono para ver su perfil completo e historial clínico
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {patientDetailId ? (
+                  <PatientDetailPanel
+                    patientId={patientDetailId}
+                    getPatientHistory={getPatientHistory}
+                    onCreateRecord={(patientId, patientName) => {
+                      // Create a synthetic appointment for record creation
+                      setSelectedAppointment({
+                        id: 0,
+                        patient_id: patientId,
+                        scheduled_date: format(new Date(), 'yyyy-MM-dd'),
+                        start_time: '',
+                        end_time: '',
+                        status: '',
+                        reason: '',
+                        patient_name: patientName,
+                        patient_phone: '',
+                        patient_document: '',
+                        specialty_name: '',
+                        location_name: '',
+                        location_address: '',
+                      } as Appointment);
+                      setShowMedicalRecord(true);
+                    }}
+                    onClose={() => setPatientDetailId(null)}
+                  />
+                ) : (
+                  <DoctorPatientSearch
+                    searchPatients={searchPatients}
+                    getPatientHistory={getPatientHistory}
+                    onCreateRecord={(patientId, patientName) => {
+                      setSelectedAppointment({
+                        id: 0,
+                        patient_id: patientId,
+                        scheduled_date: format(new Date(), 'yyyy-MM-dd'),
+                        start_time: '',
+                        end_time: '',
+                        status: '',
+                        reason: '',
+                        patient_name: patientName,
+                        patient_phone: '',
+                        patient_document: '',
+                        specialty_name: '',
+                        location_name: '',
+                        location_address: '',
+                      } as Appointment);
+                      setShowMedicalRecord(true);
+                    }}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* ==================== TAB: MIS HISTORIALES ==================== */}
+          <TabsContent value="historiales">
+            <Card className="shadow-lg">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <BookOpen className="h-5 w-5 text-purple-600" />
+                  Mis Historias Clínicas
+                </CardTitle>
+                <CardDescription>
+                  Todas las historias clínicas que has creado. Filtra por estado o busca por paciente
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <DoctorMyRecords getMyMedicalRecords={getMyMedicalRecords} />
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
 
         {/* Footer Info */}
         <motion.div
@@ -1027,7 +1661,7 @@ const DoctorDashboard = () => {
             <DialogTitle className="flex items-center gap-2 text-2xl">
               <Calendar className="h-6 w-6 text-blue-600" />
               <span className="capitalize">
-                {selectedDate && format(selectedDate, "EEEE, d 'de' MMMM 'de' yyyy", { locale: es })}
+                {selectedDate && formatFullDateColombia(selectedDate)}
               </span>
             </DialogTitle>
             <DialogDescription>
@@ -1066,7 +1700,7 @@ const DoctorDashboard = () => {
                           className="hover:shadow-md transition-shadow cursor-pointer border-l-4 border-l-blue-400"
                           onClick={() => {
                             setSelectedAppointment(appointment);
-                            setShowMedicalRecord(true);
+                            setShowPatientInfoBeforeRecord(true);
                             setShowDayAgendas(false);
                           }}
                         >
@@ -1076,7 +1710,7 @@ const DoctorDashboard = () => {
                                 <div className="flex items-center gap-2 mb-2">
                                   <Clock className="h-4 w-4 text-blue-600" />
                                   <span className="font-semibold text-blue-600">
-                                    {appointment.start_time} - {appointment.end_time}
+                                    {convertUTCToColombiaTime(appointment.start_time)} - {convertUTCToColombiaTime(appointment.end_time)}
                                   </span>
                                   <Badge
                                     variant={
@@ -1182,9 +1816,9 @@ const DoctorDashboard = () => {
                 {actionTargetAppointment ? (
                   <>
                     {confirmAction === 'Completada' ? (
-                      <span>Confirma que deseas marcar la cita de <strong>{actionTargetAppointment.patient_name}</strong> a las <strong>{actionTargetAppointment.start_time}</strong> como <strong>completada</strong>.</span>
+                      <span>Confirma que deseas marcar la cita de <strong>{actionTargetAppointment.patient_name}</strong> a las <strong>{convertUTCToColombiaTime(actionTargetAppointment.start_time)}</strong> como <strong>completada</strong>.</span>
                     ) : (
-                      <span>Indica el motivo de cancelación para la cita de <strong>{actionTargetAppointment.patient_name}</strong> a las <strong>{actionTargetAppointment.start_time}</strong>.</span>
+                      <span>Indica el motivo de cancelación para la cita de <strong>{actionTargetAppointment.patient_name}</strong> a las <strong>{convertUTCToColombiaTime(actionTargetAppointment.start_time)}</strong>.</span>
                     )}
                   </>
                 ) : null}
@@ -1334,6 +1968,65 @@ const DoctorDashboard = () => {
               disabled={changingPassword}
             >
               {changingPassword ? "Actualizando..." : "Actualizar Contraseña"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo: Información del Paciente ANTES de crear historia clínica */}
+      <Dialog open={showPatientInfoBeforeRecord} onOpenChange={setShowPatientInfoBeforeRecord}>
+        <DialogContent className="sm:max-w-[900px] max-h-[85vh] overflow-hidden flex flex-col">
+          <DialogHeader className="pb-3 border-b">
+            <DialogTitle className="flex items-center gap-2 text-xl">
+              <User className="h-6 w-6 text-blue-600" />
+              Información del Paciente
+            </DialogTitle>
+            <DialogDescription className="flex items-center gap-4 mt-1">
+              {selectedAppointment && (
+                <>
+                  <span className="font-semibold">{selectedAppointment.patient_name}</span>
+                  <span className="text-sm">{selectedAppointment.patient_document}</span>
+                  {selectedAppointment.start_time && (
+                    <Badge variant="outline" className="text-xs">
+                      <Clock className="h-3 w-3 mr-1" /> {convertUTCToColombiaTime(selectedAppointment.start_time)}
+                    </Badge>
+                  )}
+                  {selectedAppointment.specialty_name && (
+                    <Badge variant="outline" className="text-xs">
+                      <Stethoscope className="h-3 w-3 mr-1" /> {selectedAppointment.specialty_name}
+                    </Badge>
+                  )}
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <ScrollArea className="flex-1 pr-2 mt-2">
+            {selectedAppointment?.patient_id && (
+              <PatientDetailPanel
+                patientId={selectedAppointment.patient_id}
+                getPatientHistory={getPatientHistory}
+                onCreateRecord={() => {
+                  setShowPatientInfoBeforeRecord(false);
+                  setShowMedicalRecord(true);
+                }}
+              />
+            )}
+          </ScrollArea>
+
+          <div className="flex justify-between items-center pt-3 border-t mt-2">
+            <Button variant="outline" onClick={() => setShowPatientInfoBeforeRecord(false)}>
+              Cerrar
+            </Button>
+            <Button
+              className="bg-blue-600 hover:bg-blue-700"
+              onClick={() => {
+                setShowPatientInfoBeforeRecord(false);
+                setShowMedicalRecord(true);
+              }}
+            >
+              <FileText className="h-4 w-4 mr-2" />
+              Crear Nueva Historia Clínica
             </Button>
           </div>
         </DialogContent>

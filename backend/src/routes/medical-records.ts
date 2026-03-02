@@ -301,7 +301,7 @@ router.get('/patients/search', authenticateDoctorToken, async (req: Request, res
         (SELECT COUNT(*) FROM medical_records mr WHERE mr.patient_id = p.id) as total_visits,
         (SELECT MAX(mr.visit_date) FROM medical_records mr WHERE mr.patient_id = p.id) as last_visit
       FROM patients p
-      LEFT JOIN insurance_eps ie ON p.insurance_eps_id = ie.id
+      LEFT JOIN eps ie ON p.insurance_eps_id = ie.id
       WHERE p.name LIKE ? OR p.document LIKE ? OR p.phone LIKE ?
       LIMIT 20`,
       [searchTerm, searchTerm, searchTerm]
@@ -332,9 +332,9 @@ router.get('/patients/:id/history', authenticateDoctorToken, async (req: Request
         p.*,
         TIMESTAMPDIFF(YEAR, p.birth_date, CURDATE()) as age,
         ie.name as eps_name,
-        bg.group_name as blood_group
+        bg.name as blood_group
       FROM patients p
-      LEFT JOIN insurance_eps ie ON p.insurance_eps_id = ie.id
+      LEFT JOIN eps ie ON p.insurance_eps_id = ie.id
       LEFT JOIN blood_groups bg ON p.blood_group_id = bg.id
       WHERE p.id = ?`,
       [patientId]

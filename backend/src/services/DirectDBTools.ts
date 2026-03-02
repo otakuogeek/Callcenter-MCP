@@ -82,6 +82,73 @@ async function withRetry<T>(
 // ============================================================================
 
 /**
+ * Extrae la cadena de hora UTC (HH:MM:SS) de un valor scheduled_at que puede ser Date o string
+ */
+function extractTimeFromScheduledAt(scheduledAt: any): string {
+  if (scheduledAt instanceof Date) {
+    return scheduledAt.toISOString().substring(11, 19);
+  }
+  const dateStr = String(scheduledAt);
+  if (dateStr.includes('T')) {
+    return dateStr.split('T')[1].substring(0, 8);
+  } else if (dateStr.includes(' ')) {
+    return dateStr.split(' ')[1].substring(0, 8);
+  }
+  return dateStr;
+}
+
+/**
+ * Genera slots de tiempo disponibles para una agenda dada, excluyendo los ya ocupados.
+ * Función DRY usada por getAvailableAppointments, getAvailableTimeSlots y getAvailableTimeSlotsForDoctorOnDate.
+ */
+function generateTimeSlots(
+  startTimeUTC: string,
+  endTimeUTC: string,
+  durationMinutes: number,
+  occupiedTimesUTC: Set<string>
+): Array<{ time_colombia: string; time_utc: string; time_formatted: string }> {
+  const slots: Array<{ time_colombia: string; time_utc: string; time_formatted: string }> = [];
+  let currentTimeUTC = startTimeUTC + ':00';
+  const endTimeUTCFull = endTimeUTC + ':00';
+  
+  while (currentTimeUTC < endTimeUTCFull) {
+    const timeStrUTC = currentTimeUTC.substring(0, 5);
+    
+    // Verificar si este slot NO está ocupado (comparar en UTC)
+    if (!occupiedTimesUTC.has(currentTimeUTC) && !occupiedTimesUTC.has(timeStrUTC + ':00')) {
+      const timeColombiaStr = utcToColombiaTime(timeStrUTC);
+      slots.push({
+        time_colombia: timeColombiaStr,
+        time_utc: timeStrUTC,
+        time_formatted: formatColombiaTimeToAMPM(timeColombiaStr)
+      });
+    }
+    
+    // Avanzar al siguiente slot
+    const [hours, minutes] = timeStrUTC.split(':').map(Number);
+    const totalMinutes = hours * 60 + minutes + durationMinutes;
+    const newHours = Math.floor(totalMinutes / 60);
+    const newMinutes = totalMinutes % 60;
+    currentTimeUTC = `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
+  }
+  
+  return slots;
+}
+
+/**
+ * Construye un Set de horarios ocupados a partir de citas existentes (para comparación UTC)
+ */
+function buildOccupiedTimesSet(existingAppts: RowDataPacket[]): Set<string> {
+  const bookedTimesUTC = new Set<string>();
+  for (const appt of existingAppts) {
+    const timeStr = extractTimeFromScheduledAt(appt.scheduled_at || appt.scheduled_time);
+    bookedTimesUTC.add(timeStr);
+    bookedTimesUTC.add(timeStr.substring(0, 5) + ':00');
+  }
+  return bookedTimesUTC;
+}
+
+/**
  * Convierte hora UTC a hora Colombia (UTC-5)
  */
 function utcToColombiaTime(utcTimeStr: string): string {
@@ -111,6 +178,14 @@ function colombiaToUtcTime(colombiaTimeStr: string): string {
   if (hours >= 24) hours -= 24;
   
   return `${String(hours).padStart(2, '0')}:${minutes}:00`;
+}
+
+function normalizePriorityLevel(priority?: string): 'Urgente' | 'Alta' | 'Normal' | 'Baja' {
+  const value = (priority || '').trim().toLowerCase();
+  if (value === 'urgente') return 'Urgente';
+  if (value === 'alta') return 'Alta';
+  if (value === 'baja') return 'Baja';
+  return 'Normal';
 }
 
 /**
@@ -175,6 +250,7 @@ function formatDateToSpanish(dateStr: string): string {
 // ============================================================================
 
 export async function searchPatient(args: { document: string }): Promise<any> {
+  return withRetry(async () => {
   const startTime = Date.now();
   const document = args.document?.toString().replace(/\D/g, '');
   
@@ -241,13 +317,20 @@ export async function searchPatient(args: { document: string }): Promise<any> {
     logger.error({ error: error.message, document, stack: error.stack }, 'searchPatient error');
     return { success: false, error: error.message };
   }
+  }, 'searchPatient');
 }
 
 // ============================================================================
 // DISPONIBILIDAD DE CITAS
 // ============================================================================
 
-export async function getAvailableAppointments(args: { specialty_name?: string; specialty_id?: number }): Promise<any> {
+export async function getAvailableAppointments(args: { 
+  specialty_name?: string; 
+  specialty_id?: number;
+  location_id?: number;
+  eps_id?: number;
+}): Promise<any> {
+  return withRetry(async () => {
   const startTime = Date.now();
   
   logger.info({ args }, 'getAvailableAppointments: fetching availability');
@@ -261,12 +344,29 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
       const params: any[] = [];
 
       if (args.specialty_name) {
-        whereClause += ' AND s.name LIKE ?';
+        // COLLATE para normalizar acentos (Odontologia = Odontología)
+        whereClause += ' AND s.name COLLATE utf8mb4_unicode_ci LIKE ?';
         params.push(`%${args.specialty_name}%`);
       }
       if (args.specialty_id) {
         whereClause += ' AND a.specialty_id = ?';
         params.push(args.specialty_id);
+      }
+      if ((args as any).location_id) {
+        whereClause += ' AND a.location_id = ?';
+        params.push((args as any).location_id);
+      }
+      // NUEVO: Filtrar por autorizaciones EPS (igual que portal web)
+      if (args.eps_id) {
+        whereClause += ` AND EXISTS (
+          SELECT 1 FROM eps_specialty_location_authorizations esla
+          WHERE esla.eps_id = ? 
+            AND esla.specialty_id = a.specialty_id 
+            AND esla.location_id = a.location_id 
+            AND esla.authorized = 1
+            AND (esla.valid_until IS NULL OR esla.valid_until >= CURDATE())
+        )`;
+        params.push(args.eps_id);
       }
 
       const [rows] = await connection.execute<RowDataPacket[]>(`
@@ -284,6 +384,7 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
           d.name AS doctor_name,
           a.location_id,
           l.name AS location_name,
+          l.address AS location_address,
           (SELECT COUNT(*) FROM appointments_waiting_list awl 
            WHERE awl.availability_id = a.id AND awl.status = 'pending') AS waiting_list_count
         FROM availabilities a
@@ -325,38 +426,10 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
         // El scheduled_time viene en UTC
         const timeStr = String(appt.scheduled_time).substring(0, 5);
         occupiedSlots[appt.availability_id].add(timeStr);
+        occupiedSlots[appt.availability_id].add(timeStr + ':00');
       }
       
-      // Función para generar slots de una agenda
-      const generateSlots = (startTimeUTC: string, endTimeUTC: string, durationMinutes: number, occupiedSet: Set<string>) => {
-        const slots: Array<{time_colombia: string, time_formatted: string}> = [];
-        let currentTimeUTC = startTimeUTC + ':00';
-        const endTimeUTCFull = endTimeUTC + ':00';
-        
-        while (currentTimeUTC < endTimeUTCFull) {
-          const timeStrUTC = currentTimeUTC.substring(0, 5);
-          
-          // Verificar si este slot está ocupado (comparar en UTC)
-          if (!occupiedSet.has(timeStrUTC)) {
-            const timeColombiaStr = utcToColombiaTime(timeStrUTC);
-            slots.push({
-              time_colombia: timeColombiaStr,
-              time_formatted: formatColombiaTimeToAMPM(timeColombiaStr)
-            });
-          }
-          
-          // Avanzar al siguiente slot
-          const [hours, minutes] = timeStrUTC.split(':').map(Number);
-          const totalMinutes = hours * 60 + minutes + durationMinutes;
-          const newHours = Math.floor(totalMinutes / 60);
-          const newMinutes = totalMinutes % 60;
-          currentTimeUTC = `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
-        }
-        
-        return slots;
-      };
-      
-      // Agrupar por especialidad CON SLOTS REALES
+      // Agrupar por especialidad CON SLOTS REALES (usa generateTimeSlots DRY)
       const bySpecialty: { [key: string]: any[] } = {};
       for (const row of rows) {
         const specName = row.specialty_name;
@@ -372,9 +445,9 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
         const endTimeColombia = utcToColombiaTime(endTimeUTC);
         const durationMinutes = row.duration_minutes || 20;
         
-        // Generar slots disponibles para esta agenda
+        // Generar slots disponibles para esta agenda usando función DRY
         const occupiedSet = occupiedSlots[row.availability_id] || new Set();
-        const availableSlots = generateSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
+        const availableSlots = generateTimeSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
         
         bySpecialty[specName].push({
           availability_id: row.availability_id,
@@ -393,8 +466,9 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
           doctor_name: row.doctor_name,
           location_id: row.location_id,
           location_name: row.location_name,
+          location_address: row.location_address,
           waiting_list_count: row.waiting_list_count || 0,
-          // ⭐ NUEVO: SLOTS ESPECÍFICOS DISPONIBLES
+          // SLOTS ESPECÍFICOS DISPONIBLES
           horarios_disponibles: availableSlots.map(s => s.time_formatted),
           horarios_24h: availableSlots.map(s => s.time_colombia)
         });
@@ -424,9 +498,9 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
         const startTimeColombia = utcToColombiaTime(startTimeUTC);
         const durationMinutes = r.duration_minutes || 20;
         
-        // Obtener los slots disponibles para esta agenda
+        // Obtener los slots disponibles usando función DRY
         const occupiedSet = occupiedSlots[r.availability_id] || new Set();
-        const availableSlots = generateSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
+        const availableSlots = generateTimeSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
         
         return {
           opcion: index + 1,
@@ -434,12 +508,21 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
           availability_id: r.availability_id,
           fecha: formatDateToSpanish(r.appointment_date),
           fecha_iso: r.appointment_date,
+          // Alias para compatibilidad con código de state management
+          appointment_date: r.appointment_date,
+          appointment_date_formatted: formatDateToSpanish(r.appointment_date),
           hora_inicio: formatTimeToAMPM(startTimeColombia),
+          start_time_formatted: formatTimeToAMPM(startTimeColombia),
           doctor: r.doctor_name,
+          doctor_name: r.doctor_name,
           doctor_id: r.doctor_id,
           sede: r.location_name,
+          location_name: r.location_name,
+          direccion_sede: r.location_address,
           cupos: r.slots_available,
+          slots_available: r.slots_available,
           specialty_id: r.specialty_id,
+          specialty_name: r.specialty_name,
           // ⭐ HORARIOS EXACTOS DISPONIBLES - USA SOLO ESTOS
           horarios_disponibles: availableSlots.map(s => s.time_formatted),
           horarios_24h: availableSlots.map(s => s.time_colombia)
@@ -449,65 +532,17 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
       return {
         success: true,
         data: {
-          // ⚠️ INSTRUCCIONES CRÍTICAS PARA LA IA - LEER PRIMERO
-          INSTRUCCIONES_CRITICAS: `⛔ REGLAS ABSOLUTAS DE HORARIOS:
-1. CADA OPCIÓN tiene un campo "horarios_disponibles" con los horarios EXACTOS
-2. SOLO puedes ofrecer los horarios listados en "horarios_disponibles" - NUNCA INVENTES OTROS
-3. Las citas son cada ${rows[0]?.duration_minutes || 20} minutos: X:00, X:20, X:40 - NUNCA X:30
-4. Si el paciente elige una fecha, muestra los "horarios_disponibles" de esa opción
-5. PROHIBIDO inventar horarios como 8:30, 10:30, 11:30 - NO EXISTEN`,
-          
-          EJEMPLO_USO: "Si el paciente dice 'Martes 10', busca la opción con esa fecha y ofrece sus 'horarios_disponibles'",
-          
           total: rows.length,
           unique_doctors_count: uniqueDoctors.length,
           unique_doctors: uniqueDoctors,
           
-          // Lista con HORARIOS EXACTOS DISPONIBLES
+          // Lista principal con HORARIOS EXACTOS DISPONIBLES
           opciones_disponibles: opcionesParaMostrar,
           
           doctors_summary: doctorsSummary,
-          IMPORTANTE: uniqueDoctors.length > 1 
-            ? `⚠️ HAY ${uniqueDoctors.length} DOCTORES DISPONIBLES: ${uniqueDoctors.join(', ')}. ¡DEBES mostrar TODOS al paciente!`
-            : `Solo hay 1 doctor disponible: ${uniqueDoctors[0] || 'Ninguno'}`,
           timezone: 'America/Bogota (UTC-5)',
-          by_specialty: bySpecialty,
-          appointments: rows.map(r => {
-            const startTimeStr = typeof r.start_time === 'string' ? r.start_time : String(r.start_time);
-            const endTimeStr = typeof r.end_time === 'string' ? r.end_time : String(r.end_time);
-            const startTimeUTC = startTimeStr.substring(0, 5);
-            const endTimeUTC = endTimeStr.substring(0, 5);
-            const startTimeColombia = utcToColombiaTime(startTimeUTC);
-            const endTimeColombia = utcToColombiaTime(endTimeUTC);
-            const durationMinutes = r.duration_minutes || 20;
-            
-            // Obtener los slots disponibles para esta agenda
-            const occupiedSet = occupiedSlots[r.availability_id] || new Set();
-            const availableSlots = generateSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
-            
-            return {
-              availability_id: r.availability_id,
-              appointment_date: r.appointment_date,
-              appointment_date_formatted: formatDateToSpanish(r.appointment_date),
-              start_time: startTimeColombia,
-              end_time: endTimeColombia,
-              start_time_formatted: formatTimeToAMPM(startTimeColombia),
-              end_time_formatted: formatTimeToAMPM(endTimeColombia),
-              slots_total: r.slots_total,
-              slots_available: r.slots_available,
-              duration_minutes: r.duration_minutes,
-              specialty_id: r.specialty_id,
-              specialty_name: r.specialty_name,
-              doctor_id: r.doctor_id,
-              doctor_name: r.doctor_name,
-              location_id: r.location_id,
-              location_name: r.location_name,
-              waiting_list_count: r.waiting_list_count || 0,
-              // ⭐ HORARIOS EXACTOS DISPONIBLES
-              horarios_disponibles: availableSlots.map(s => s.time_formatted),
-              horarios_24h: availableSlots.map(s => s.time_colombia)
-            };
-          })
+          // Mantener appointments como alias compacto para compatibilidad
+          appointments: opcionesParaMostrar
         }
       };
     } finally {
@@ -517,6 +552,7 @@ export async function getAvailableAppointments(args: { specialty_name?: string; 
     logger.error({ error: error.message, args, stack: error.stack }, 'getAvailableAppointments error');
     return { success: false, error: error.message };
   }
+  }, 'getAvailableAppointments');
 }
 
 // ============================================================================
@@ -535,6 +571,7 @@ export async function getAvailableTimeSlots(args: {
     const connection = await pool.getConnection();
     try {
       // Obtener la disponibilidad con fecha formateada como string
+      // ⚠️ FILTRO DE FECHA: Solo permitir agendas de hoy o futuras
       const [availRows] = await connection.execute<RowDataPacket[]>(`
         SELECT 
           a.id,
@@ -555,7 +592,7 @@ export async function getAvailableTimeSlots(args: {
         JOIN specialties s ON a.specialty_id = s.id
         JOIN doctors d ON a.doctor_id = d.id
         JOIN locations l ON a.location_id = l.id
-        WHERE a.id = ?
+        WHERE a.id = ? AND a.date >= CURDATE()
       `, [args.availability_id]);
 
       if (availRows.length === 0) {
@@ -695,6 +732,14 @@ export async function getAvailableTimeSlotsForDoctorOnDate(args: {
     return { success: false, error: 'La fecha es requerida' };
   }
 
+  // VALIDACIÓN: Rechazar fechas pasadas
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const requestedDate = new Date(args.date + 'T00:00:00');
+  if (requestedDate < today) {
+    return { success: false, error: 'No se pueden consultar disponibilidades en fechas pasadas' };
+  }
+
   if (!args.doctor_id && !args.doctor_name) {
     return { success: false, error: 'Se requiere doctor_id o doctor_name' };
   }
@@ -702,8 +747,8 @@ export async function getAvailableTimeSlotsForDoctorOnDate(args: {
   try {
     const connection = await pool.getConnection();
     try {
-      // 1. Obtener todas las agendas del doctor en esa fecha
-      let whereClause = "WHERE DATE_FORMAT(a.date, '%Y-%m-%d') = ? AND a.status = 'Activa' AND (a.is_paused = 0 OR a.is_paused IS NULL)";
+      // FIX: Usar a.date = ? en lugar de DATE_FORMAT() para permitir uso de índice
+      let whereClause = "WHERE a.date = ? AND a.status = 'Activa' AND (a.is_paused = 0 OR a.is_paused IS NULL)";
       const params: any[] = [args.date];
 
       if (args.doctor_id) {
@@ -754,7 +799,34 @@ export async function getAvailableTimeSlotsForDoctorOnDate(args: {
         };
       }
 
-      // 2. Para cada agenda, obtener slots ocupados
+      // FIX N+1: Obtener TODAS las citas existentes para TODAS las agendas en un solo query batch
+      const activeAvailIds = availRows
+        .filter(a => a.slots_available > 0)
+        .map(a => a.availability_id);
+      
+      // Mapa de citas ocupadas por availability_id
+      const occupiedByAvailability = new Map<number, Set<string>>();
+      
+      if (activeAvailIds.length > 0) {
+        const placeholders = activeAvailIds.map(() => '?').join(',');
+        const [existingAppts] = await connection.execute<RowDataPacket[]>(`
+          SELECT availability_id, scheduled_at, duration_minutes
+          FROM appointments
+          WHERE availability_id IN (${placeholders}) AND status NOT IN ('Cancelada', 'Pendiente')
+        `, activeAvailIds);
+
+        // Agrupar por availability_id
+        for (const appt of existingAppts) {
+          if (!occupiedByAvailability.has(appt.availability_id)) {
+            occupiedByAvailability.set(appt.availability_id, new Set());
+          }
+          const timeStr = extractTimeFromScheduledAt(appt.scheduled_at);
+          occupiedByAvailability.get(appt.availability_id)!.add(timeStr);
+          occupiedByAvailability.get(appt.availability_id)!.add(timeStr.substring(0, 5) + ':00');
+        }
+      }
+
+      // Generar slots para cada agenda usando la función DRY
       const allSlots: Array<{
         time_colombia: string;
         time_utc: string;
@@ -777,100 +849,43 @@ export async function getAvailableTimeSlotsForDoctorOnDate(args: {
 
       for (const avail of availRows) {
         const durationMinutes = avail.duration_minutes || 20;
+        const startTimeUTC = String(avail.start_time).substring(0, 5);
+        const endTimeUTC = String(avail.end_time).substring(0, 5);
         
-        // Verificar si la agenda está llena ANTES de procesar
         if (avail.slots_available <= 0) {
           agendaSummary.push({
             availability_id: avail.availability_id,
-            start_time: utcToColombiaTime(String(avail.start_time).substring(0, 5)),
-            end_time: utcToColombiaTime(String(avail.end_time).substring(0, 5)),
+            start_time: utcToColombiaTime(startTimeUTC),
+            end_time: utcToColombiaTime(endTimeUTC),
             slots_available: 0,
             slots_total: avail.capacity,
             is_full: true
           });
-          logger.info({ 
+          continue;
+        }
+
+        // Usar la función DRY para generar slots
+        const occupiedSet = occupiedByAvailability.get(avail.availability_id) || new Set();
+        const slots = generateTimeSlots(startTimeUTC, endTimeUTC, durationMinutes, occupiedSet);
+        
+        for (const slot of slots) {
+          allSlots.push({
+            ...slot,
             availability_id: avail.availability_id,
-            slots_available: avail.slots_available 
-          }, 'Agenda completa, saltando');
-          continue; // Saltar agendas completas
-        }
-
-        // Obtener citas existentes para esta agenda
-        const [existingAppts] = await connection.execute<RowDataPacket[]>(`
-          SELECT scheduled_at, duration_minutes
-          FROM appointments
-          WHERE availability_id = ? AND status NOT IN ('Cancelada', 'Pendiente')
-        `, [avail.availability_id]);
-
-        // Crear set de horarios ocupados
-        const bookedTimesUTC = new Set<string>();
-        for (const appt of existingAppts) {
-          let timeStr: string;
-          if (appt.scheduled_at instanceof Date) {
-            timeStr = appt.scheduled_at.toISOString().substring(11, 19);
-          } else {
-            const dateStr = String(appt.scheduled_at);
-            if (dateStr.includes('T')) {
-              timeStr = dateStr.split('T')[1].substring(0, 8);
-            } else if (dateStr.includes(' ')) {
-              timeStr = dateStr.split(' ')[1].substring(0, 8);
-            } else {
-              timeStr = dateStr;
-            }
-          }
-          bookedTimesUTC.add(timeStr);
-          bookedTimesUTC.add(timeStr.substring(0, 5) + ':00');
-        }
-
-        logger.debug({ 
-          availability_id: avail.availability_id,
-          bookedTimesCount: bookedTimesUTC.size,
-          bookedTimes: Array.from(bookedTimesUTC)
-        }, 'Horarios ocupados en esta agenda');
-
-        // Generar slots disponibles
-        const startTimeUTC = String(avail.start_time).substring(0, 5);
-        const endTimeUTC = String(avail.end_time).substring(0, 5);
-
-        let currentTimeUTC = startTimeUTC + ':00';
-        const endTimeUTCFull = endTimeUTC + ':00';
-        let slotsInThisAgenda = 0;
-
-        while (currentTimeUTC < endTimeUTCFull) {
-          const timeStrUTC = currentTimeUTC.substring(0, 5);
-          
-          // Verificar si este slot NO está ocupado
-          if (!bookedTimesUTC.has(currentTimeUTC) && !bookedTimesUTC.has(timeStrUTC + ':00')) {
-            const timeColombiaStr = utcToColombiaTime(timeStrUTC);
-            
-            allSlots.push({
-              time_colombia: timeColombiaStr,
-              time_utc: timeStrUTC,
-              time_formatted: formatColombiaTimeToAMPM(timeColombiaStr),
-              availability_id: avail.availability_id,
-              specialty_name: avail.specialty_name,
-              location_name: avail.location_name,
-              scheduled_datetime: `${avail.date} ${currentTimeUTC}`
-            });
-            slotsInThisAgenda++;
-            totalSlotsAvailable++;
-          }
-
-          // Avanzar al siguiente slot
-          const [hours, minutes] = timeStrUTC.split(':').map(Number);
-          const totalMinutes = hours * 60 + minutes + durationMinutes;
-          const newHours = Math.floor(totalMinutes / 60);
-          const newMinutes = totalMinutes % 60;
-          currentTimeUTC = `${String(newHours).padStart(2, '0')}:${String(newMinutes).padStart(2, '0')}:00`;
+            specialty_name: avail.specialty_name,
+            location_name: avail.location_name,
+            scheduled_datetime: `${avail.date} ${slot.time_utc}:00`
+          });
+          totalSlotsAvailable++;
         }
 
         agendaSummary.push({
           availability_id: avail.availability_id,
           start_time: utcToColombiaTime(startTimeUTC),
           end_time: utcToColombiaTime(endTimeUTC),
-          slots_available: slotsInThisAgenda,
+          slots_available: slots.length,
           slots_total: avail.capacity,
-          is_full: slotsInThisAgenda === 0
+          is_full: slots.length === 0
         });
       }
 
@@ -882,10 +897,8 @@ export async function getAvailableTimeSlotsForDoctorOnDate(args: {
         elapsed, 
         totalSlots: allSlots.length,
         agendasProcessed: availRows.length,
-        agendaSummary
       }, 'getAvailableTimeSlotsForDoctorOnDate completed');
 
-      // Si no hay slots disponibles
       if (allSlots.length === 0) {
         return {
           success: true,
@@ -934,10 +947,12 @@ export async function getAvailableTimeSlotsForDoctorOnDate(args: {
 // ============================================================================
 
 export async function scheduleAppointment(args: {
-  availability_id: number;
+  availability_id?: number;
   patient_id: number;
+  specialty_id?: number;
   scheduled_time?: string;
   scheduled_datetime?: string;
+  scheduled_date?: string;
   reason?: string;
   priority_level?: string;
   cups_code?: string;
@@ -948,10 +963,43 @@ export async function scheduleAppointment(args: {
   
   logger.info({ args }, 'scheduleAppointment: creating appointment with extended options');
 
+  return withRetry(async () => {
   try {
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
+
+      // Modo híbrido: si no hay availability_id, registrar en lista de espera por especialidad
+      if (!args.availability_id) {
+        await connection.rollback();
+
+        if (!args.specialty_id) {
+          return {
+            success: false,
+            error: 'Para agendar se requiere availability_id, o specialty_id para lista de espera.'
+          };
+        }
+
+        const waitingBySpecialty = await addToWaitingList({
+          patient_id: args.patient_id,
+          specialty_id: args.specialty_id,
+          priority_level: args.priority_level,
+          reason: args.reason
+        });
+
+        if (!waitingBySpecialty.success) {
+          return waitingBySpecialty;
+        }
+
+        return {
+          ...waitingBySpecialty,
+          waiting_list: true,
+          data: {
+            ...(waitingBySpecialty.data || {}),
+            waiting_mode: 'specialty'
+          }
+        };
+      }
 
       // Obtener disponibilidad
       const [availRows] = await connection.execute<RowDataPacket[]>(`
@@ -977,58 +1025,60 @@ export async function scheduleAppointment(args: {
 
       const avail = availRows[0];
 
+      // ⚠️ VALIDACIÓN: No permitir agendar en fechas pasadas
+      const availDate = avail.date instanceof Date 
+        ? avail.date 
+        : new Date(String(avail.date).split('T')[0] + 'T00:00:00');
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (availDate < today) {
+        await connection.rollback();
+        return { success: false, error: 'No se puede agendar en una fecha pasada. Por favor seleccione una fecha futura.' };
+      }
+
       // Verificar si hay cupos
       if (avail.slots_available <= 0) {
-        // Agregar a lista de espera
-        const [waitingResult] = await connection.execute<ResultSetHeader>(`
-          INSERT INTO appointments_waiting_list 
-          (patient_id, specialty_id, location_id, availability_id, priority_level, reason, status)
-          VALUES (?, ?, ?, ?, ?, ?, 'pending')
-        `, [
-          args.patient_id,
-          avail.specialty_id,
-          avail.location_id,
-          args.availability_id,
-          args.priority_level || 'normal',
-          args.reason || ''
-        ]);
+        await connection.rollback();
 
-        // Obtener posición en lista
-        const [positionRows] = await connection.execute<RowDataPacket[]>(`
-          SELECT COUNT(*) AS position 
-          FROM appointments_waiting_list 
-          WHERE specialty_id = ? AND status = 'pending' AND id <= ?
-        `, [avail.specialty_id, waitingResult.insertId]);
+        const waitingForAvailability = await addToWaitingList({
+          patient_id: args.patient_id,
+          specialty_id: avail.specialty_id,
+          availability_id: args.availability_id,
+          priority_level: args.priority_level,
+          reason: args.reason || ''
+        });
 
-        await connection.commit();
-
-        const elapsed = Date.now() - startTime;
-        logger.info({ waitingListId: waitingResult.insertId, elapsed }, 'Added to waiting list');
+        if (!waitingForAvailability.success) {
+          return waitingForAvailability;
+        }
 
         return {
-          success: true,
+          ...waitingForAvailability,
           waiting_list: true,
           data: {
-            waiting_list_id: waitingResult.insertId,
-            queue_position: positionRows[0].position,
+            ...(waitingForAvailability.data || {}),
             specialty_name: avail.specialty_name,
             location_name: avail.location_name,
-            message: `Añadido a lista de espera en posición ${positionRows[0].position}`
+            waiting_mode: 'availability'
           }
         };
       }
 
       // Determinar hora de la cita
+      // Aceptar tanto scheduled_datetime como scheduled_date (alias usado por WhatsApp)
+      const effectiveDatetime = args.scheduled_datetime || args.scheduled_date;
       let scheduledTime = args.scheduled_time;
-      if (args.scheduled_datetime) {
+      if (effectiveDatetime) {
         // Extraer hora de scheduled_datetime (formato: "YYYY-MM-DD HH:MM" o solo "HH:MM")
-        const match = args.scheduled_datetime.match(/(\d{1,2}):(\d{2})/);
+        const match = effectiveDatetime.match(/(\d{1,2}):(\d{2})/);
         if (match) {
           scheduledTime = `${match[1].padStart(2, '0')}:${match[2]}:00`;
+          logger.info({ effectiveDatetime, extractedTime: scheduledTime }, 'scheduleAppointment: hora extraída de scheduled_date/datetime');
         }
       }
       if (!scheduledTime) {
         scheduledTime = avail.start_time;
+        logger.warn({ fallback: avail.start_time }, 'scheduleAppointment: usando start_time de la agenda como fallback');
       }
 
       // Calcular hora de fin
@@ -1058,6 +1108,57 @@ export async function scheduleAppointment(args: {
           cups_id = insertResult.insertId;
           logger.info({ cups_code: args.cups_code, cups_id, manual: true }, 'CUPS registered manually');
         }
+      }
+
+      // PROTECCIÓN: Verificar que el slot específico no esté ya ocupado (race condition)
+      const [existingSlot] = await connection.execute<RowDataPacket[]>(`
+        SELECT id FROM appointments 
+        WHERE availability_id = ? AND scheduled_at = ? AND status NOT IN ('Cancelada', 'Pendiente')
+        LIMIT 1
+      `, [args.availability_id, `${dateStr} ${scheduledTime}`]);
+
+      if (existingSlot.length > 0) {
+        await connection.rollback();
+        return { 
+          success: false, 
+          error: `El horario ${formatColombiaTimeToAMPM(utcToColombiaTime(scheduledTime.substring(0, 5)))} ya fue tomado. Por favor elige otro horario.`
+        };
+      }
+
+      // PROTECCIÓN: Verificar cita duplicada — mismo paciente, misma especialidad, cualquier cita futura activa
+      // ESTANDARIZADO con portal web (patients-updated.ts) que verifica scheduled_at >= NOW()
+      const [duplicatePatient] = await connection.execute<RowDataPacket[]>(`
+        SELECT ap.id, ap.scheduled_at, d.name AS doctor_name,
+          DATE_FORMAT(ap.scheduled_at, '%Y-%m-%d') AS appointment_date,
+          TIME_FORMAT(ap.scheduled_at, '%H:%i') AS appointment_time_utc
+        FROM appointments ap
+        JOIN doctors d ON ap.doctor_id = d.id
+        WHERE ap.patient_id = ? 
+          AND ap.specialty_id = ?
+          AND ap.status IN ('Confirmada', 'Pendiente')
+          AND ap.scheduled_at >= NOW()
+        LIMIT 1
+      `, [args.patient_id, avail.specialty_id]);
+
+      if (duplicatePatient.length > 0) {
+        await connection.rollback();
+        const existingDate = duplicatePatient[0].appointment_date;
+        const existingTimeUTC = duplicatePatient[0].appointment_time_utc;
+        const existingTimeColombia = existingTimeUTC ? formatColombiaTimeToAMPM(utcToColombiaTime(existingTimeUTC)) : '';
+        const existingDoctor = duplicatePatient[0].doctor_name;
+        const existingId = duplicatePatient[0].id;
+        return { 
+          success: false, 
+          duplicate: true,
+          existing_appointment: {
+            appointment_id: existingId,
+            doctor_name: existingDoctor,
+            appointment_date: existingDate,
+            appointment_date_formatted: formatDateToSpanish(existingDate),
+            scheduled_time: existingTimeColombia
+          },
+          error: `Ya tienes una cita de ${avail.specialty_name} programada para el ${formatDateToSpanish(existingDate)} a las ${existingTimeColombia} con ${existingDoctor} (Cita #${existingId}). Debes cancelar o completar esa cita antes de agendar otra en la misma especialidad.`
+        };
       }
 
       // Insertar cita usando scheduled_at (datetime completo)
@@ -1171,6 +1272,10 @@ export async function scheduleAppointment(args: {
         }
       }
 
+      // Convertir hora UTC a hora Colombia para mostrar al usuario
+      const scheduledTimeColombia = utcToColombiaTime(scheduledTime);
+      const scheduledTimeFormatted = formatColombiaTimeToAMPM(scheduledTimeColombia);
+
       return {
         success: true,
         data: {
@@ -1182,8 +1287,11 @@ export async function scheduleAppointment(args: {
           doctor_name: avail.doctor_name,
           specialty_name: avail.specialty_name,
           location_name: avail.location_name,
+          location_address: avail.location_address,
           appointment_date: dateStr,
           scheduled_time: scheduledTime,
+          scheduled_time_colombia: scheduledTimeColombia,
+          scheduled_time_formatted: scheduledTimeFormatted,
           scheduled_at: `${dateStr} ${scheduledTime}`,
           duration_minutes: duration,
           reason: args.reason,
@@ -1201,6 +1309,7 @@ export async function scheduleAppointment(args: {
     logger.error({ error: error.message, args, stack: error.stack }, 'scheduleAppointment error');
     return { success: false, error: error.message };
   }
+  }, 'scheduleAppointment');
 }
 
 // ============================================================================
@@ -1215,10 +1324,12 @@ export async function registerPatientSimple(args: {
   birth_date?: string;
   gender?: string;
   email?: string;
+  municipality_name?: string;
   address?: string;
   city?: string;
   zone_id?: string;
 }): Promise<any> {
+  return withRetry(async () => {
   const startTime = Date.now();
   const document = args.document?.toString().replace(/\D/g, '');
   
@@ -1268,6 +1379,7 @@ export async function registerPatientSimple(args: {
         ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Activo', NOW())
       `, [
         document,
+        args.name,
         args.birth_date || null,
         args.gender || 'No especificado',
         args.phone || null,
@@ -1307,13 +1419,24 @@ export async function registerPatientSimple(args: {
     logger.error({ error: error.message, args, stack: error.stack }, 'registerPatientSimple error');
     return { success: false, error: error.message };
   }
+  }, 'registerPatientSimple');
 }
 
 // ============================================================================
-// LISTAR EPS ACTIVAS
+// LISTAR EPS ACTIVAS (con caché in-memory, TTL 5 minutos)
 // ============================================================================
 
+const EPS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutos
+let epsCacheData: any = null;
+let epsCacheTimestamp = 0;
+
 export async function listActiveEPS(): Promise<any> {
+  // Retornar caché si aún es válida
+  const now = Date.now();
+  if (epsCacheData && (now - epsCacheTimestamp) < EPS_CACHE_TTL_MS) {
+    return epsCacheData;
+  }
+
   const startTime = Date.now();
   
   logger.info('listActiveEPS: fetching active EPS list');
@@ -1322,32 +1445,86 @@ export async function listActiveEPS(): Promise<any> {
     const connection = await pool.getConnection();
     try {
       const [rows] = await connection.execute<RowDataPacket[]>(`
-        SELECT id, name, code, nit, active
+        SELECT id, name, code
         FROM eps
-        WHERE active = 1
+        WHERE status = 'active' AND has_agreement = 1
         ORDER BY name ASC
       `);
 
       const elapsed = Date.now() - startTime;
       logger.info({ elapsed, count: rows.length }, 'listActiveEPS completed');
 
-      return {
+      const result = {
         success: true,
         data: {
           total: rows.length,
           eps_list: rows.map(r => ({
             id: r.id,
             name: r.name,
-            code: r.code,
-            nit: r.nit
+            code: r.code
           }))
         }
       };
+
+      // Guardar en caché
+      epsCacheData = result;
+      epsCacheTimestamp = Date.now();
+
+      return result;
     } finally {
       connection.release();
     }
   } catch (error: any) {
     logger.error({ error: error.message, stack: error.stack }, 'listActiveEPS error');
+    return { success: false, error: error.message };
+  }
+}
+
+// ============================================================================
+// BUSCAR EPS POR NOMBRE EN TODA LA TABLA (activas e inactivas)
+// ============================================================================
+export async function findEPSByName(searchName: string): Promise<any> {
+  const startTime = Date.now();
+  logger.info({ searchName }, 'findEPSByName: searching all EPS');
+
+  try {
+    const connection = await pool.getConnection();
+    try {
+      const [rows] = await connection.execute<RowDataPacket[]>(`
+        SELECT id, name, status, has_agreement
+        FROM eps
+        ORDER BY name ASC
+      `);
+
+      const elapsed = Date.now() - startTime;
+      logger.info({ elapsed, count: rows.length }, 'findEPSByName completed');
+
+      const normalizedSearch = searchName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const match = (rows as any[]).find((e: any) => {
+        const normalizedName = e.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return normalizedName.includes(normalizedSearch) || normalizedSearch.includes(normalizedName);
+      });
+
+      if (match) {
+        return {
+          success: true,
+          found: true,
+          eps: {
+            id: match.id,
+            name: match.name,
+            status: match.status,
+            has_agreement: match.has_agreement,
+            isActive: match.status === 'active' && match.has_agreement === 1
+          }
+        };
+      }
+
+      return { success: true, found: false };
+    } finally {
+      connection.release();
+    }
+  } catch (error: any) {
+    logger.error({ error: error.message, stack: error.stack }, 'findEPSByName error');
     return { success: false, error: error.message };
   }
 }
@@ -1376,15 +1553,14 @@ export async function getAuthorizedSpecialtiesForEPS(args: {
         return { success: false, error: 'EPS no encontrada' };
       }
 
-      // Obtener especialidades autorizadas
+      // Obtener especialidades autorizadas (usa la vista v_eps_authorizations que valida fechas)
       const [rows] = await connection.execute<RowDataPacket[]>(`
         SELECT DISTINCT 
-          s.id AS specialty_id,
-          s.name AS specialty_name
-        FROM specialties s
-        INNER JOIN eps_specialty_locations esl ON s.id = esl.specialty_id
-        WHERE esl.eps_id = ? AND esl.is_active = 1
-        ORDER BY s.name
+          specialty_id,
+          specialty_name
+        FROM v_eps_authorizations
+        WHERE eps_id = ? AND authorized = 1 AND is_currently_valid = 1
+        ORDER BY specialty_name
       `, [eps_id]);
 
       const elapsed = Date.now() - startTime;
@@ -1428,26 +1604,24 @@ export async function getAuthorizedLocationsForPatient(args: {
     try {
       let query = `
         SELECT DISTINCT 
-          l.id AS location_id,
-          l.name AS location_name,
-          l.zone_id,
-          l.address
-        FROM locations l
-        INNER JOIN eps_specialty_locations esl 
-          ON l.id = esl.location_id
-        WHERE esl.eps_id = ? 
-          AND esl.specialty_id = ?
-          AND esl.is_active = 1
+          location_id,
+          location_name,
+          municipality_id AS zone_id
+        FROM v_eps_authorizations
+        WHERE eps_id = ? 
+          AND specialty_id = ?
+          AND authorized = 1
+          AND is_currently_valid = 1
       `;
       
       const params: any[] = [eps_id, specialty_id];
       
       if (zone_id) {
-        query += ` AND l.zone_id = ?`;
+        query += ` AND municipality_id = ?`;
         params.push(zone_id);
       }
       
-      query += ` ORDER BY l.name`;
+      query += ` ORDER BY location_name`;
       
       const [rows] = await connection.execute<RowDataPacket[]>(query, params);
 
@@ -1688,6 +1862,7 @@ export async function getPatientAppointments(args: {
 export async function cancelAppointment(args: {
   appointment_id: number;
   reason?: string;
+  cancellation_reason?: string;
 }): Promise<any> {
   const startTime = Date.now();
   
@@ -1725,7 +1900,7 @@ export async function cancelAppointment(args: {
         SET status = 'Cancelada', 
             cancellation_reason = ?
         WHERE id = ?
-      `, [args.reason || 'Cancelada por paciente', args.appointment_id]);
+      `, [args.reason || args.cancellation_reason || 'Cancelada por paciente', args.appointment_id]);
 
       // Restaurar cupo en disponibilidad
       if (appt.availability_id) {
@@ -1734,6 +1909,13 @@ export async function cancelAppointment(args: {
           SET booked_slots = GREATEST(0, booked_slots - 1) 
           WHERE id = ?
         `, [appt.availability_id]);
+
+        try {
+          await connection.execute(`CALL process_waiting_list_for_availability(?)`, [appt.availability_id]);
+          logger.info({ availabilityId: appt.availability_id }, 'Waiting list processed after cancellation');
+        } catch (waitingListError: any) {
+          logger.warn({ error: waitingListError.message, availabilityId: appt.availability_id }, 'Could not process waiting list after cancellation');
+        }
       }
 
       await connection.commit();
@@ -1771,12 +1953,17 @@ export async function cancelAppointment(args: {
 // ============================================================================
 
 export async function actualizarPhone(args: {
-  patient_id: number;
+  patient_id?: number;
+  document?: string;
   phone: string;
 }): Promise<any> {
   const startTime = Date.now();
   
   logger.info({ args }, 'actualizarPhone: updating patient phone');
+
+  if (!args.patient_id && !args.document) {
+    return { success: false, error: 'Se requiere patient_id o document' };
+  }
 
   try {
     const connection = await pool.getConnection();
@@ -1791,9 +1978,22 @@ export async function actualizarPhone(args: {
         }
       }
 
+      // Soportar búsqueda por document si no viene patient_id
+      let patientId = args.patient_id;
+      if (!patientId && args.document) {
+        const doc = args.document.toString().replace(/\D/g, '');
+        const [rows] = await connection.execute<RowDataPacket[]>(
+          'SELECT id FROM patients WHERE document = ? LIMIT 1', [doc]
+        );
+        if (rows.length === 0) {
+          return { success: false, error: 'Paciente no encontrado con ese documento' };
+        }
+        patientId = rows[0].id;
+      }
+
       await connection.execute(`
         UPDATE patients SET phone = ? WHERE id = ?
-      `, [phone, args.patient_id]);
+      `, [phone, patientId]);
 
       const elapsed = Date.now() - startTime;
       logger.info({ patientId: args.patient_id, elapsed }, 'Phone updated successfully');
@@ -2113,10 +2313,50 @@ export async function addToWaitingList(args: {
       if (existingRows.length > 0) {
         // Ya está en lista, obtener posición
         const [positionRows] = await connection.execute<RowDataPacket[]>(`
-          SELECT COUNT(*) AS position 
-          FROM appointments_waiting_list 
-          WHERE specialty_id = ? AND status = 'pending' AND id <= ?
-        `, [args.specialty_id, existingRows[0].id]);
+          SELECT COUNT(*) + 1 AS position
+          FROM appointments_waiting_list wl2
+          INNER JOIN appointments_waiting_list wlx ON wlx.id = ?
+          WHERE wl2.status = 'pending'
+            AND (
+              (wlx.availability_id IS NOT NULL AND wl2.availability_id = wlx.availability_id)
+              OR (wlx.availability_id IS NULL AND wl2.availability_id IS NULL AND wl2.specialty_id = wlx.specialty_id)
+            )
+            AND (
+              CASE UPPER(TRIM(wl2.priority_level))
+                WHEN 'URGENTE' THEN 1
+                WHEN 'ALTA' THEN 2
+                WHEN 'NORMAL' THEN 3
+                WHEN 'BAJA' THEN 4
+                ELSE 3
+              END
+              <
+              CASE UPPER(TRIM(wlx.priority_level))
+                WHEN 'URGENTE' THEN 1
+                WHEN 'ALTA' THEN 2
+                WHEN 'NORMAL' THEN 3
+                WHEN 'BAJA' THEN 4
+                ELSE 3
+              END
+              OR (
+                CASE UPPER(TRIM(wl2.priority_level))
+                  WHEN 'URGENTE' THEN 1
+                  WHEN 'ALTA' THEN 2
+                  WHEN 'NORMAL' THEN 3
+                  WHEN 'BAJA' THEN 4
+                  ELSE 3
+                END
+                =
+                CASE UPPER(TRIM(wlx.priority_level))
+                  WHEN 'URGENTE' THEN 1
+                  WHEN 'ALTA' THEN 2
+                  WHEN 'NORMAL' THEN 3
+                  WHEN 'BAJA' THEN 4
+                  ELSE 3
+                END
+                AND wl2.created_at < wlx.created_at
+              )
+            )
+        `, [existingRows[0].id]);
 
         return {
           success: true,
@@ -2136,7 +2376,9 @@ export async function addToWaitingList(args: {
 
       const specialtyName = specRows.length > 0 ? specRows[0].name : 'Especialidad';
 
-      // Insertar en lista de espera (sin location_id porque la tabla no tiene esa columna)
+      const normalizedPriority = normalizePriorityLevel(args.priority_level);
+
+      // Insertar en lista de espera
       const [result] = await connection.execute<ResultSetHeader>(`
         INSERT INTO appointments_waiting_list 
         (patient_id, specialty_id, availability_id, priority_level, reason, status, created_at)
@@ -2145,16 +2387,56 @@ export async function addToWaitingList(args: {
         args.patient_id,
         args.specialty_id,
         args.availability_id || null,
-        args.priority_level || 'Normal',
+        normalizedPriority,
         args.reason || `Consulta de ${specialtyName}`
       ]);
 
       // Obtener posición
       const [positionRows] = await connection.execute<RowDataPacket[]>(`
-        SELECT COUNT(*) AS position 
-        FROM appointments_waiting_list 
-        WHERE specialty_id = ? AND status = 'pending' AND id <= ?
-      `, [args.specialty_id, result.insertId]);
+        SELECT COUNT(*) + 1 AS position
+        FROM appointments_waiting_list wl2
+        INNER JOIN appointments_waiting_list wlx ON wlx.id = ?
+        WHERE wl2.status = 'pending'
+          AND (
+            (wlx.availability_id IS NOT NULL AND wl2.availability_id = wlx.availability_id)
+            OR (wlx.availability_id IS NULL AND wl2.availability_id IS NULL AND wl2.specialty_id = wlx.specialty_id)
+          )
+          AND (
+            CASE UPPER(TRIM(wl2.priority_level))
+              WHEN 'URGENTE' THEN 1
+              WHEN 'ALTA' THEN 2
+              WHEN 'NORMAL' THEN 3
+              WHEN 'BAJA' THEN 4
+              ELSE 3
+            END
+            <
+            CASE UPPER(TRIM(wlx.priority_level))
+              WHEN 'URGENTE' THEN 1
+              WHEN 'ALTA' THEN 2
+              WHEN 'NORMAL' THEN 3
+              WHEN 'BAJA' THEN 4
+              ELSE 3
+            END
+            OR (
+              CASE UPPER(TRIM(wl2.priority_level))
+                WHEN 'URGENTE' THEN 1
+                WHEN 'ALTA' THEN 2
+                WHEN 'NORMAL' THEN 3
+                WHEN 'BAJA' THEN 4
+                ELSE 3
+              END
+              =
+              CASE UPPER(TRIM(wlx.priority_level))
+                WHEN 'URGENTE' THEN 1
+                WHEN 'ALTA' THEN 2
+                WHEN 'NORMAL' THEN 3
+                WHEN 'BAJA' THEN 4
+                ELSE 3
+              END
+              AND wl2.created_at < wlx.created_at
+            )
+          )
+      `, [result.insertId]);
 
       const elapsed = Date.now() - startTime;
       logger.info({ 
@@ -2170,7 +2452,7 @@ export async function addToWaitingList(args: {
           waiting_list_id: result.insertId,
           queue_position: positionRows[0].position,
           specialty_name: specialtyName,
-          priority_level: args.priority_level || 'normal',
+          priority_level: normalizedPriority,
           message: `Agregado a lista de espera de ${specialtyName} en posición ${positionRows[0].position}`
         }
       };
@@ -2426,15 +2708,54 @@ export async function getWaitingListPosition(args: {
       // Para cada solicitud, obtener la posición
       const waitingListItems = await Promise.all(waitingRows.map(async (wl: any) => {
         const [posRows] = await connection.execute<RowDataPacket[]>(`
-          SELECT COUNT(*) AS position 
-          FROM appointments_waiting_list 
-          WHERE specialty_id = ? AND status = 'pending' AND id <= ?
-        `, [wl.specialty_id, wl.id]);
+          SELECT COUNT(*) + 1 AS position
+          FROM appointments_waiting_list wl2
+          WHERE wl2.status = 'pending'
+            AND (
+              (wl.availability_id IS NOT NULL AND wl2.availability_id = wl.availability_id)
+              OR (wl.availability_id IS NULL AND wl2.availability_id IS NULL AND wl2.specialty_id = wl.specialty_id)
+            )
+            AND (
+              CASE UPPER(TRIM(wl2.priority_level))
+                WHEN 'URGENTE' THEN 1
+                WHEN 'ALTA' THEN 2
+                WHEN 'NORMAL' THEN 3
+                WHEN 'BAJA' THEN 4
+                ELSE 3
+              END
+              <
+              CASE UPPER(TRIM(wl.priority_level))
+                WHEN 'URGENTE' THEN 1
+                WHEN 'ALTA' THEN 2
+                WHEN 'NORMAL' THEN 3
+                WHEN 'BAJA' THEN 4
+                ELSE 3
+              END
+              OR (
+                CASE UPPER(TRIM(wl2.priority_level))
+                  WHEN 'URGENTE' THEN 1
+                  WHEN 'ALTA' THEN 2
+                  WHEN 'NORMAL' THEN 3
+                  WHEN 'BAJA' THEN 4
+                  ELSE 3
+                END
+                =
+                CASE UPPER(TRIM(wl.priority_level))
+                  WHEN 'URGENTE' THEN 1
+                  WHEN 'ALTA' THEN 2
+                  WHEN 'NORMAL' THEN 3
+                  WHEN 'BAJA' THEN 4
+                  ELSE 3
+                END
+                AND wl2.created_at < wl.created_at
+              )
+            )
+        `);
 
         return {
           waiting_list_id: wl.id,
           specialty_name: wl.specialty_name,
-          priority_level: wl.priority_level,
+          priority_level: normalizePriorityLevel(wl.priority_level),
           queue_position: posRows[0].position,
           created_at: wl.created_at,
           status: wl.status
@@ -2653,7 +2974,7 @@ export async function checkAvailabilityQuota(args: {
       // 2. Obtener TODAS las availabilities de esta especialidad en esta sede
       let availQuery = `
         SELECT 
-          a.id as availability_id,
+          COALESCE(a.id, wl.availability_id) as availability_id,
           a.date as appointment_date,
           a.start_time,
           a.end_time,
@@ -2980,6 +3301,8 @@ export async function getWaitingListAppointments(args: {
           DATEDIFF(wl.expires_at, NOW()) as days_until_expiration,
           wl.reassigned_at,
           wl.reassigned_appointment_id,
+          wl.availability_id as waiting_availability_id,
+          wl.specialty_id as waiting_specialty_id,
           
           p.id as patient_id,
           p.name as patient_name,
@@ -3005,8 +3328,8 @@ export async function getWaitingListAppointments(args: {
           d.name as doctor_name,
           d.email as doctor_email,
           
-          s.id as specialty_id,
-          s.name as specialty_name,
+          COALESCE(sw.id, sa.id) as specialty_id,
+          COALESCE(sw.name, sa.name) as specialty_name,
           
           l.id as location_id,
           l.name as location_name,
@@ -3015,23 +3338,64 @@ export async function getWaitingListAppointments(args: {
           (
             SELECT COUNT(*) + 1
             FROM appointments_waiting_list wl2
-            INNER JOIN availabilities a2 ON wl2.availability_id = a2.id
-            WHERE a2.specialty_id = s.id
-              AND wl2.status = 'pending'
+            WHERE wl2.status = 'pending'
               AND (
-                (wl2.priority_level = 'Urgente' AND wl.priority_level != 'Urgente')
-                OR (wl2.priority_level = 'Alta' AND wl.priority_level NOT IN ('Urgente', 'Alta'))
-                OR (wl2.priority_level = 'Normal' AND wl.priority_level = 'Baja')
-                OR (wl2.priority_level = wl.priority_level AND wl2.created_at < wl.created_at)
+                (wl.availability_id IS NOT NULL AND wl2.availability_id = wl.availability_id)
+                OR (
+                  wl.availability_id IS NULL
+                  AND wl2.availability_id IS NULL
+                  AND wl2.specialty_id = wl.specialty_id
+                )
               )
-          ) as queue_position
+              AND (
+                CASE UPPER(TRIM(wl2.priority_level))
+                  WHEN 'URGENTE' THEN 1
+                  WHEN 'ALTA' THEN 2
+                  WHEN 'NORMAL' THEN 3
+                  WHEN 'BAJA' THEN 4
+                  ELSE 3
+                END
+                <
+                CASE UPPER(TRIM(wl.priority_level))
+                  WHEN 'URGENTE' THEN 1
+                  WHEN 'ALTA' THEN 2
+                  WHEN 'NORMAL' THEN 3
+                  WHEN 'BAJA' THEN 4
+                  ELSE 3
+                END
+                OR (
+                  CASE UPPER(TRIM(wl2.priority_level))
+                    WHEN 'URGENTE' THEN 1
+                    WHEN 'ALTA' THEN 2
+                    WHEN 'NORMAL' THEN 3
+                    WHEN 'BAJA' THEN 4
+                    ELSE 3
+                  END
+                  =
+                  CASE UPPER(TRIM(wl.priority_level))
+                    WHEN 'URGENTE' THEN 1
+                    WHEN 'ALTA' THEN 2
+                    WHEN 'NORMAL' THEN 3
+                    WHEN 'BAJA' THEN 4
+                    ELSE 3
+                  END
+                  AND wl2.created_at < wl.created_at
+                )
+              )
+          ) as queue_position,
+
+          CASE
+            WHEN wl.availability_id IS NOT NULL THEN 'availability'
+            ELSE 'specialty'
+          END as waiting_mode
         
         FROM appointments_waiting_list wl
         INNER JOIN patients p ON wl.patient_id = p.id
-        INNER JOIN availabilities a ON wl.availability_id = a.id
-        INNER JOIN doctors d ON a.doctor_id = d.id
-        INNER JOIN specialties s ON a.specialty_id = s.id
-        INNER JOIN locations l ON a.location_id = l.id
+        LEFT JOIN availabilities a ON wl.availability_id = a.id
+        LEFT JOIN doctors d ON a.doctor_id = d.id
+        LEFT JOIN specialties sa ON a.specialty_id = sa.id
+        LEFT JOIN specialties sw ON wl.specialty_id = sw.id
+        LEFT JOIN locations l ON a.location_id = l.id
         WHERE 1=1
       `;
 
@@ -3048,7 +3412,7 @@ export async function getWaitingListAppointments(args: {
       }
 
       if (specialty_id) {
-        query += ' AND a.specialty_id = ?';
+        query += ' AND COALESCE(wl.specialty_id, a.specialty_id) = ?';
         params.push(specialty_id);
       }
 
@@ -3058,7 +3422,7 @@ export async function getWaitingListAppointments(args: {
       }
 
       if (priority_level !== 'Todas') {
-        query += ' AND wl.priority_level = ?';
+        query += ' AND UPPER(TRIM(wl.priority_level)) = UPPER(TRIM(?))';
         params.push(priority_level);
       }
 
@@ -3069,11 +3433,12 @@ export async function getWaitingListAppointments(args: {
 
       query += ` 
         ORDER BY 
-          CASE wl.priority_level
-            WHEN 'Urgente' THEN 1
-            WHEN 'Alta' THEN 2
-            WHEN 'Normal' THEN 3
-            WHEN 'Baja' THEN 4
+          CASE UPPER(TRIM(wl.priority_level))
+            WHEN 'URGENTE' THEN 1
+            WHEN 'ALTA' THEN 2
+            WHEN 'NORMAL' THEN 3
+            WHEN 'BAJA' THEN 4
+            ELSE 3
           END,
           wl.created_at ASC
         LIMIT ?
@@ -3095,7 +3460,7 @@ export async function getWaitingListAppointments(args: {
       const waitingList = rows.map(wl => ({
         waiting_list_id: wl.waiting_list_id,
         status: wl.status,
-        priority_level: wl.priority_level,
+        priority_level: normalizePriorityLevel(wl.priority_level),
         queue_position: wl.queue_position,
         requested_date: wl.requested_date,
         appointment_type: wl.appointment_type,
@@ -3104,6 +3469,7 @@ export async function getWaitingListAppointments(args: {
         added_at: wl.added_to_waiting_list_at,
         expires_at: wl.expires_at,
         days_until_expiration: wl.days_until_expiration,
+        waiting_mode: wl.waiting_mode,
         patient: {
           id: wl.patient_id,
           name: wl.patient_name,
@@ -3111,19 +3477,19 @@ export async function getWaitingListAppointments(args: {
           phone: wl.patient_phone,
           email: wl.patient_email
         },
-        availability: {
+        availability: wl.availability_id ? {
           id: wl.availability_id,
           date: wl.availability_date,
-          start_time: formatTimeToAMPM(utcToColombiaTime(wl.start_time)),
-          end_time: formatTimeToAMPM(utcToColombiaTime(wl.end_time)),
+          start_time: wl.start_time ? formatTimeToAMPM(utcToColombiaTime(wl.start_time)) : null,
+          end_time: wl.end_time ? formatTimeToAMPM(utcToColombiaTime(wl.end_time)) : null,
           capacity: wl.total_capacity,
           current_appointments: wl.current_appointments_count,
-          slots_available: wl.total_capacity - wl.current_appointments_count,
-          can_be_reassigned: (wl.total_capacity - wl.current_appointments_count) > 0
-        },
-        doctor: { id: wl.doctor_id, name: wl.doctor_name, email: wl.doctor_email },
-        specialty: { id: wl.specialty_id, name: wl.specialty_name },
-        location: { id: wl.location_id, name: wl.location_name, address: wl.location_address },
+          slots_available: (wl.total_capacity || 0) - (wl.current_appointments_count || 0),
+          can_be_reassigned: ((wl.total_capacity || 0) - (wl.current_appointments_count || 0)) > 0
+        } : null,
+        doctor: wl.doctor_id ? { id: wl.doctor_id, name: wl.doctor_name, email: wl.doctor_email } : null,
+        specialty: wl.specialty_id ? { id: wl.specialty_id, name: wl.specialty_name } : null,
+        location: wl.location_id ? { id: wl.location_id, name: wl.location_name, address: wl.location_address } : null,
         reassignment_info: wl.reassigned_at ? {
           reassigned_at: wl.reassigned_at,
           appointment_id: wl.reassigned_appointment_id
@@ -3478,6 +3844,10 @@ const DirectDBTools = {
   scheduleAppointment,
   registerPatientSimple,
   listActiveEPS,
+  findEPSByName,
+  getAuthorizedSpecialtiesForEPS,
+  getAuthorizedLocationsForPatient,
+  getCUPSInfo,
   searchSpecialties,
   getPatientAppointments,
   getPatientWaitingList,

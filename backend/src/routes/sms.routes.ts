@@ -1530,4 +1530,119 @@ router.post('/notify-availability-patients', requireAuth, async (req: Request, r
   }
 });
 
+/**
+ * POST /api/sms/send-file-bulk
+ * Envía SMS masivo a partir de una lista de destinatarios cargados desde archivo
+ * Body: { recipients: Array<{ name: string, phone: string, message: string }> }
+ */
+router.post('/send-file-bulk', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { recipients } = req.body;
+
+    if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Se requiere un array de destinatarios (recipients) con al menos un elemento',
+      });
+    }
+
+    // Validar cada destinatario
+    for (let i = 0; i < recipients.length; i++) {
+      const r = recipients[i];
+      if (!r.phone || !r.message) {
+        return res.status(400).json({
+          success: false,
+          error: `Destinatario en posición ${i + 1} requiere al menos los campos: phone y message`,
+        });
+      }
+    }
+
+    // Limitar a 100 destinatarios por envío
+    if (recipients.length > 100) {
+      return res.status(400).json({
+        success: false,
+        error: 'Máximo 100 destinatarios por envío',
+      });
+    }
+
+    let successCount = 0;
+    let failCount = 0;
+    const results: any[] = [];
+
+    // Enviar en lotes de 10 con pausa entre lotes
+    const BATCH_SIZE = 10;
+    for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
+      const batch = recipients.slice(i, i + BATCH_SIZE);
+
+      for (const recipient of batch) {
+        try {
+          const result = await labsmobileService.sendSMS({
+            number: recipient.phone,
+            message: recipient.message,
+            recipient_name: recipient.name || 'Paciente',
+            user_id: (req as any).user?.id,
+            template_id: 'file_bulk'
+          });
+
+          if (result.success) {
+            successCount++;
+            results.push({
+              name: recipient.name,
+              phone: recipient.phone,
+              status: 'enviado',
+              message_id: result.message_id
+            });
+          } else {
+            failCount++;
+            results.push({
+              name: recipient.name,
+              phone: recipient.phone,
+              status: 'fallido',
+              error: result.error
+            });
+          }
+
+          // Pausa de 300ms entre cada envío
+          await new Promise(resolve => setTimeout(resolve, 300));
+
+        } catch (error: any) {
+          failCount++;
+          results.push({
+            name: recipient.name,
+            phone: recipient.phone,
+            status: 'error',
+            error: error.message
+          });
+        }
+      }
+
+      // Pausa de 1s entre lotes
+      if (i + BATCH_SIZE < recipients.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    console.log(`📱 [SMS File Bulk] SMS enviados: ${successCount} exitosos, ${failCount} fallidos de ${recipients.length} destinatarios`);
+
+    return res.json({
+      success: true,
+      message: `SMS enviados: ${successCount} exitosos, ${failCount} fallidos`,
+      data: {
+        total_destinatarios: recipients.length,
+        sms_enviados: successCount,
+        sms_fallidos: failCount,
+        resultados: results
+      }
+    });
+
+  } catch (error: any) {
+    console.error('Error en POST /api/sms/send-file-bulk:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Error al enviar SMS desde archivo',
+      details: error.message
+    });
+  }
+});
+
 export default router;

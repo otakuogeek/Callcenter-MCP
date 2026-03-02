@@ -1,0 +1,1568 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Biosanar — Cluster Monitor Pro</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-main: #09090b;
+  --bg-panel: #18181b;
+  --bg-elevated: #27272a;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-hover: rgba(255, 255, 255, 0.2);
+  
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  
+  --primary: #3b82f6;
+  --primary-glow: rgba(59, 130, 246, 0.3);
+  --success: #10b981;
+  --success-glow: rgba(16, 185, 129, 0.3);
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --danger-glow: rgba(239, 68, 68, 0.3);
+  --info: #8b5cf6;
+  
+  --s1: #3b82f6;
+  --s2: #10b981;
+  
+  --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+  --radius: 12px;
+  --radius-sm: 8px;
+  
+  --trans: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg-main);
+  background-image: 
+    radial-gradient(circle at 15% 10%, rgba(59, 130, 246, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 85% 90%, rgba(16, 185, 129, 0.03) 0%, transparent 40%);
+  background-attachment: fixed;
+  color: var(--text-main);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #52525b; }
+
+a { color: var(--primary); text-decoration: none; }
+button { font-family: inherit; }
+
+/* ── ANIMATIONS ── */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 8px 2px currentcolor; } }
+@keyframes pulseDot { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.8); } }
+@keyframes dashFlow { to { stroke-dashoffset: -20; } }
+@keyframes spinSlow { 100% { transform: rotate(360deg); } }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toastSlide { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+/* ── ICONS ── */
+.svg-icon { width: 1.25em; height: 1.25em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* ── LOGIN SCREEN ── */
+#login-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; position: relative; z-index: 10; }
+.login-bg-anim { position: absolute; inset: 0; z-index: -1; overflow: hidden; opacity: 0.2; }
+.login-bg-anim svg { width: 100%; height: 100%; }
+
+.login-card {
+  background: rgba(24, 24, 27, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 48px 40px;
+  width: 400px;
+  max-width: 90vw;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+  animation: fadeIn 0.6s ease-out;
+}
+.login-header { text-align: center; margin-bottom: 32px; }
+.login-logo { width: 64px; height: 64px; color: var(--primary); margin: 0 auto 16px; animation: pulseDot 4s infinite; }
+.login-header h1 { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; background: linear-gradient(135deg, #fff, #a1a1aa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+.login-header p { color: var(--text-muted); font-size: 14px; margin-top: 8px; }
+
+.form-group { margin-bottom: 20px; position: relative; }
+.form-group label { display: block; color: var(--text-muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.form-group input { width: 100%; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px 12px 40px; color: var(--text-main); font-size: 15px; outline: none; transition: var(--trans); }
+.form-group input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-glow); background: rgba(0,0,0,0.4); }
+.form-icon { position: absolute; left: 14px; top: 38px; color: var(--text-muted); width: 18px; height: 18px; }
+
+.btn-primary { width: 100%; background: linear-gradient(135deg, var(--primary), #2563eb); color: #fff; border: none; border-radius: 8px; padding: 14px; font-size: 15px; font-weight: 600; cursor: pointer; transition: var(--trans); position: relative; overflow: hidden; }
+.btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 15px var(--primary-glow); }
+.btn-primary:active { transform: translateY(1px); }
+.btn-primary:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
+
+.login-error { background: rgba(239,68,68,0.1); color: var(--danger); border: 1px solid var(--danger-glow); padding: 12px; border-radius: 8px; font-size: 13px; margin-top: 16px; text-align: center; display: none; animation: slideDown 0.3s; }
+
+/* ── APP LAYOUT ── */
+#app { display: none; min-height: 100vh; flex-direction: column; }
+
+/* ── HEADER ── */
+header { background: rgba(24, 24, 27, 0.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); padding: 0 24px; height: 60px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: var(--shadow-sm); }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand-icon { color: var(--primary); }
+.brand h1 { font-size: 16px; font-weight: 700; letter-spacing: -0.3px; display: flex; align-items: center; gap: 6px;}
+.conn-status { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; border: 1px solid; transition: var(--trans); }
+.status-connected { background: rgba(16,185,129,0.1); color: var(--success); border-color: rgba(16,185,129,0.3); }
+.status-disconnected { background: rgba(239,68,68,0.1); color: var(--danger); border-color: rgba(239,68,68,0.3); }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; }
+.status-connected .status-dot { background: var(--success); animation: pulseDot 2s infinite; }
+.status-disconnected .status-dot { background: var(--danger); }
+
+.header-actions { display: flex; align-items: center; gap: 16px; }
+.user-profile { display: flex; align-items: center; gap: 10px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+.user-role { background: var(--primary-glow); color: #93c5fd; font-size: 10px; border-radius: 4px; padding: 2px 6px; text-transform: uppercase; font-weight: 700; }
+.btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text-muted); border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--trans); display: flex; align-items: center; gap: 6px;}
+.btn-ghost:hover { border-color: var(--danger); color: var(--danger); background: rgba(239,68,68,0.05); }
+
+/* ── NAVIGATION ── */
+.nav-scroll { background: var(--bg-panel); border-bottom: 1px solid var(--border); overflow-x: auto; white-space: nowrap; -webkit-overflow-scrolling: touch; padding: 0 16px; }
+.tabs { display: inline-flex; gap: 8px; padding: 12px 8px 0; }
+.tab { background: transparent; border: none; color: var(--text-muted); padding: 12px 18px; cursor: pointer; font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; transition: var(--trans); border-radius: 6px 6px 0 0; display: flex; align-items: center; gap: 8px; }
+.tab:hover { color: var(--text-main); background: rgba(255,255,255,0.02); }
+.tab.active { color: var(--primary); border-bottom-color: var(--primary); background: rgba(59,130,246,0.05); }
+.tab .svg-icon { width: 18px; height: 18px; }
+
+/* ── MAIN CONTENT ── */
+main { padding: 24px; max-width: 1440px; margin: 0 auto; width: 100%; flex: 1; }
+.tab-content { display: none; animation: slideDown 0.3s ease-out forwards; }
+.tab-content.active { display: block; }
+
+/* ── COMMONS / GRIDS ── */
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+@media(max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+@media(max-width: 800px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } }
+
+/* ── CARDS ── */
+.card { background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow-sm); transition: transform 0.2s, box-shadow 0.2s; position: relative; overflow: hidden; }
+.card:hover { border-color: var(--border-hover); box-shadow: var(--shadow-lg); }
+.card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.card-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 10px; color: var(--text-main); }
+.card-title .svg-icon { color: var(--primary); }
+
+/* Badges */
+.badge { font-size: 11px; padding: 4px 10px; border-radius: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; letter-spacing: 0.5px; }
+.badge-outline-green { background: rgba(16,185,129,0.1); color: var(--success); border: 1px solid var(--success-glow); }
+.badge-outline-red { background: rgba(239,68,68,0.1); color: var(--danger); border: 1px solid var(--danger-glow); }
+.badge-outline-blue { background: rgba(59,130,246,0.1); color: var(--primary); border: 1px solid var(--primary-glow); }
+
+/* ── INFRASTRUCTURE TOPOLOGY SVG (NEW) ── */
+.infra-topology { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 24px; display: flex; justify-content: center; align-items: center; position: relative; }
+.svg-infra { width: 100%; max-width: 800px; height: auto; }
+.node-rect { fill: var(--bg-panel); stroke: var(--border); stroke-width: 2; rx: 8; transition: stroke 0.3s; }
+.node-rect.online { stroke: var(--success); }
+.node-rect.offline { stroke: var(--danger); }
+.node-text { fill: var(--text-main); font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 600; text-anchor: middle; dominant-baseline: middle; }
+.node-sub { fill: var(--text-muted); font-size: 10px; text-anchor: middle; }
+.flow-line { fill: none; stroke: var(--border); stroke-width: 2; }
+.flow-active { stroke: var(--primary); stroke-width: 2; stroke-dasharray: 6 6; animation: dashFlow 1s linear infinite; }
+.flow-repl { stroke: var(--info); stroke-width: 2; stroke-dasharray: 6 6; animation: dashFlow 1.5s linear infinite; }
+.node-icon-bg { fill: rgba(255,255,255,0.05); rx: 6; }
+
+/* ── METRICS MODULES ── */
+.metric-block { text-align: center; background: rgba(0,0,0,0.2); padding: 16px; border-radius: 12px; border: 1px solid transparent; transition: var(--trans); }
+.metric-block:hover { border-color: rgba(255,255,255,0.05); background: rgba(0,0,0,0.4); }
+.metric-val { font-size: 28px; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.metric-label { color: var(--text-muted); font-size: 11px; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; margin-top: 4px; }
+.val-blue { color: var(--primary); }
+.val-green { color: var(--success); }
+.val-warn { color: var(--warning); }
+.val-red { color: var(--danger); }
+
+/* Progress bars */
+.prog-container { margin-top: 16px; }
+.prog-header { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; font-weight: 500; }
+.prog-track { height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+.prog-fill { height: 100%; border-radius: 3px; transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); position: relative; }
+.prog-fill::after { content: ''; position: absolute; top:0;left:0;right:0;bottom:0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent); animation: slideRight 2s infinite; }
+@keyframes slideRight { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.fill-blue { background: var(--primary); }
+.fill-green { background: var(--success); }
+.fill-warn { background: var(--warning); }
+.fill-red { background: var(--danger); }
+
+/* ── SERVICES LIST ── */
+.service-list { display: flex; flex-direction: column; gap: 8px; }
+.service-item { display: flex; align-items: center; justify-content: space-between; padding: 12px; background: var(--bg-elevated); border-radius: 8px; border: 1px solid transparent; transition: var(--trans); }
+.service-item:hover { border-color: var(--border-hover); }
+.svc-left { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500; }
+.svc-dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 5px currentColor; }
+.dot-on { color: var(--success); background: var(--success); }
+.dot-off { color: var(--danger); background: var(--danger); }
+.dot-warn { color: var(--warning); background: var(--warning); }
+.svc-right { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+
+/* ── CHARTS ── */
+.chart-container { position: relative; height: 160px; margin-top: 16px; }
+.chart-container.large { height: 250px; }
+
+/* ── TABLES ── */
+.table-responsive { overflow-x: auto; margin-top: 12px; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th { text-align: left; color: var(--text-muted); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; padding: 12px; border-bottom: 1px solid var(--border); }
+.data-table td { padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.03); vertical-align: middle; }
+.data-table tr:hover td { background: rgba(255,255,255,0.02); }
+.data-table tr:last-child td { border-bottom: none; }
+
+.status-pill { padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.pill-online { background: rgba(16,185,129,0.15); color: var(--success); }
+.pill-stopped { background: rgba(239,68,68,0.15); color: var(--danger); }
+
+/* ── LOG VIEWER ── */
+.log-toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; background: var(--bg-elevated); padding: 8px; border-radius: 8px; border: 1px solid var(--border); }
+.btn-filter { background: transparent; border: 1px solid transparent; color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: var(--trans); display: flex; align-items: center; gap: 6px; }
+.btn-filter:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
+.btn-filter.active { background: rgba(59,130,246,0.1); color: var(--primary); border-color: var(--primary-glow); }
+.log-window { background: #000; border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: 'Fira Code', monospace; font-size: 12px; height: 500px; overflow-y: auto; white-space: pre-wrap; line-height: 1.6; color: #a1a1aa; position: relative; }
+.log-window::-webkit-scrollbar-thumb { background: #27272a; }
+.log-err { color: #f87171; }
+.log-warn { color: #fbbf24; }
+.log-ok { color: #34d399; }
+.log-info { color: #60a5fa; }
+
+/* ── CONFIG LIST ── */
+.cfg-group { margin-bottom: 24px; }
+.cfg-title { font-size: 12px; color: var(--text-muted); text-transform: uppercase; font-weight: 700; letter-spacing: 1px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+.cfg-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px dashed rgba(255,255,255,0.05); }
+.cfg-row:last-child { border-bottom: none; }
+.cfg-key { color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.cfg-val { font-size: 13px; font-weight: 500; font-family: 'Fira Code', monospace; text-align: right; max-width: 60%; word-break: break-all; }
+
+/* ── ACTIONS ── */
+.action-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; margin-top: 16px; }
+.action-card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 20px; cursor: pointer; transition: var(--trans); text-align: left; display: block; width: 100%; position: relative; overflow: hidden; }
+.action-card::before { content: ''; position: absolute; top:0; left:0; width: 4px; height: 100%; background: var(--primary); opacity: 0; transition: var(--trans); }
+.action-card:hover { border-color: var(--primary-glow); transform: translateY(-2px); box-shadow: var(--shadow-sm); }
+.action-card:hover::before { opacity: 1; }
+.action-icon { width: 32px; height: 32px; color: var(--primary); margin-bottom: 12px; }
+.action-name { font-size: 15px; font-weight: 600; color: var(--text-main); margin-bottom: 6px; }
+.action-desc { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+.term-output { background: #000; border: 1px solid var(--border); border-radius: 8px; padding: 16px; font-family: 'Fira Code', monospace; font-size: 12px; margin-top: 24px; white-space: pre-wrap; color: #34d399; display: none; max-height: 300px; overflow-y: auto; }
+
+/* ── TOAST NOTIFICATIONS ── */
+#toast-container { position: fixed; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 10px; z-index: 9999; }
+.toast { background: var(--bg-elevated); border: 1px solid var(--border); border-left: 4px solid var(--primary); border-radius: 8px; padding: 16px 20px; box-shadow: var(--shadow-lg); display: flex; align-items: flex-start; gap: 12px; min-width: 300px; max-width: 400px; animation: toastSlide 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+.toast.success { border-left-color: var(--success); }
+.toast.error { border-left-color: var(--danger); }
+.toast-icon { margin-top: 2px; }
+.toast.success .toast-icon { color: var(--success); }
+.toast.error .toast-icon { color: var(--danger); }
+.toast-content h4 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.toast-content p { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+/* Reconnect Alert */
+#reconnect-alert { position: fixed; top: 70px; left: 50%; transform: translateX(-50%); background: rgba(245, 158, 11, 0.9); backdrop-filter: blur(8px); color: #000; padding: 8px 16px; border-radius: 20px; font-size: 12px; font-weight: 600; z-index: 1000; display: flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3); opacity: 0; pointer-events: none; transition: opacity 0.3s; }
+#reconnect-alert.show { opacity: 1; }
+.spinner { animation: spinSlow 1s linear infinite; }
+
+</style>
+</head>
+<body>
+
+<!-- SVG definitions for reuse -->
+<svg style="display:none;">
+  <defs>
+    <!-- Icons -->
+    <g id="icon-server"><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6z"></path><path d="M14 6h4"></path><path d="M4 16a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2z"></path><path d="M14 16h4"></path><path d="M6 6h.01"></path><path d="M6 16h.01"></path></g>
+    <g id="icon-database"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></g>
+    <g id="icon-activity"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></g>
+    <g id="icon-refresh"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path></g>
+    <g id="icon-terminal"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></g>
+    <g id="icon-cpu"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></g>
+    <g id="icon-network"><rect x="16" y="16" width="6" height="6" rx="1"></rect><rect x="2" y="16" width="6" height="6" rx="1"></rect><rect x="9" y="2" width="6" height="6" rx="1"></rect><path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"></path><path d="M12 12V8"></path></g>
+    <g id="icon-settings"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></g>
+    <g id="icon-shield"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></g>
+    <g id="icon-check-circle"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></g>
+    <g id="icon-alert-circle"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></g>
+  </defs>
+</svg>
+
+<div id="toast-container"></div>
+<div id="reconnect-alert">
+  <svg class="svg-icon spinner" viewBox="0 0 24 24"><use href="#icon-refresh"></use></svg>
+  Conexión perdida. Reconectando...
+</div>
+
+<!-- ═══════════════════  LOGIN  ═══════════════════ -->
+<div id="login-screen">
+  <div class="login-bg-anim">
+    <svg viewBox="0 0 100 100" preserveAspectRatio="none">
+      <path d="M0,50 Q25,30 50,50 T100,50 V100 H0 Z" fill="rgba(59,130,246,0.1)">
+        <animate attributeName="d" dur="10s" repeatCount="indefinite"
+          values="M0,50 Q25,30 50,50 T100,50 V100 H0 Z; M0,50 Q25,70 50,50 T100,50 V100 H0 Z; M0,50 Q25,30 50,50 T100,50 V100 H0 Z" />
+      </path>
+    </svg>
+  </div>
+  
+  <div class="login-card">
+    <div class="login-header">
+      <svg class="svg-icon login-logo" viewBox="0 0 24 24"><use href="#icon-activity"></use></svg>
+      <h1>Biosanar Cluster Pro</h1>
+      <p>Autenticación requerida para acceder al panel</p>
+    </div>
+    <form onsubmit="event.preventDefault(); doLogin();">
+      <div class="form-group">
+        <label>Usuario</label>
+        <svg class="form-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+        <input id="inp-user" type="text" placeholder="admin" required autocomplete="username"/>
+      </div>
+      <div class="form-group">
+        <label>Contraseña</label>
+        <svg class="form-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+        <input id="inp-pass" type="password" placeholder="••••••••" required autocomplete="current-password"/>
+      </div>
+      <button type="submit" class="btn-primary" id="btn-login">Ingresar al Sistema</button>
+    </form>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════  APP  ═══════════════════ -->
+<div id="app">
+  <header>
+    <div class="brand">
+      <svg class="svg-icon brand-icon" viewBox="0 0 24 24"><use href="#icon-activity"></use></svg>
+      <h1>Cluster Monitor</h1>
+      <div class="conn-status status-connected" id="hdr-status">
+        <div class="status-dot"></div><span id="hdr-status-txt">En vivo</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="user-profile">
+        <svg class="svg-icon" viewBox="0 0 24 24"><use href="#icon-shield"></use></svg>
+        <div style="display:flex; flex-direction:column;">
+          <span id="uname" style="line-height:1; font-weight:600;">—</span>
+          <span class="user-role" id="urole" style="margin-top:2px;">—</span>
+        </div>
+      </div>
+      <button class="btn-ghost" onclick="doLogout()">
+        <svg class="svg-icon" viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+        Salir
+      </button>
+    </div>
+  </header>
+
+  <div class="nav-scroll">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('overview')"><svg class="svg-icon"><use href="#icon-activity"></use></svg> Resumen</button>
+      <button class="tab" onclick="switchTab('servers')"><svg class="svg-icon"><use href="#icon-server"></use></svg> Nodos S1 & S2</button>
+      <button class="tab" onclick="switchTab('replication')"><svg class="svg-icon"><use href="#icon-database"></use></svg> Replicación BD</button>
+      <button class="tab" onclick="switchTab('lb')"><svg class="svg-icon"><use href="#icon-network"></use></svg> Load Balancer</button>
+      <button class="tab" onclick="switchTab('processes')"><svg class="svg-icon"><use href="#icon-cpu"></use></svg> Procesos PM2</button>
+      <button class="tab" onclick="switchTab('logs')"><svg class="svg-icon"><use href="#icon-terminal"></use></svg> Visor de Logs</button>
+      <button class="tab" onclick="switchTab('config')"><svg class="svg-icon"><use href="#icon-settings"></use></svg> Configuración</button>
+      <button class="tab" onclick="switchTab('actions')" id="tab-btn-actions"><svg class="svg-icon"><use href="#icon-shield"></use></svg> Acciones</button>
+      <button class="tab" onclick="switchTab('stress')" id="tab-btn-stress"><svg class="svg-icon"><use href="#icon-activity"></use></svg> Prueba de Estrés</button>
+    </div>
+  </div>
+
+  <main>
+    <!-- ════  OVERVIEW  ════ -->
+    <div id="tab-overview" class="tab-content active">
+      
+      <!-- TOPOLOGY ANIMATION -->
+      <div class="infra-topology">
+        <svg class="svg-infra" viewBox="0 0 800 240">
+          <!-- Flow Lines: LB to S1 / S2 -->
+          <path d="M 400 60 L 400 90 L 200 90 L 200 130" class="flow-line flow-active" id="path-lb-s1" />
+          <path d="M 400 60 L 400 90 L 600 90 L 600 130" class="flow-line flow-active" id="path-lb-s2" />
+          
+          <!-- Flow Line: DB Sync S1 -> S2 -->
+          <path d="M 270 160 L 530 160" class="flow-line flow-repl" id="path-repl" />
+          <polygon points="520 155, 535 160, 520 165" fill="var(--info)" />
+          <text x="400" y="150" class="node-sub" fill="var(--info)">BINLOG SYNC</text>
+
+          <!-- Nginx LB Node (Top Center) -->
+          <rect x="330" y="10" width="140" height="50" class="node-rect online" id="node-lb" />
+          <rect x="340" y="20" width="30" height="30" class="node-icon-bg" />
+          <g transform="translate(345,25) scale(0.8)" stroke="var(--primary)" stroke-width="2" fill="none"><use href="#icon-network"></use></g>
+          <text x="430" y="30" class="node-text">Nginx LB</text>
+          <text x="430" y="45" class="node-sub">82.29.62.188</text>
+
+          <!-- Server 1 Node (Bottom Left) -->
+          <rect x="60" y="130" width="210" height="80" class="node-rect online" id="node-s1" />
+          <rect x="75" y="155" width="30" height="30" class="node-icon-bg" />
+          <g transform="translate(80,160) scale(0.8)" stroke="var(--s1)" stroke-width="2" fill="none"><use href="#icon-server"></use></g>
+          <text x="175" y="155" class="node-text">Server 1 (Master)</text>
+          <text x="175" y="175" class="node-sub">PM2 Backend + Node</text>
+          <text x="175" y="190" class="node-sub">MariaDB + Redis + NFS</text>
+
+          <!-- Server 2 Node (Bottom Right) -->
+          <rect x="530" y="130" width="210" height="80" class="node-rect online" id="node-s2" />
+          <rect x="545" y="155" width="30" height="30" class="node-icon-bg" />
+          <g transform="translate(550,160) scale(0.8)" stroke="var(--s2)" stroke-width="2" fill="none"><use href="#icon-server"></use></g>
+          <text x="645" y="155" class="node-text">Server 2 (Slave)</text>
+          <text x="645" y="175" class="node-sub">PM2 Backend + Node</text>
+          <text x="645" y="190" class="node-sub">MariaDB Replica</text>
+        </svg>
+      </div>
+
+      <div class="grid-2">
+        <!-- SERVER 1 QUICK -->
+        <div class="card" style="border-top: 3px solid var(--s1)">
+          <div class="card-header">
+            <div class="card-title"><svg class="svg-icon"><use href="#icon-server"></use></svg> Nodo 1 — Principal</div>
+            <span class="badge badge-outline-blue" id="s1-badge">ACTIVO</span>
+          </div>
+          <div class="grid-2">
+            <div class="metric-block"><div class="metric-val val-blue" id="s1-q-cpu">0%</div><div class="metric-label">CPU Usage</div></div>
+            <div class="metric-block"><div class="metric-val val-blue" id="s1-q-ram">0%</div><div class="metric-label">RAM Usage</div></div>
+          </div>
+          <div class="prog-container">
+            <div class="prog-header"><span>CPU Load</span><span id="s1-q-cpu-v">0%</span></div>
+            <div class="prog-track"><div class="prog-fill fill-blue" id="s1-q-cpu-bar" style="width:0%"></div></div>
+          </div>
+          <div class="prog-container" style="margin-top:12px;">
+            <div class="prog-header"><span>Memory</span><span id="s1-q-ram-v">0 / 0 MB</span></div>
+            <div class="prog-track"><div class="prog-fill fill-blue" id="s1-q-ram-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+
+        <!-- SERVER 2 QUICK -->
+        <div class="card" style="border-top: 3px solid var(--s2)">
+          <div class="card-header">
+            <div class="card-title"><svg class="svg-icon"><use href="#icon-server"></use></svg> Nodo 2 — Réplica</div>
+            <span class="badge badge-outline-green" id="s2-badge">ACTIVO</span>
+          </div>
+          <div class="grid-2">
+            <div class="metric-block"><div class="metric-val val-green" id="s2-q-cpu">0%</div><div class="metric-label">CPU Usage</div></div>
+            <div class="metric-block"><div class="metric-val val-green" id="s2-q-ram">0%</div><div class="metric-label">RAM Usage</div></div>
+          </div>
+          <div class="prog-container">
+            <div class="prog-header"><span>CPU Load</span><span id="s2-q-cpu-v">0%</span></div>
+            <div class="prog-track"><div class="prog-fill fill-green" id="s2-q-cpu-bar" style="width:0%"></div></div>
+          </div>
+          <div class="prog-container" style="margin-top:12px;">
+            <div class="prog-header"><span>Memory</span><span id="s2-q-ram-v">0 / 0 MB</span></div>
+            <div class="prog-track"><div class="prog-fill fill-green" id="s2-q-ram-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-4" style="margin-top: 20px;">
+        <div class="card">
+          <div class="card-header" style="margin-bottom:12px;"><div class="card-title">Load Balancer (S1)</div></div>
+          <div class="service-list">
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on" id="dot-lb"></div> Nginx</div><div class="svc-right" id="lb-conns">- conns</div></div>
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on"></div> Dist. S1</div><div class="svc-right" id="lb-dist-s1">-%</div></div>
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on"></div> Dist. S2</div><div class="svc-right" id="lb-dist-s2">-%</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header" style="margin-bottom:12px;"><div class="card-title">BD Master (S1)</div></div>
+          <div class="service-list">
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on" id="dot-db1"></div> MariaDB</div><div class="svc-right" id="db1-conns">- conns</div></div>
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on" id="dot-redis"></div> Redis</div><div class="svc-right" id="redis-clients">- clients</div></div>
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on" id="dot-nfs"></div> NFS</div><div class="svc-right" id="nfs-exports">- exp</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header" style="margin-bottom:12px;"><div class="card-title">BD Slave (S2)</div></div>
+          <div class="service-list">
+            <div class="service-item"><div class="svc-left"><div class="svc-dot dot-on" id="dot-db2"></div> MariaDB</div><div class="svc-right" id="db2-conns">- conns</div></div>
+            <div class="service-item"><div class="svc-left"><div class="svc-dot" id="dot-repl-io"></div> IO Thread</div><div class="svc-right" id="repl-io">-</div></div>
+            <div class="service-item"><div class="svc-left"><div class="svc-dot" id="dot-repl-sql"></div> SQL Thread</div><div class="svc-right" id="repl-sql">-</div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header" style="margin-bottom:12px;"><div class="card-title">Sync Lag</div></div>
+          <div class="metric-block" style="height: 140px; display:flex; flex-direction:column; justify-content:center;">
+            <div class="metric-val val-warn" id="main-lag" style="font-size:36px;">-</div>
+            <div class="metric-label">Segundos detrás del master</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════  SERVERS DETAIL  ════ -->
+    <div id="tab-servers" class="tab-content">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title" style="margin-bottom:16px;">General — Nodo 1</div>
+          <div class="table-responsive">
+            <table class="data-table" id="table-s1-det"><tbody><tr><td colspan="2">Cargando...</td></tr></tbody></table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title" style="margin-bottom:16px;">General — Nodo 2</div>
+          <div class="table-responsive">
+            <table class="data-table" id="table-s2-det"><tbody><tr><td colspan="2">Cargando...</td></tr></tbody></table>
+          </div>
+        </div>
+      </div>
+      
+      <div class="card" style="margin-top: 20px;">
+        <div class="card-title">Consumo de CPU (Comparativo)</div>
+        <div class="chart-container large"><canvas id="chart-cpu"></canvas></div>
+      </div>
+      
+      <div class="grid-2" style="margin-top: 20px;">
+        <div class="card">
+          <div class="card-title">Memoria S1</div>
+          <div class="chart-container"><canvas id="chart-ram-s1"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title">Memoria S2</div>
+          <div class="chart-container"><canvas id="chart-ram-s2"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════  REPLICATION  ════ -->
+    <div id="tab-replication" class="tab-content">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-header"><div class="card-title">Status Master (S1)</div></div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <tbody>
+                <tr><td width="50%">Motor</td><td id="r-m-db" style="font-weight:600">-</td></tr>
+                <tr><td>Binlog File</td><td id="r-m-file" class="val-blue">-</td></tr>
+                <tr><td>Binlog Position</td><td id="r-m-pos" class="val-warn">-</td></tr>
+                <tr><td>Conexiones activas</td><td id="r-m-conns">-</td></tr>
+                <tr><td>Total Queries</td><td id="r-m-qps">-</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><div class="card-title">Status Slave (S2)</div> <span class="badge badge-outline-green" id="r-s-badge">OK</span></div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <tbody>
+                <tr><td width="50%">IO Thread</td><td id="r-s-io" style="font-weight:600">-</td></tr>
+                <tr><td>SQL Thread</td><td id="r-s-sql" style="font-weight:600">-</td></tr>
+                <tr><td>Lag (segundos)</td><td id="r-s-lag" class="val-warn">-</td></tr>
+                <tr><td>Master Host</td><td>82.29.62.188</td></tr>
+                <tr><td>Último Error</td><td id="r-s-err" class="val-red">-</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="card" style="margin-top: 20px;">
+        <div class="card-title">Histórico de Lag de Replicación</div>
+        <div class="chart-container large"><canvas id="chart-repl-lag"></canvas></div>
+      </div>
+    </div>
+
+    <!-- ════  LOAD BALANCER  ════ -->
+    <div id="tab-lb" class="tab-content">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title" style="margin-bottom:20px;">Distribución de Tráfico (1k peticiones)</div>
+          <div style="display:flex; height:32px; border-radius:16px; overflow:hidden; box-shadow:inset 0 2px 4px rgba(0,0,0,0.5);">
+            <div id="lb-bar-s1" style="background:var(--s1); width:67%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; transition:var(--trans);">S1</div>
+            <div id="lb-bar-s2" style="background:var(--s2); width:33%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:12px; transition:var(--trans);">S2</div>
+          </div>
+          <div style="display:flex; justify-content:center; gap: 24px; margin-top:20px;">
+            <div style="display:flex; align-items:center; gap:8px;"><div style="width:12px;height:12px;border-radius:3px;background:var(--s1)"></div><strong id="lb-vt-s1">67%</strong> Server 1</div>
+            <div style="display:flex; align-items:center; gap:8px;"><div style="width:12px;height:12px;border-radius:3px;background:var(--s2)"></div><strong id="lb-vt-s2">33%</strong> Server 2</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Proporción</div>
+          <div class="chart-container"><canvas id="chart-lb-pie"></canvas></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════  PROCESSES (PM2)  ════ -->
+    <div id="tab-processes" class="tab-content">
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-title" style="margin-bottom: 16px;">PM2 — Server 1</div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead><tr><th>Proceso</th><th>Estado</th><th>CPU</th><th>RAM</th><th>Uptime</th><th>Reinicios</th></tr></thead>
+            <tbody id="tbl-pm2-s1"><tr><td colspan="6">Cargando...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title" style="margin-bottom: 16px;">PM2 — Server 2</div>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead><tr><th>Proceso</th><th>Estado</th><th>CPU</th><th>RAM</th><th>Uptime</th><th>Reinicios</th></tr></thead>
+            <tbody id="tbl-pm2-s2"><tr><td colspan="6">Cargando...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════  LOGS  ════ -->
+    <div id="tab-logs" class="tab-content">
+      <div class="card">
+        <div class="log-toolbar">
+          <button class="btn-filter active" onclick="loadLog('nginx-access', this)"><svg class="svg-icon"><use href="#icon-terminal"></use></svg> Nginx Access</button>
+          <button class="btn-filter" onclick="loadLog('nginx-error', this)"><svg class="svg-icon"><use href="#icon-alert-circle"></use></svg> Nginx Error</button>
+          <button class="btn-filter" onclick="loadLog('backend-s1', this)"><svg class="svg-icon"><use href="#icon-server"></use></svg> Backend S1</button>
+          <button class="btn-filter" onclick="loadLog('failover', this)"><svg class="svg-icon"><use href="#icon-shield"></use></svg> Failover</button>
+          <button class="btn-filter" onclick="loadLog('replication', this)"><svg class="svg-icon"><use href="#icon-database"></use></svg> Replicación</button>
+          <button class="btn-filter" style="margin-left:auto; border-color:var(--border);" onclick="loadLog(currentLogType)"><svg class="svg-icon"><use href="#icon-refresh"></use></svg> Recargar</button>
+        </div>
+        <div class="log-window" id="log-viewer">Selecciona un archivo de logs para visualizar...</div>
+      </div>
+    </div>
+
+    <!-- ════  CONFIG  ════ -->
+    <div id="tab-config" class="tab-content">
+      <div class="grid-2" id="cfg-panels">
+        <div class="card"><div style="color:var(--text-muted)">Cargando configuración...</div></div>
+      </div>
+    </div>
+
+    <!-- ════  ACTIONS  ════ -->
+    <div id="tab-actions" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Acciones del Sistema</div>
+          <span class="badge badge-outline-red">ZONA PELIGROSA</span>
+        </div>
+        <p style="color:var(--text-muted); margin-bottom: 20px;">Las acciones se ejecutan en tiempo real. Solo disponibles para rol <strong>superadmin</strong>.</p>
+        
+        <div class="action-grid" id="actions-grid">
+          <!-- Renderizado por JS -->
+        </div>
+        
+        <div id="action-terminal" class="term-output"></div>
+      </div>
+    </div>
+
+    <!-- ════  STRESS TEST AVANZADO  ════ -->
+    <div id="tab-stress" class="tab-content">
+
+      <!-- Header + Presets -->
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-header">
+          <div class="card-title">
+            <svg class="svg-icon" style="color:var(--warning)"><use href="#icon-activity"></use></svg>
+            Prueba de Estrés Avanzada
+          </div>
+          <span class="badge" id="stress-status-badge" style="background:rgba(148,163,184,0.1); color:#94a3b8; border:1px solid rgba(148,163,184,0.2);">INACTIVA</span>
+        </div>
+        <p style="color:var(--text-muted); margin-bottom: 16px; line-height:1.6;">
+          Escala peticiones concurrentes al servidor, monitorea CPU/RAM de ambos nodos en tiempo real, detecta el punto de quiebre y el failover automático hacia S2.
+        </p>
+
+        <!-- Presets Rápidos -->
+        <div style="margin-bottom:20px;">
+          <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:8px;">Presets Rápidos</label>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;">
+            <button onclick="applyPreset('light')" class="preset-btn" style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:#10b981;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">🟢 Ligera (50 req)</button>
+            <button onclick="applyPreset('medium')" class="preset-btn" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);color:#f59e0b;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">🟡 Moderada (200 req)</button>
+            <button onclick="applyPreset('heavy')" class="preset-btn" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">🔴 Pesada (500 req)</button>
+            <button onclick="applyPreset('find-limit')" class="preset-btn" style="background:rgba(139,92,246,0.1);border:1px solid rgba(139,92,246,0.3);color:#8b5cf6;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">🔥 Buscar Límite (2000)</button>
+            <button onclick="applyPreset('spike')" class="preset-btn" style="background:rgba(236,72,153,0.1);border:1px solid rgba(236,72,153,0.3);color:#ec4899;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">⚡ Ráfaga Repentina</button>
+            <button onclick="applyPreset('endurance')" class="preset-btn" style="background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);color:#3b82f6;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;">⏱ Resistencia (60s)</button>
+          </div>
+        </div>
+
+        <!-- Config Form -->
+        <div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap:16px; margin-bottom:20px;">
+          <div style="grid-column: span 2;">
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">URL Objetivo</label>
+            <input id="stress-url" type="text" value="https://biosanarcall.site/api/lookups/specialties"
+              style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;font-family:'Fira Code',monospace;" />
+          </div>
+          <div>
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">Modo</label>
+            <select id="stress-mode" style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;">
+              <option value="ramp" selected>📈 Escalado Gradual</option>
+              <option value="find-limit">🔥 Buscar Límite</option>
+              <option value="spike">⚡ Ráfaga (Spike)</option>
+              <option value="endurance">⏱ Resistencia</option>
+            </select>
+          </div>
+          <div>
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">Método HTTP</label>
+            <select id="stress-method" style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;">
+              <option value="GET" selected>GET</option>
+              <option value="POST">POST</option>
+            </select>
+          </div>
+          <div>
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">Máx. Concurrentes</label>
+            <input id="stress-max" type="number" value="200" min="10" max="2000" step="10"
+              style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;" />
+          </div>
+          <div>
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">Incremento por Paso</label>
+            <input id="stress-step" type="number" value="10" min="5" max="100" step="5"
+              style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;" />
+          </div>
+          <div>
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">Pausa entre Pasos (ms)</label>
+            <input id="stress-delay" type="number" value="2000" min="500" max="10000" step="500"
+              style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;" />
+          </div>
+          <div>
+            <label style="color:var(--text-muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:6px;">Duración Resistencia (s)</label>
+            <input id="stress-endurance" type="number" value="60" min="10" max="600" step="10"
+              style="width:100%;background:rgba(0,0,0,.2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--text-main);font-size:13px;outline:none;" />
+          </div>
+        </div>
+
+        <!-- Buttons -->
+        <div style="display:flex; gap:12px; align-items:center; margin-bottom:24px;">
+          <button id="btn-stress-start" onclick="startStressTest()" style="background:linear-gradient(135deg,var(--warning),#d97706);color:#000;border:none;border-radius:8px;padding:12px 28px;font-size:14px;font-weight:700;cursor:pointer;transition:var(--trans);display:flex;align-items:center;gap:8px;">
+            <svg class="svg-icon" style="width:18px;height:18px;color:#000"><use href="#icon-activity"></use></svg>
+            Iniciar Prueba
+          </button>
+          <button id="btn-stress-stop" onclick="stopStressTest()" disabled style="background:transparent;border:1px solid var(--danger);color:var(--danger);border-radius:8px;padding:12px 28px;font-size:14px;font-weight:600;cursor:pointer;transition:var(--trans);opacity:0.4;">
+            Detener
+          </button>
+          <button id="btn-stress-export" onclick="exportStressResults()" style="background:transparent;border:1px solid var(--primary);color:var(--primary);border-radius:8px;padding:12px 20px;font-size:13px;font-weight:600;cursor:pointer;transition:var(--trans);margin-left:auto;">
+            📥 Exportar JSON
+          </button>
+        </div>
+
+        <!-- Live Gauges - Row 1 -->
+        <div style="display:grid; grid-template-columns: repeat(6,1fr); gap:12px; margin-bottom:16px;">
+          <div class="metric-block">
+            <div class="metric-val val-blue" id="stress-current" style="font-size:28px;">0</div>
+            <div class="metric-label">Concurrentes</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-val val-green" id="stress-max-sustained" style="font-size:28px;">0</div>
+            <div class="metric-label">Máx. Sostenidas</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-val val-warn" id="stress-avg-latency" style="font-size:28px;">0</div>
+            <div class="metric-label">Latencia Avg (ms)</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-val" id="stress-success-rate" style="font-size:28px;color:var(--success);">100%</div>
+            <div class="metric-label">Tasa de Éxito</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-val" id="stress-throughput" style="font-size:28px;color:var(--primary);">0</div>
+            <div class="metric-label">Throughput (req/s)</div>
+          </div>
+          <div class="metric-block">
+            <div class="metric-val" id="stress-p95" style="font-size:28px;color:#ec4899;">0</div>
+            <div class="metric-label">P95 Latencia</div>
+          </div>
+        </div>
+
+        <!-- Live Server Metrics During Test -->
+        <div id="stress-server-panel" style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-bottom:16px;">
+          <div style="background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:10px;padding:16px;">
+            <div style="font-size:12px;font-weight:700;color:var(--primary);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📡 Server S1 (Master) — En Vivo</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+              <div><span style="color:var(--text-muted);font-size:10px;display:block;">CPU</span><span id="stress-s1-cpu" style="font-size:22px;font-weight:800;color:#10b981;">0%</span></div>
+              <div><span style="color:var(--text-muted);font-size:10px;display:block;">RAM</span><span id="stress-s1-ram" style="font-size:22px;font-weight:800;color:#3b82f6;">0%</span></div>
+              <div><span style="color:var(--text-muted);font-size:10px;display:block;">DB Conn</span><span id="stress-s1-db" style="font-size:22px;font-weight:800;color:#f59e0b;">0</span></div>
+            </div>
+            <div style="margin-top:10px;height:6px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;">
+              <div id="stress-s1-cpu-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#10b981,#f59e0b,#ef4444);transition:width 0.5s;border-radius:3px;"></div>
+            </div>
+          </div>
+          <div style="background:rgba(0,0,0,0.2);border:1px solid var(--border);border-radius:10px;padding:16px;">
+            <div style="font-size:12px;font-weight:700;color:#8b5cf6;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;">📡 Server S2 (Slave) — En Vivo</div>
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+              <div><span style="color:var(--text-muted);font-size:10px;display:block;">CPU</span><span id="stress-s2-cpu" style="font-size:22px;font-weight:800;color:#10b981;">0%</span></div>
+              <div><span style="color:var(--text-muted);font-size:10px;display:block;">RAM</span><span id="stress-s2-ram" style="font-size:22px;font-weight:800;color:#3b82f6;">0%</span></div>
+              <div><span style="color:var(--text-muted);font-size:10px;display:block;">DB Conn</span><span id="stress-s2-db" style="font-size:22px;font-weight:800;color:#f59e0b;">0</span></div>
+            </div>
+            <div style="margin-top:10px;height:6px;background:rgba(255,255,255,0.05);border-radius:3px;overflow:hidden;">
+              <div id="stress-s2-cpu-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#8b5cf6,#ec4899,#ef4444);transition:width 0.5s;border-radius:3px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Failover / Breaking Point Alert -->
+        <div id="stress-alert-panel" style="display:none; padding:16px; border-radius:10px; margin-bottom:16px; border-left:4px solid;"></div>
+      </div>
+
+      <!-- Charts Row 1: Latency + Success -->
+      <div class="grid-2" style="margin-bottom:20px;">
+        <div class="card">
+          <div class="card-title" style="margin-bottom: 16px;">📊 Latencia vs Concurrencia (P50 / P95 / P99)</div>
+          <div class="chart-container large"><canvas id="chart-stress-latency"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title" style="margin-bottom: 16px;">📊 Exitosas vs Fallidas por Paso</div>
+          <div class="chart-container large"><canvas id="chart-stress-success"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Charts Row 2: Server Metrics + Throughput -->
+      <div class="grid-2" style="margin-bottom:20px;">
+        <div class="card">
+          <div class="card-title" style="margin-bottom: 16px;">🖥️ CPU Servidores Durante Prueba</div>
+          <div class="chart-container large"><canvas id="chart-stress-cpu"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-title" style="margin-bottom: 16px;">🚀 Throughput (req/s) vs Concurrencia</div>
+          <div class="chart-container large"><canvas id="chart-stress-throughput"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Results Log -->
+      <div class="card" style="margin-top:20px;">
+        <div class="card-title" style="margin-bottom:12px;">📋 Registro Detallado de Pasos</div>
+        <div id="stress-log" style="background:#000;border:1px solid var(--border);border-radius:8px;padding:16px;font-family:'Fira Code',monospace;font-size:12px;max-height:400px;overflow-y:auto;white-space:pre-wrap;color:#a1a1aa;line-height:1.7;">
+Esperando inicio de prueba...
+        </div>
+      </div>
+
+      <!-- Final Summary -->
+      <div class="card" id="stress-summary-card" style="margin-top:20px; display:none; border-top:3px solid var(--success);">
+        <div class="card-title" style="margin-bottom:16px;">🏁 Resultado Final</div>
+        <div id="stress-summary" style="font-size:14px;line-height:2;"></div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+//  ESTADO Y LÓGICA PRINCIPAL
+// ════════════════════════════════════════════════════════════
+const API = '/monitor-api';
+let token = localStorage.getItem('monitor_token') || '';
+let userData = {};
+let currentLogType = 'nginx-access';
+let evtSource = null;
+let reconnectTimer = null;
+
+const history = {
+  labels: Array(30).fill(''),
+  s1cpu: Array(30).fill(null), s2cpu: Array(30).fill(null),
+  s1ram: Array(30).fill(null), s2ram: Array(30).fill(null),
+  replLag: Array(30).fill(null)
+};
+
+// Tooling UI
+const $ = id => document.getElementById(id);
+const txt = (id, v) => { const e=$(id); if(e) e.textContent = v ?? '-'; };
+const css = (id, c) => { const e=$(id); if(e) e.className = c; };
+
+function showToast(title, msg, type='success') {
+  const container = $('toast-container');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  const iconId = type === 'success' ? '#icon-check-circle' : '#icon-alert-circle';
+  toast.innerHTML = `
+    <svg class="svg-icon toast-icon" viewBox="0 0 24 24"><use href="${iconId}"></use></svg>
+    <div class="toast-content"><h4>${title}</h4><p>${msg}</p></div>
+  `;
+  container.appendChild(toast);
+  setTimeout(() => { toast.style.opacity='0'; toast.style.transform='translateX(100%)'; setTimeout(()=>toast.remove(),300); }, 5000);
+}
+
+// ════  CHARTS INIT  ════
+const charsConfig = {
+  options: { responsive:true, maintainAspectRatio:false, animation:{duration:400}, plugins:{legend:{display:false}},
+  scales: { x:{display:false}, y:{grid:{color:'rgba(255,255,255,0.05)'}, ticks:{color:'#94a3b8', font:{size:10}}, min:0} },
+  elements: { point:{radius:0, hitRadius:10}, line:{tension:0.4, borderWidth:2} }, interaction: {mode:'index', intersect:false} }
+};
+
+const charts = {};
+function initCharts() {
+  Chart.defaults.color = '#94a3b8';
+  Chart.defaults.font.family = "'Inter', sans-serif";
+  
+  const ctxCpu = $('chart-cpu')?.getContext('2d');
+  if(ctxCpu) charts.cpu = new Chart(ctxCpu, {
+    type:'line', data:{ labels:history.labels, datasets:[
+      {label:'Server 1', data:[...history.s1cpu], borderColor:'#3b82f6', backgroundColor:'rgba(59,130,246,0.1)', fill:true},
+      {label:'Server 2', data:[...history.s2cpu], borderColor:'#10b981', backgroundColor:'rgba(16,185,129,0.1)', fill:true}
+    ]}, options:{...charsConfig.options, plugins:{legend:{display:true, position:'top', labels:{boxWidth:12}}}, scales:{y:{...charsConfig.options.scales.y, max:100}}}
+  });
+
+  const mkr = (id, c, data) => {
+    const ctx = $(id)?.getContext('2d');
+    if(!ctx) return null;
+    return new Chart(ctx, { type:'line', data:{ labels:history.labels, datasets:[{data, borderColor:c, backgroundColor:c.replace('rgb','rgba').replace(')',',0.1)'), fill:true}] }, options:{...charsConfig.options, scales:{y:{...charsConfig.options.scales.y, max:100}}} });
+  };
+  charts.ramS1 = mkr('chart-ram-s1', '#8b5cf6', [...history.s1ram]);
+  charts.ramS2 = mkr('chart-ram-s2', '#f59e0b', [...history.s2ram]);
+  
+  const ctxLag = $('chart-repl-lag')?.getContext('2d');
+  if(ctxLag) charts.replLag = new Chart(ctxLag, {
+    type:'line', data:{labels:history.labels, datasets:[{data:[...history.replLag], borderColor:'#ef4444', backgroundColor:'rgba(239,68,68,0.1)', fill:true, stepped:true}]},
+    options: charsConfig.options
+  });
+  
+  const ctxPie = $('chart-lb-pie')?.getContext('2d');
+  if(ctxPie) charts.pie = new Chart(ctxPie, {
+    type:'doughnut', data:{labels:['S1','S2'], datasets:[{data:[67,33], backgroundColor:['#3b82f6','#10b981'], borderWidth:0, hoverOffset:4}]},
+    options:{responsive:true, maintainAspectRatio:false, cutout:'75%', plugins:{legend:{display:false}}}
+  });
+}
+
+function updateCharts() {
+  if(charts.cpu) { charts.cpu.data.datasets[0].data = history.s1cpu; charts.cpu.data.datasets[1].data = history.s2cpu; charts.cpu.update('none'); }
+  if(charts.ramS1) { charts.ramS1.data.datasets[0].data = history.s1ram; charts.ramS1.update('none'); }
+  if(charts.ramS2) { charts.ramS2.data.datasets[0].data = history.s2ram; charts.ramS2.update('none'); }
+  if(charts.replLag) { charts.replLag.data.datasets[0].data = history.replLag; charts.replLag.update('none'); }
+}
+
+// ════  AUTH & INIT  ════
+async function doLogin() {
+  const btn = $('btn-login'); const err = $('login-error');
+  const u = $('inp-user').value.trim(); const p = $('inp-pass').value;
+  btn.disabled = true; btn.textContent = 'Verificando...';
+  try {
+    const r = await fetch(`${API}/auth/login`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({username:u, password:p})});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error || 'Error');
+    token = d.token; userData = d.user;
+    localStorage.setItem('monitor_token', token);
+    initApp();
+  } catch(e) {
+    err.textContent = e.message; err.style.display='block'; setTimeout(()=>err.style.display='none', 4000);
+  }
+  btn.disabled = false; btn.textContent = 'Ingresar al Sistema';
+}
+
+function doLogout() {
+  token=''; userData={}; localStorage.removeItem('monitor_token');
+  if(evtSource) { evtSource.close(); evtSource=null; }
+  $('app').style.display='none'; $('login-screen').style.display='flex';
+}
+
+function initApp() {
+  $('login-screen').style.display='none'; $('app').style.display='flex';
+  $('uname').textContent = userData.username; $('urole').textContent = userData.role;
+  if(userData.role !== 'superadmin') $('tab-btn-actions').style.display = 'none';
+  
+  initCharts(); renderActions(); loadConfig(); connectSSE();
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  if(token) {
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      userData = {username: payload.username, role: payload.role};
+      if(payload.exp * 1000 > Date.now()) initApp(); else throw new Error();
+    } catch { localStorage.removeItem('monitor_token'); }
+  }
+});
+
+function switchTab(t) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.getAttribute('onclick').includes(`'${t}'`)));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${t}`));
+  if(t === 'logs' && $('log-viewer').textContent.includes('Selecciona')) loadLog(currentLogType);
+}
+
+// ════  SSE & DATA HANDLING  ════
+function connectSSE() {
+  if(evtSource) evtSource.close();
+  $('reconnect-alert').classList.remove('show');
+  
+  evtSource = new EventSource(`${API}/stream?token=${encodeURIComponent(token)}&_t=${Date.now()}`);
+  evtSource.onopen = () => {
+    $('hdr-status').className = 'conn-status status-connected';
+    $('hdr-status-txt').textContent = 'En vivo';
+  };
+  evtSource.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.type === 'stress_step') { handleStressStep(d); }
+      else if (d.type === 'stress_done') { handleStressDone(d); }
+      else { processMetrics(d); }
+    } catch(err) { console.error(err); }
+  };
+  evtSource.onerror = () => {
+    $('hdr-status').className = 'conn-status status-disconnected';
+    $('hdr-status-txt').textContent = 'Desconectado';
+    $('reconnect-alert').classList.add('show');
+    evtSource.close();
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectSSE, 5000);
+  };
+}
+
+function processMetrics({s1, s2}) {
+  // Push arrays
+  history.labels.push(''); history.labels.shift();
+  history.s1cpu.push(s1?.cpu??0); history.s1cpu.shift();
+  history.s2cpu.push(s2?.cpu??0); history.s2cpu.shift();
+  history.s1ram.push(s1?.memory?.percent??0); history.s1ram.shift();
+  history.s2ram.push(s2?.memory?.percent??0); history.s2ram.shift();
+  history.replLag.push(s2?.replication?.secondsBehind??0); history.replLag.shift();
+  updateCharts();
+
+  const replOk = s2?.replication?.ioRunning==='Yes' && s2?.replication?.sqlRunning==='Yes';
+  
+  // Update Topology SVG
+  css('node-lb', s1?.nginx?.running ? 'node-rect online' : 'node-rect offline');
+  css('node-s1', s1?.online ? 'node-rect online' : 'node-rect offline');
+  css('node-s2', s2?.online ? 'node-rect online' : 'node-rect offline');
+  css('path-lb-s1', s1?.nginx?.running && s1?.online ? 'flow-line flow-active' : 'flow-line');
+  css('path-lb-s2', s1?.nginx?.running && s2?.online ? 'flow-line flow-active' : 'flow-line');
+  css('path-repl', replOk ? 'flow-line flow-repl' : 'flow-line');
+
+  // Server 1 Quick
+  if(s1?.online) {
+    txt('s1-q-cpu', s1.cpu.toFixed(1)+'%'); txt('s1-q-ram', s1.memory.percent+'%');
+    txt('s1-q-cpu-v', s1.cpu.toFixed(1)+'%'); txt('s1-q-ram-v', `${s1.memory.used} / ${s1.memory.total} MB`);
+    $('s1-q-cpu-bar').style.width = s1.cpu+'%'; $('s1-q-ram-bar').style.width = s1.memory.percent+'%';
+  }
+  
+  // Server 2 Quick
+  if(s2?.online) {
+    txt('s2-q-cpu', s2.cpu.toFixed(1)+'%'); txt('s2-q-ram', s2.memory.percent+'%');
+    txt('s2-q-cpu-v', s2.cpu.toFixed(1)+'%'); txt('s2-q-ram-v', `${s2.memory.used} / ${s2.memory.total} MB`);
+    $('s2-q-cpu-bar').style.width = s2.cpu+'%'; $('s2-q-ram-bar').style.width = s2.memory.percent+'%';
+  }
+
+  // Mini Services
+  css('dot-lb', s1?.nginx?.running?'svc-dot dot-on':'svc-dot dot-off'); txt('lb-conns', (s1?.nginx?.connections||0)+' act');
+  css('dot-db1', s1?.database?.running?'svc-dot dot-on':'svc-dot dot-off'); txt('db1-conns', (s1?.database?.connections||0)+' act');
+  css('dot-db2', s2?.database?.running?'svc-dot dot-on':'svc-dot dot-off'); txt('db2-conns', (s2?.database?.connections||0)+' act');
+  css('dot-redis', s1?.redis?.running?'svc-dot dot-on':'svc-dot dot-off'); txt('redis-clients', (s1?.redis?.clients||0)+' cli');
+  css('dot-nfs', s1?.nfs?.running?'svc-dot dot-on':'svc-dot dot-off'); txt('nfs-exports', (s1?.nfs?.exports||0)+' exp');
+  
+  css('dot-repl-io', s2?.replication?.ioRunning==='Yes'?'svc-dot dot-on':'svc-dot dot-off');
+  css('dot-repl-sql', s2?.replication?.sqlRunning==='Yes'?'svc-dot dot-on':'svc-dot dot-off');
+  txt('repl-io', s2?.replication?.ioRunning||'-'); txt('repl-sql', s2?.replication?.sqlRunning||'-');
+  txt('main-lag', s2?.replication?.secondsBehind ?? 'ERR');
+
+  // LB
+  if(s1?.lbStats) {
+    const t = (s1.lbStats.s1||0) + (s1.lbStats.s2||0) || 1;
+    const p1 = Math.round((s1.lbStats.s1/t)*100); const p2 = 100-p1;
+    $('lb-bar-s1').style.width = p1+'%'; $('lb-bar-s1').textContent = p1>10?'S1 '+p1+'%':'';
+    $('lb-bar-s2').style.width = p2+'%'; $('lb-bar-s2').textContent = p2>10?'S2 '+p2+'%':'';
+    txt('lb-vt-s1', p1+'%'); txt('lb-vt-s2', p2+'%');
+    txt('lb-dist-s1', p1+'%'); txt('lb-dist-s2', p2+'%');
+    if(charts.pie) { charts.pie.data.datasets[0].data = [p1,p2]; charts.pie.update('none'); }
+  }
+
+  // Replication Detail
+  if(s1?.replication) {
+    txt('r-m-db', s1.database?.running?'Online':'Offline');
+    txt('r-m-file', s1.replication.binlogFile); txt('r-m-pos', s1.replication.binlogPos);
+    txt('r-m-conns', s1.database?.connections); txt('r-m-qps', s1.database?.questions);
+  }
+  if(s2?.replication) {
+    css('r-s-badge', replOk ? 'badge badge-outline-green' : 'badge badge-outline-red');
+    txt('r-s-badge', replOk ? 'SYNC OK' : 'ERROR CAÍDA');
+    txt('r-s-io', s2.replication.ioRunning); txt('r-s-sql', s2.replication.sqlRunning);
+    txt('r-s-lag', s2.replication.secondsBehind); txt('r-s-err', s2.replication.lastError || 'Ninguno');
+  }
+
+  // Server Details Table
+  renderTable('table-s1-det', s1);
+  renderTable('table-s2-det', s2);
+
+  // PM2 Detail
+  renderPM2('tbl-pm2-s1', s1?.pm2);
+  renderPM2('tbl-pm2-s2', s2?.pm2);
+}
+
+function fmtUp(s) {
+  if(!s||s==='N/A') return '-';
+  let t = String(s).replace('up ','').split(',').slice(0,2).join(',').trim();
+  return t;
+}
+
+function renderTable(id, d) {
+  const el = $(id); if(!el) return;
+  if(!d?.online) { el.innerHTML=`<tbody><tr><td class="log-err">Servidor fuera de línea</td></tr></tbody>`; return; }
+  const rows = [
+    ['Dirección IP', d.ip], ['Uptime OS', fmtUp(d.uptime)],
+    ['CPU Actual', `<span class="val-blue">${(d.cpu||0).toFixed(1)}%</span>`],
+    ['RAM Uso', `${d.memory?.used} / ${d.memory?.total} MB (${d.memory?.percent}%)`],
+    ['Disco /', d.disk?.raw || '-'],
+    ['Rol DB Configurado', d.replication?.role==='master'?'🟦 MASTER':'🟩 SLAVE']
+  ];
+  el.innerHTML = `<tbody>${rows.map(([k,v])=>`<tr><td style="width:35%;color:var(--text-muted)">${k}</td><td style="font-weight:600">${v}</td></tr>`).join('')}</tbody>`;
+}
+
+function renderPM2(id, arr) {
+  const el = $(id); if(!el) return;
+  if(!arr||!arr.length) { el.innerHTML=`<tr><td colspan="6" style="text-align:center">Sin procesos PM2 detectados</td></tr>`; return; }
+  el.innerHTML = arr.map(p => {
+    const sCls = p.status==='online'?'pill-online':'pill-stopped';
+    const sT = p.uptime ? Math.floor(p.uptime/1000) : 0;
+    const upd = sT>3600?Math.floor(sT/3600)+'h':sT>60?Math.floor(sT/60)+'m':sT+'s';
+    return `<tr>
+      <td style="font-weight:600; color:var(--text-main)">${p.name}</td>
+      <td><span class="status-pill ${sCls}">${p.status}</span></td>
+      <td><span class="val-blue">${p.cpu}%</span></td>
+      <td>${p.memory} MB</td>
+      <td>${upd}</td>
+      <td style="font-family:monospace">${p.restarts}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ════  LOGS UI  ════
+async function loadLog(type, btnObj) {
+  currentLogType = type;
+  if(btnObj) { document.querySelectorAll('.btn-filter').forEach(b=>b.classList.remove('active')); btnObj.classList.add('active'); }
+  const v = $('log-viewer'); v.textContent = 'Leyendo registros en tiempo real...';
+  try {
+    const r = await fetch(`${API}/logs/${type}`, {headers:{Authorization:`Bearer ${token}`}});
+    const d = await r.json();
+    v.innerHTML = d.lines.map(l=>{
+      if(!l) return '';
+      let cl=''; if(l.match(/error|fatal/i)) cl='log-err'; else if(l.match(/warn/i)) cl='log-warn'; else if(l.match(/ok|success|200 /i)) cl='log-ok'; else if(l.match(/info/i)) cl='log-info';
+      return cl ? `<span class="${cl}">${escapeH(l)}</span>` : escapeH(l);
+    }).join('\n');
+    v.scrollTop = v.scrollHeight;
+  } catch(e) { v.textContent = 'Error: ' + e.message; }
+}
+const escapeH = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+// ════  CONFIG UI  ════
+async function loadConfig() {
+  try {
+    const r = await fetch(`${API}/config`, {headers:{Authorization:`Bearer ${token}`}});
+    const d = await r.json();
+    $('cfg-panels').innerHTML = `
+      <div class="card">
+        <div class="cfg-group"><div class="cfg-title">Balanceador y Red</div>
+          <div class="cfg-row"><div class="cfg-key"><svg class="svg-icon"><use href="#icon-network"></use></svg> Dominio</div><div class="cfg-val">${d.domain.name}</div></div>
+          <div class="cfg-row"><div class="cfg-key">IP DNS Actual</div><div class="cfg-val val-green">${d.domain.currentIP}</div></div>
+          <div class="cfg-row"><div class="cfg-key">Algoritmo Nginx</div><div class="cfg-val">${d.loadBalancer.algorithm}</div></div>
+          <div class="cfg-row"><div class="cfg-key">Pesos (S1 / S2)</div><div class="cfg-val">${d.loadBalancer.s1Weight} / ${d.loadBalancer.s2Weight}</div></div>
+        </div>
+        <div class="cfg-group"><div class="cfg-title">Alta Disponibilidad</div>
+          <div class="cfg-row"><div class="cfg-key">Mecanismo Failover</div><div class="cfg-val">${d.failover.mechanism}</div></div>
+          <div class="cfg-row"><div class="cfg-key">Trigger Time</div><div class="cfg-val val-warn">${d.failover.maxDowntime}</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="cfg-group"><div class="cfg-title">Almacenamiento y BD</div>
+          <div class="cfg-row"><div class="cfg-key"><svg class="svg-icon"><use href="#icon-database"></use></svg> Replicación Tipo</div><div class="cfg-val">${d.replication.type}</div></div>
+          <div class="cfg-row"><div class="cfg-key">Modo</div><div class="cfg-val">${d.replication.mode}</div></div>
+          <div class="cfg-row"><div class="cfg-key">S1 Master Host</div><div class="cfg-val">${d.replication.s1.host}</div></div>
+          <div class="cfg-row"><div class="cfg-key">S2 Slave Host</div><div class="cfg-val">${d.replication.s2.host}</div></div>
+          <div class="cfg-row"><div class="cfg-key"><svg class="svg-icon"><use href="#icon-server"></use></svg> NFS Server</div><div class="cfg-val">${d.nfs.server}</div></div>
+          <div class="cfg-row"><div class="cfg-key">NFS Export</div><div class="cfg-val">${d.nfs.exports}</div></div>
+        </div>
+      </div>
+    `;
+  } catch(e) { console.error(e); }
+}
+
+// ════  ACTIONS UI  ════
+function renderActions() {
+  if (userData.role !== 'superadmin') return;
+  const acts = [
+    {id:'restart-backend', s:'s1', i:'#icon-refresh', t:'Reiniciar Backend S1', d:'Ejecuta pm2 restart cita-central-backend en S1. Habrá micro-drop.'},
+    {id:'restart-backend', s:'s2', i:'#icon-refresh', t:'Reiniciar Backend S2', d:'Ejecuta pm2 restart via SSH en S2.'},
+    {id:'reload-nginx', s:'s1', i:'#icon-network', t:'Recargar Reglas Nginx', d:'Soft reload del load balancer sin perder conexiones TCP.'},
+    {id:'check-replication', s:'s1', i:'#icon-database', t:'Diagnóstico MySQL', d:'Ejecuta SHOW SLAVE STATUS y reporta fallos directos.'},
+    {id:'sync-ssl', s:'s1', i:'#icon-shield', t:'Forzar Sync SSL a S2', d:'Copia los certificados generados por Let\'s Encrypt de S1 a S2 via rsync.'},
+    {id:'failover-status', s:'s1', i:'#icon-activity', t:'Log del Failover', d:'Revisa las últimas ejecuciones del cron de failover en el nodo 2.'}
+  ];
+  $('actions-grid').innerHTML = acts.map(a => `
+    <div class="action-card" onclick="doAction('${a.s}','${a.id}')">
+      <svg class="svg-icon action-icon"><use href="${a.i}"></use></svg>
+      <div class="action-name">${a.t}</div>
+      <div class="action-desc">${a.d}</div>
+    </div>
+  `).join('');
+}
+
+async function doAction(srv, act) {
+  if(!confirm(`¿Estás seguro de ejecutar: ${act} en ${srv.toUpperCase()}?`)) return;
+  const term = $('action-terminal'); term.style.display = 'block';
+  term.textContent = `> Ejecutando tarea de sistema [${act} @ ${srv}]...\n`;
+  term.className = 'term-output'; // reset glow
+  try {
+    const r = await fetch(`${API}/action`, {method:'POST', headers:{'Authorization':`Bearer ${token}`, 'Content-Type':'application/json'}, body:JSON.stringify({server:srv, action:act})});
+    const d = await r.json();
+    term.textContent += `> Respuesta recibida [${new Date(d.timestamp).toLocaleTimeString()}]\n`+'-'.repeat(50)+'\n\n';
+    term.textContent += d.output || d.error || 'OK (sin salida de consola)';
+    term.style.boxShadow = '0 0 15px rgba(16,185,129,0.2)';
+    term.style.borderColor = 'rgba(16,185,129,0.5)';
+    showToast('Acción exitosa', `Comando ${act} finalizó en ${srv}`);
+  } catch(e) {
+    term.textContent += `\nError de ejecución: ` + e.message;
+    term.style.boxShadow = '0 0 15px rgba(239,68,68,0.2)';
+    term.style.borderColor = 'rgba(239,68,68,0.5)';
+    showToast('Falla de sistema', e.message, 'error');
+  }
+}
+
+// ════  STRESS TEST UI AVANZADA  ════
+let stressCharts = {};
+let stressRunning = false;
+
+const PRESETS = {
+  light:       { max: 50,   step: 5,   delay: 2000, mode: 'ramp' },
+  medium:      { max: 200,  step: 10,  delay: 2000, mode: 'ramp' },
+  heavy:       { max: 500,  step: 20,  delay: 1500, mode: 'ramp' },
+  'find-limit':{ max: 2000, step: 25,  delay: 1000, mode: 'find-limit' },
+  spike:       { max: 300,  step: 10,  delay: 2000, mode: 'spike' },
+  endurance:   { max: 100,  step: 10,  delay: 2000, mode: 'endurance' }
+};
+
+function applyPreset(name) {
+  const p = PRESETS[name];
+  if (!p) return;
+  $('stress-max').value = p.max;
+  $('stress-step').value = p.step;
+  $('stress-delay').value = p.delay;
+  $('stress-mode').value = p.mode;
+  showToast('Preset aplicado', `Configuración "${name}" cargada`, 'success');
+}
+
+function exportStressResults() {
+  window.open(`${API}/stress/export?token=${token}`, '_blank');
+}
+
+function initStressCharts() {
+  Object.values(stressCharts).forEach(c => { try { c.destroy(); } catch {} });
+  stressCharts = {};
+
+  const baseOpts = { responsive: true, maintainAspectRatio: false, animation: { duration: 200 },
+    plugins: { legend: { display: true, position: 'top', labels: { boxWidth: 10, color: '#94a3b8', font: { size: 11 } } } },
+  };
+  const axisOpts = (xLabel, yLabel) => ({
+    scales: {
+      x: { title: { display: true, text: xLabel, color: '#94a3b8' }, ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.03)' } },
+      y: { title: { display: true, text: yLabel, color: '#94a3b8' }, ticks: { color: '#64748b', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' }, min: 0 }
+    }
+  });
+
+  // Latency chart with P50/P95/P99
+  const ctxLat = $('chart-stress-latency')?.getContext('2d');
+  if (ctxLat) stressCharts.latency = new Chart(ctxLat, {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'P50', data: [], borderColor: '#10b981', backgroundColor: 'rgba(16,185,129,0.1)', fill: true, tension: 0.3, borderWidth: 2, pointRadius: 3 },
+      { label: 'P95', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.05)', fill: false, tension: 0.3, borderWidth: 2, pointRadius: 3 },
+      { label: 'P99', data: [], borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.05)', fill: false, tension: 0.3, borderWidth: 2, borderDash: [5,5], pointRadius: 2 },
+      { label: 'Max', data: [], borderColor: '#6b7280', fill: false, tension: 0.3, borderWidth: 1, borderDash: [2,4], pointRadius: 1 }
+    ]},
+    options: { ...baseOpts, ...axisOpts('Peticiones Concurrentes', 'Latencia (ms)') }
+  });
+
+  // Success/failure stacked bar
+  const ctxSuc = $('chart-stress-success')?.getContext('2d');
+  if (ctxSuc) stressCharts.success = new Chart(ctxSuc, {
+    type: 'bar',
+    data: { labels: [], datasets: [
+      { label: 'Exitosas', data: [], backgroundColor: 'rgba(16,185,129,0.7)', borderRadius: 3 },
+      { label: 'Fallidas', data: [], backgroundColor: 'rgba(239,68,68,0.7)', borderRadius: 3 }
+    ]},
+    options: { ...baseOpts, ...axisOpts('Peticiones Concurrentes', 'Cantidad'),
+      scales: { ...axisOpts('Peticiones Concurrentes', 'Cantidad').scales, x: { ...axisOpts('','').scales.x, stacked: true }, y: { ...axisOpts('','').scales.y, stacked: true } }
+    }
+  });
+
+  // CPU chart (S1 vs S2)
+  const ctxCpu = $('chart-stress-cpu')?.getContext('2d');
+  if (ctxCpu) stressCharts.cpu = new Chart(ctxCpu, {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'S1 CPU %', data: [], borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3 },
+      { label: 'S2 CPU %', data: [], borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', fill: true, tension: 0.4, borderWidth: 2, pointRadius: 3 },
+      { label: 'S1 RAM %', data: [], borderColor: '#06b6d4', fill: false, tension: 0.4, borderWidth: 1, borderDash: [4,4], pointRadius: 2 },
+      { label: 'S2 RAM %', data: [], borderColor: '#d946ef', fill: false, tension: 0.4, borderWidth: 1, borderDash: [4,4], pointRadius: 2 }
+    ]},
+    options: { ...baseOpts, ...axisOpts('Peticiones Concurrentes', 'Uso (%)'),
+      scales: { ...axisOpts('Peticiones Concurrentes', 'Uso (%)').scales, y: { ...axisOpts('','').scales.y, max: 100 } }
+    }
+  });
+
+  // Throughput chart
+  const ctxTp = $('chart-stress-throughput')?.getContext('2d');
+  if (ctxTp) stressCharts.throughput = new Chart(ctxTp, {
+    type: 'line',
+    data: { labels: [], datasets: [
+      { label: 'req/s', data: [], borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.15)', fill: true, tension: 0.4, borderWidth: 2.5, pointRadius: 4, pointBackgroundColor: '#f59e0b' }
+    ]},
+    options: { ...baseOpts, ...axisOpts('Peticiones Concurrentes', 'Throughput (req/s)') }
+  });
+}
+
+async function startStressTest() {
+  if (stressRunning) return;
+
+  const url = $('stress-url').value.trim();
+  const maxConcurrent = parseInt($('stress-max').value) || 200;
+  const stepSize = parseInt($('stress-step').value) || 10;
+  const stepDelayMs = parseInt($('stress-delay').value) || 2000;
+  const mode = $('stress-mode').value || 'ramp';
+  const method = $('stress-method').value || 'GET';
+  const enduranceDurationSec = parseInt($('stress-endurance').value) || 60;
+
+  if (!url) { showToast('Error', 'Ingresa una URL objetivo', 'error'); return; }
+
+  const modeLabels = { ramp: 'Escalado Gradual', 'find-limit': 'Buscar Límite', spike: 'Ráfaga', endurance: 'Resistencia' };
+  if (!confirm(`¿Iniciar prueba de estrés?\n\nModo: ${modeLabels[mode] || mode}\nURL: ${url}\nMétodo: ${method}\nEscalando: ${stepSize} → ${maxConcurrent}\nPausa: ${stepDelayMs}ms`)) return;
+
+  stressRunning = true;
+  $('btn-stress-start').disabled = true;
+  $('btn-stress-start').style.opacity = '0.5';
+  $('btn-stress-stop').disabled = false;
+  $('btn-stress-stop').style.opacity = '1';
+  $('stress-summary-card').style.display = 'none';
+  $('stress-alert-panel').style.display = 'none';
+
+  const log = $('stress-log');
+  log.textContent = `[${new Date().toLocaleTimeString()}] ══════ PRUEBA DE ESTRÉS INICIADA ══════\n`;
+  log.textContent += `Modo: ${modeLabels[mode] || mode} | Método: ${method} | URL: ${url}\n`;
+  log.textContent += `Escalando: ${stepSize} → ${maxConcurrent} (paso +${stepSize}, pausa ${stepDelayMs}ms)\n`;
+  if (mode === 'endurance') log.textContent += `Duración: ${enduranceDurationSec}s\n`;
+  log.textContent += '─'.repeat(70) + '\n';
+
+  $('stress-status-badge').textContent = 'EN CURSO';
+  $('stress-status-badge').style.background = 'rgba(245,158,11,0.15)';
+  $('stress-status-badge').style.color = '#f59e0b';
+  $('stress-status-badge').style.borderColor = 'rgba(245,158,11,0.3)';
+
+  // Reset gauges
+  ['stress-current','stress-max-sustained','stress-avg-latency','stress-throughput','stress-p95'].forEach(id => txt(id, '0'));
+  $('stress-success-rate').textContent = '100%';
+  $('stress-success-rate').style.color = 'var(--success)';
+  ['stress-s1-cpu','stress-s2-cpu'].forEach(id => { const e=$(id); if(e) e.textContent='0%'; });
+  ['stress-s1-ram','stress-s2-ram'].forEach(id => { const e=$(id); if(e) e.textContent='0%'; });
+  ['stress-s1-db','stress-s2-db'].forEach(id => { const e=$(id); if(e) e.textContent='0'; });
+  ['stress-s1-cpu-bar','stress-s2-cpu-bar'].forEach(id => { const e=$(id); if(e) e.style.width='0%'; });
+
+  initStressCharts();
+
+  try {
+    const r = await fetch(`${API}/stress/start`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetUrl: url, maxConcurrent, stepSize, stepDelayMs, method, mode, enduranceDurationSec })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Error al iniciar');
+    showToast('Prueba iniciada', `Modo: ${modeLabels[mode] || mode}`, 'success');
+  } catch (e) {
+    stressRunning = false;
+    $('btn-stress-start').disabled = false;
+    $('btn-stress-start').style.opacity = '1';
+    $('btn-stress-stop').disabled = true;
+    $('btn-stress-stop').style.opacity = '0.4';
+    showToast('Error', e.message, 'error');
+  }
+}
+
+async function stopStressTest() {
+  try {
+    await fetch(`${API}/stress/stop`, { method: 'POST', headers: { 'Authorization': `Bearer ${token}` } });
+    showToast('Detenida', 'La prueba se detendrá en el siguiente paso.', 'success');
+  } catch (e) { showToast('Error', e.message, 'error'); }
+}
+
+function handleStressStep(data) {
+  const { step, serverMetrics, maxSustained, breakingPoint, degradationPoint, failoverDetected, phase } = data;
+  const log = $('stress-log');
+
+  // Update gauges
+  txt('stress-current', step.concurrent);
+  txt('stress-max-sustained', maxSustained || 0);
+  txt('stress-avg-latency', step.avgLatency);
+  txt('stress-throughput', step.throughput);
+  txt('stress-p95', step.p95 || 0);
+
+  const srEl = $('stress-success-rate');
+  srEl.textContent = step.successRate + '%';
+  srEl.style.color = step.successRate >= 90 ? 'var(--success)' : step.successRate >= 70 ? 'var(--warning)' : 'var(--danger)';
+
+  // Update server metrics panels
+  if (serverMetrics) {
+    const s1 = serverMetrics.s1 || {};
+    const s2 = serverMetrics.s2 || {};
+    const cpuColor = (v) => v > 80 ? '#ef4444' : v > 50 ? '#f59e0b' : '#10b981';
+    
+    $('stress-s1-cpu').textContent = s1.cpu + '%';
+    $('stress-s1-cpu').style.color = cpuColor(s1.cpu);
+    $('stress-s1-ram').textContent = s1.ram + '%';
+    $('stress-s1-db').textContent = s1.dbConn || 0;
+    $('stress-s1-cpu-bar').style.width = Math.min(s1.cpu, 100) + '%';
+    
+    $('stress-s2-cpu').textContent = s2.cpu + '%';
+    $('stress-s2-cpu').style.color = cpuColor(s2.cpu);
+    $('stress-s2-ram').textContent = s2.ram + '%';
+    $('stress-s2-db').textContent = s2.dbConn || 0;
+    $('stress-s2-cpu-bar').style.width = Math.min(s2.cpu, 100) + '%';
+  }
+
+  // Alert panels
+  if (breakingPoint || degradationPoint || failoverDetected) {
+    const panel = $('stress-alert-panel');
+    panel.style.display = 'block';
+    let msgs = [];
+    if (degradationPoint) msgs.push(`⚠️ <strong>Degradación detectada</strong> en ${degradationPoint} concurrentes (latencia >3x del baseline)`);
+    if (breakingPoint) msgs.push(`🔴 <strong>Punto de quiebre</strong> en ${breakingPoint} concurrentes (éxito <90%)`);
+    if (failoverDetected) msgs.push(`🔄 <strong>Failover detectado</strong>: S2 recibiendo carga (CPU subió)`);
+    
+    panel.innerHTML = msgs.join('<br>');
+    const isBreaking = !!breakingPoint;
+    panel.style.background = isBreaking ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)';
+    panel.style.borderColor = isBreaking ? '#ef4444' : '#f59e0b';
+    panel.style.color = isBreaking ? '#fca5a5' : '#fcd34d';
+  }
+
+  // Update latency chart
+  if (stressCharts.latency) {
+    stressCharts.latency.data.labels.push(step.concurrent);
+    stressCharts.latency.data.datasets[0].data.push(step.p50 || step.avgLatency);
+    stressCharts.latency.data.datasets[1].data.push(step.p95 || step.maxLatency);
+    stressCharts.latency.data.datasets[2].data.push(step.p99 || step.maxLatency);
+    stressCharts.latency.data.datasets[3].data.push(step.maxLatency);
+    stressCharts.latency.update('none');
+  }
+
+  // Update success chart
+  if (stressCharts.success) {
+    stressCharts.success.data.labels.push(step.concurrent);
+    stressCharts.success.data.datasets[0].data.push(step.successes);
+    stressCharts.success.data.datasets[1].data.push(step.failures);
+    stressCharts.success.update('none');
+  }
+
+  // Update CPU chart
+  if (stressCharts.cpu && serverMetrics) {
+    stressCharts.cpu.data.labels.push(step.concurrent);
+    stressCharts.cpu.data.datasets[0].data.push(serverMetrics.s1?.cpu || 0);
+    stressCharts.cpu.data.datasets[1].data.push(serverMetrics.s2?.cpu || 0);
+    stressCharts.cpu.data.datasets[2].data.push(serverMetrics.s1?.ram || 0);
+    stressCharts.cpu.data.datasets[3].data.push(serverMetrics.s2?.ram || 0);
+    stressCharts.cpu.update('none');
+  }
+
+  // Update throughput chart
+  if (stressCharts.throughput) {
+    stressCharts.throughput.data.labels.push(step.concurrent);
+    stressCharts.throughput.data.datasets[0].data.push(step.throughput || 0);
+    stressCharts.throughput.update('none');
+  }
+
+  // Log entry
+  const statusIcon = step.successRate >= 90 ? '🟢' : step.successRate >= 70 ? '🟡' : '🔴';
+  const phaseTag = phase ? ` [${phase.toUpperCase()}]` : '';
+  log.textContent += `${statusIcon}${phaseTag} ${step.concurrent} conc → ${step.successes}✓ ${step.failures}✗ | ${step.successRate}% | avg:${step.avgLatency}ms p95:${step.p95||'-'}ms p99:${step.p99||'-'}ms | ${step.throughput} req/s`;
+  if (serverMetrics) log.textContent += ` | S1:${serverMetrics.s1?.cpu||0}%cpu S2:${serverMetrics.s2?.cpu||0}%cpu`;
+  log.textContent += '\n';
+  log.scrollTop = log.scrollHeight;
+}
+
+function handleStressDone(data) {
+  stressRunning = false;
+  $('btn-stress-start').disabled = false;
+  $('btn-stress-start').style.opacity = '1';
+  $('btn-stress-stop').disabled = true;
+  $('btn-stress-stop').style.opacity = '0.4';
+
+  const s = data.results.summary;
+  const badge = $('stress-status-badge');
+
+  if (s.breakingPoint) {
+    badge.textContent = 'LÍMITE ENCONTRADO';
+    badge.style.background = 'rgba(239,68,68,0.15)';
+    badge.style.color = '#ef4444';
+    badge.style.borderColor = 'rgba(239,68,68,0.3)';
+  } else if (s.aborted) {
+    badge.textContent = 'DETENIDA';
+    badge.style.background = 'rgba(148,163,184,0.1)';
+    badge.style.color = '#94a3b8';
+    badge.style.borderColor = 'rgba(148,163,184,0.2)';
+  } else {
+    badge.textContent = 'COMPLETADA';
+    badge.style.background = 'rgba(16,185,129,0.15)';
+    badge.style.color = '#10b981';
+    badge.style.borderColor = 'rgba(16,185,129,0.3)';
+  }
+
+  const log = $('stress-log');
+  log.textContent += '\n' + '═'.repeat(70) + '\n';
+  log.textContent += ` PRUEBA FINALIZADA — ${(s.totalDuration / 1000).toFixed(1)}s | ${s.totalSteps} pasos | ${s.totalRequests} peticiones totales\n`;
+  log.textContent += ` Modo: ${s.mode} | Máx. Sostenidas (≥90%): ${s.maxSustained}\n`;
+  if (s.degradationPoint) log.textContent += ` ⚠ Degradación iniciada en: ${s.degradationPoint} concurrentes\n`;
+  if (s.breakingPoint) log.textContent += ` 🔴 Punto de quiebre en: ${s.breakingPoint} concurrentes\n`;
+  if (s.failoverDetected) log.textContent += ` 🔄 Failover a S2 detectado durante la prueba\n`;
+  log.textContent += ` Throughput pico: ${s.peakThroughput} req/s | promedio: ${s.avgThroughput} req/s\n`;
+  log.textContent += ` CPU pico → S1: ${s.peakCPU_S1}% | S2: ${s.peakCPU_S2}%\n`;
+  log.textContent += ` RAM pico → S1: ${s.peakRAM_S1}% | S2: ${s.peakRAM_S2}%\n`;
+  log.textContent += ` DB Conn pico → S1: ${s.peakDBConn_S1} | S2: ${s.peakDBConn_S2}\n`;
+  log.textContent += s.aborted ? ' ⏹ Prueba detenida manualmente\n' : '';
+  log.textContent += '═'.repeat(70) + '\n';
+  log.scrollTop = log.scrollHeight;
+
+  // Show summary card
+  $('stress-summary-card').style.display = 'block';
+  $('stress-summary-card').style.borderTopColor = s.breakingPoint ? 'var(--danger)' : 'var(--success)';
+
+  const fmt = (n) => n ? n.toLocaleString() : '0';
+  const fmtBytes = (b) => b > 1048576 ? (b/1048576).toFixed(1)+'MB' : b > 1024 ? (b/1024).toFixed(0)+'KB' : b+'B';
+
+  $('stress-summary').innerHTML = `
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:16px;">
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Máx. Sostenidas</strong><br>
+        <span style="font-size:32px; font-weight:800; color:var(--success);">${fmt(s.maxSustained)}</span>
+        <span style="color:var(--text-muted);font-size:12px;"> peticiones</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Punto de Quiebre</strong><br>
+        <span style="font-size:32px; font-weight:800; color:${s.breakingPoint?'var(--danger)':'var(--text-muted)'};">${s.breakingPoint || '—'}</span>
+        <span style="color:var(--text-muted);font-size:12px;"> concurrentes</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Degradación</strong><br>
+        <span style="font-size:32px; font-weight:800; color:${s.degradationPoint?'var(--warning)':'var(--text-muted)'};">${s.degradationPoint || '—'}</span>
+        <span style="color:var(--text-muted);font-size:12px;"> concurrentes</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Throughput Pico</strong><br>
+        <span style="font-size:32px; font-weight:800; color:var(--primary);">${s.peakThroughput}</span>
+        <span style="color:var(--text-muted);font-size:12px;"> req/s</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Total Peticiones</strong><br>
+        <span style="font-size:24px; font-weight:700; color:var(--text-main);">${fmt(s.totalRequests)}</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Datos Transferidos</strong><br>
+        <span style="font-size:24px; font-weight:700; color:var(--text-main);">${fmtBytes(data.results.totalBytes)}</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Duración</strong><br>
+        <span style="font-size:24px; font-weight:700; color:var(--warning);">${(s.totalDuration/1000).toFixed(1)}</span>
+        <span style="color:var(--text-muted);font-size:12px;"> segundos</span>
+      </div>
+      <div>
+        <strong style="color:var(--text-muted);font-size:11px;text-transform:uppercase;">Failover</strong><br>
+        <span style="font-size:24px; font-weight:700; color:${s.failoverDetected?'#ec4899':'var(--text-muted)'};">${s.failoverDetected ? '✓ Detectado' : 'No detectado'}</span>
+      </div>
+    </div>
+    <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+      <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px;">
+        <div style="background:rgba(59,130,246,0.05);padding:12px;border-radius:8px;border:1px solid rgba(59,130,246,0.15);">
+          <span style="color:#3b82f6;font-size:12px;font-weight:700;">S1 (Master) — Picos</span><br>
+          <span style="color:var(--text-main);font-size:14px;">CPU: ${s.peakCPU_S1}% | RAM: ${s.peakRAM_S1}% | DB: ${s.peakDBConn_S1} conn</span>
+        </div>
+        <div style="background:rgba(139,92,246,0.05);padding:12px;border-radius:8px;border:1px solid rgba(139,92,246,0.15);">
+          <span style="color:#8b5cf6;font-size:12px;font-weight:700;">S2 (Slave) — Picos</span><br>
+          <span style="color:var(--text-main);font-size:14px;">CPU: ${s.peakCPU_S2}% | RAM: ${s.peakRAM_S2}% | DB: ${s.peakDBConn_S2} conn</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  showToast('Prueba finalizada', `Máx. sostenidas: ${s.maxSustained} | Quiebre: ${s.breakingPoint || 'N/A'}`, s.breakingPoint ? 'error' : 'success');
+}
+</script>
+</body>
+</html>

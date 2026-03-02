@@ -566,6 +566,9 @@ async function executeCompleteTool(name: string, args: any): Promise<string> {
         if (args.date) {
           availabilityFilters.push('av.date = ?');
           availabilityValues.push(args.date);
+        } else {
+          // ⚠️ SIEMPRE filtrar fechas pasadas por defecto
+          availabilityFilters.push('av.date >= CURDATE()');
         }
         if (args.location_id) {
           availabilityFilters.push('av.location_id = ?');

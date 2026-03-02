@@ -372,176 +372,34 @@ RECORDATORIOS IMPORTANTES:
   }
 
   /**
-   * Detecta intención del usuario (mejorado con patrones avanzados)
+   * Detecta intención del usuario.
+   * NOTA: La implementación principal está en WhatsAppEnhancedUnderstanding.ts.
+   * Este método es un wrapper ligero para compatibilidad con WhatsAppAI.ts (legado).
    */
   detectIntent(message: string): string {
     const lowerMessage = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     
-    // Patrones regex para detección más precisa
-    const intentPatterns: Record<string, RegExp[]> = {
-      'greeting': [
-        /^(hola|buenas?( tardes?| dias?| noches?)?|saludos?|hey|hi|hello)$/i,
-        /^(ola|holaa+|buenas+)$/i
-      ],
-      'schedule': [
-        /quiero( una)?( la)? cita/i,
-        /necesito (una )?cita/i,
-        /agendar(me)?( una)?( cita)?/i,
-        /sacar( una)? cita/i,
-        /pedir( una)? cita/i,
-        /reservar( una)? cita/i,
-        /(me )?(puede[ns]?|podria[ns]?) agendar/i,
-        /tiene[ns]? disponibilidad/i,
-        /hay cupos?/i
-      ],
-      'check_appointment': [
-        /mi[s]? cita[s]?/i,
-        /cita[s]? que tengo/i,
-        /tengo cita/i,
-        /cita[s]? pendiente[s]?/i,
-        /cuando (es|tengo) (mi )?cita/i,
-        /estado de mi cita/i,
-        /consultar (mi )?cita/i,
-        /ver (mi[s]? )?cita[s]?/i
-      ],
-      'cancel': [
-        /cancelar( la| mi)?( cita)?/i,
-        /anular( la| mi)?( cita)?/i,
-        /no (voy a |puedo )?(ir|asistir)/i,
-        /eliminar( la| mi)?( cita)?/i,
-        /quitar( la| mi)?( cita)?/i
-      ],
-      'reschedule': [
-        /cambiar( la| mi)?( cita| hora| fecha)?/i,
-        /reprogramar( la| mi)?( cita)?/i,
-        /mover( la| mi)?( cita)?/i,
-        /otro (dia|horario|fecha)/i,
-        /posponer( la| mi)?( cita)?/i
-      ],
-      'availability': [
-        /disponibilidad/i,
-        /cupos? (disponible[s]?|libre[s]?)/i,
-        /horarios? (disponible[s]?|libre[s]?)/i,
-        /que dias? (hay|tiene[ns]?)/i,
-        /cuando (hay|tiene[ns]?)/i,
-        /agenda[s]? (disponible[s]?|abierta[s]?)/i
-      ],
-      'waiting_list': [
-        /lista de espera/i,
-        /cola de espera/i,
-        /espera(r)?( turno)?/i,
-        /avisarme cuando haya/i,
-        /notificarme/i,
-        /(mi )?posicion en (la )?lista/i
-      ],
-      'info': [
-        /informacion( sobre)?/i,
-        /que servicios/i,
-        /que especialidades/i,
-        /donde queda[n]?/i,
-        /direccion/i,
-        /ubicacion/i,
-        /horarios? de atencion/i,
-        /como llego/i,
-        /telefono/i
-      ],
-      'doctor_query': [
-        /quien (es|atiende|me va a atender)/i,
-        /que doctor(a|es)?/i,
-        /que medico[s]?/i,
-        /nombre del (doctor|medico|especialista)/i,
-        /hay otro (doctor|medico)/i,
-        /otro especialista/i,
-        /que otros (doctores|medicos)/i,
-        /mas opciones/i
-      ],
-      'doctor_selection': [
-        /^(el |la )?(primero?|1|uno)$/i,
-        /^(el |la )?(segundo?|2|dos)$/i,
-        /^(el |la )?(tercero?|3|tres)$/i,
-        /^opcion\s*(\d)$/i,
-        /quiero (con )?(el |la )?(doctor|doctora|dr\.?|dra\.?)/i,
-        /prefiero (con )?(el |la )?(doctor|doctora|dr\.?|dra\.?)/i,
-        /(con |al )(doctor|doctora|dr\.?|dra\.?)\s+\w+/i
-      ],
-      'price_query': [
-        /cuanto (cuesta|vale|es)/i,
-        /precio[s]?/i,
-        /valor( de)?( la)?/i,
-        /costo[s]?/i,
-        /tarifa[s]?/i
-      ],
-      'confirm': [
-        /^(si|sip|sep|claro|dale|ok|vale|listo|perfecto|confirmo|correcto|exacto)$/i,
-        /^(si,? por favor|esta bien|de acuerdo)$/i,
-        /^(asi es|afirmativo|eso es)$/i
-      ],
-      'deny': [
-        /^(no|nop|nope|nel|negativo|para nada)$/i,
-        /^(no,? gracias|prefiero no|mejor no)$/i
-      ],
-      'help': [
-        /ayuda(me)?/i,
-        /no (se|entiendo)/i,
-        /como funciona/i,
-        /que puedo hacer/i,
-        /\?{2,}/
-      ],
-      'thanks': [
-        /(muchas? )?gracias/i,
-        /te lo agradezco/i,
-        /muy amable/i,
-        /thank(s| you)/i
-      ],
-      'goodbye': [
-        /adios/i,
-        /chao/i,
-        /hasta (luego|pronto|manana)/i,
-        /nos vemos/i,
-        /bye/i,
-        /que este[s]? bien/i
-      ],
-      'complaint': [
-        /queja/i,
-        /reclamo/i,
-        /molest(o|a|ia)/i,
-        /no me gusta/i,
-        /mal servicio/i,
-        /horrible/i,
-        /pesimo/i
-      ]
-    };
+    // Patrones simplificados (subset del EnhancedUnderstanding)
+    const quickPatterns: [string, RegExp][] = [
+      ['greeting', /^(hola|buenas?( tardes?| dias?| noches?)?|saludos?|hey|hi)$/i],
+      ['schedule', /(?:quiero|necesito|agendar|sacar|pedir|reservar).*cita/i],
+      ['check_appointment', /(?:mi[s]? cita|cita[s]? (?:que tengo|pendiente))/i],
+      ['cancel', /cancelar|anular/i],
+      ['reschedule', /(?:cambiar|reprogramar|mover).*(?:cita|hora|fecha)/i],
+      ['availability', /disponibilidad|cupos?|horarios? (?:disponible|libre)/i],
+      ['waiting_list', /lista de espera|cola de espera/i],
+      ['confirm', /^(si|sip|claro|dale|ok|vale|listo|perfecto|correcto)$/i],
+      ['deny', /^(no|nop|nope|nel|negativo)$/i],
+      ['help', /ayuda|como funciona/i],
+      ['thanks', /gracias|te lo agradezco/i],
+      ['goodbye', /adios|chao|hasta (luego|pronto)|bye/i],
+      ['info', /informacion|servicios|especialidades|donde queda/i],
+    ];
     
-    // Intenciones con keywords simples como fallback
-    const intents = {
-      'greeting': ['hola', 'buenos dias', 'buenas tardes', 'buenas noches', 'saludos'],
-      'schedule': ['agendar', 'cita', 'turno', 'consulta', 'pedir cita'],
-      'cancel': ['cancelar', 'anular', 'eliminar cita'],
-      'reschedule': ['cambiar', 'reprogramar', 'mover cita'],
-      'availability': ['disponibilidad', 'cupos', 'horarios', 'cuando hay'],
-      'waiting_list': ['lista de espera', 'cola', 'espera'],
-      'info': ['informacion', 'servicios', 'especialidades', 'donde queda'],
-      'help': ['ayuda', 'ayudar', 'no entiendo'],
-      'thanks': ['gracias', 'muchas gracias'],
-      'goodbye': ['adios', 'chao', 'hasta luego', 'nos vemos'],
-      'doctor_selection': ['el primero', 'el segundo', 'el tercero', 'opcion 1', 'opcion 2', 'prefiero con']
-    };
+    for (const [intent, pattern] of quickPatterns) {
+      if (pattern.test(lowerMessage)) return intent;
+    }
     
-    // Primero verificar con patrones regex (más preciso)
-    for (const [intent, patterns] of Object.entries(intentPatterns)) {
-      for (const pattern of patterns) {
-        if (pattern.test(lowerMessage)) {
-          return intent;
-        }
-      }
-    }
-
-    for (const [intent, keywords] of Object.entries(intents)) {
-      if (keywords.some(keyword => lowerMessage.includes(keyword))) {
-        return intent;
-      }
-    }
-
     return 'unknown';
   }
 
@@ -582,89 +440,10 @@ RECORDATORIOS IMPORTANTES:
   
   /**
    * Normaliza un documento (cédula) removiendo caracteres especiales
+   * @deprecated Usar EnhancedUnderstanding.extractEntities() para extracción de documentos
    */
   normalizeDocument(doc: string): string {
-    // Remover todo excepto números
-    let normalized = doc.replace(/[^\d]/g, '');
-    
-    // Si empieza con 0, removerlo (algunas personas ponen 0 al inicio)
-    if (normalized.startsWith('0') && normalized.length > 10) {
-      normalized = normalized.substring(1);
-    }
-    
-    return normalized;
-  }
-  
-  /**
-   * Detecta si un mensaje contiene un documento de identidad
-   */
-  extractDocument(message: string): string | null {
-    // Patrones comunes de documentos colombianos
-    const patterns = [
-      /\b(\d{6,12})\b/,                    // 6-12 dígitos consecutivos
-      /\b(\d{1,3}[\.,]?\d{3}[\.,]?\d{3})\b/, // Con puntos o comas
-      /[cC][cC]\s*:?\s*(\d+)/,             // CC: 12345678
-      /[cC][eE]\s*:?\s*(\d+)/,             // CE: 12345678 (extranjeros)
-      /[nN][iI][tT]\s*:?\s*(\d+)/,         // NIT: 123456789
-      /[dD]ocumento:?\s*(\d+)/,            // Documento: 12345678
-      /[cC][eE]dula:?\s*(\d+)/,            // Cedula: 12345678
-    ];
-    
-    for (const pattern of patterns) {
-      const match = message.match(pattern);
-      if (match) {
-        const doc = match[1] || match[0];
-        const normalized = this.normalizeDocument(doc);
-        // Validar longitud razonable para documento colombiano
-        if (normalized.length >= 6 && normalized.length <= 12) {
-          return normalized;
-        }
-      }
-    }
-    
-    return null;
-  }
-  
-  /**
-   * Formatea un número de teléfono a formato estándar
-   */
-  normalizePhone(phone: string): string {
-    // Remover todo excepto números y +
-    let normalized = phone.replace(/[^\d+]/g, '');
-    
-    // Si no tiene código de país, asumir Colombia (+57)
-    if (!normalized.startsWith('+')) {
-      if (normalized.startsWith('57')) {
-        normalized = '+' + normalized;
-      } else if (normalized.length === 10) {
-        normalized = '+57' + normalized;
-      } else if (normalized.length === 7) {
-        // Número fijo, agregar código de área de Colombia
-        normalized = '+576' + normalized;
-      }
-    }
-    
-    return normalized;
-  }
-  
-  /**
-   * Extrae un número de teléfono de un mensaje
-   */
-  extractPhone(message: string): string | null {
-    const patterns = [
-      /\+?\d{1,3}[\s.-]?\d{3}[\s.-]?\d{3}[\s.-]?\d{4}/,  // +57 300 123 4567
-      /\+?\d{10,13}/,                                     // +573001234567
-      /\(\d{3}\)\s*\d{3}[\s.-]?\d{4}/,                    // (300) 123-4567
-    ];
-    
-    for (const pattern of patterns) {
-      const match = message.match(pattern);
-      if (match) {
-        return this.normalizePhone(match[0]);
-      }
-    }
-    
-    return null;
+    return doc.replace(/[^\d]/g, '').replace(/^0+/, '');
   }
 }
 

@@ -42,4 +42,9 @@ sudo systemctl reload nginx || sudo service nginx reload
 log "Verificación rápida"
 curl -sI -H 'Host: biosanarcall.site' https://127.0.0.1/ -k | sed -n '1,3p'
 
+# === SINCRONIZAR FRONTEND Y SSL A SERVER 2 ===
+log "Sincronizando frontend y SSL a Server 2 (72.62.164.88)..."
+bash /opt/biosanar/ssl-sync-to-s2.sh --with-frontend 2>&1 | tail -5
+log "Server 2 sincronizado"
+
 log "Despliegue completado"

@@ -3,16 +3,15 @@ import { Button } from "@/components/ui/button";
 import { LogOut } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
+import { clearAdminSession } from "@/lib/authStorage";
 
 const LogoutButton = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
   const handleLogout = () => {
-    localStorage.removeItem("isAuthenticated");
+    clearAdminSession();
     localStorage.removeItem("userEmail");
-    localStorage.removeItem("token");
-    localStorage.removeItem("user");
     
     toast({
       title: "Sesión cerrada",
