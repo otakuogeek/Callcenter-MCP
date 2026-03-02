@@ -145,21 +145,35 @@ async function ensureAppointmentImprovements(): Promise<void> {
     } catch { /* ignore */ }
 
     // Backfill: asociar citas sin availability_id buscando coincidencia de ventana horaria y doctor / especialidad / sede
+    // Optimizado: una sola UPDATE con subquery en vez de N+1 loop
     try {
-      const [rows]: any = await pool.query(`SELECT id, doctor_id, specialty_id, location_id, scheduled_at, duration_minutes FROM appointments WHERE availability_id IS NULL LIMIT 500`);
-      for (const r of (Array.isArray(rows) ? rows : [])) {
-        try {
-          const [cand]: any = await pool.query(`SELECT id, start_time, end_time FROM availabilities
-            WHERE doctor_id = ? AND specialty_id = ? AND location_id = ? AND date = DATE(?)
-              AND TIME(?) BETWEEN start_time AND end_time
-            ORDER BY ABS(TIMESTAMPDIFF(MINUTE, CONCAT(date,' ',start_time), ?)) ASC
-            LIMIT 1`, [r.doctor_id, r.specialty_id, r.location_id, r.scheduled_at, r.scheduled_at, r.scheduled_at]);
-          if (Array.isArray(cand) && cand.length) {
-            const availId = cand[0].id;
-            await pool.query('UPDATE appointments SET availability_id = ? WHERE id = ?', [availId, r.id]);
-            await pool.query('UPDATE availabilities SET booked_slots = (SELECT COUNT(*) FROM appointments ap WHERE ap.availability_id = ? AND ap.status != "Cancelada") WHERE id = ?', [availId, availId]);
-          }
-        } catch { /* ignore loop error */ }
+      const [result]: any = await pool.query(`
+        UPDATE appointments a
+        SET a.availability_id = (
+          SELECT av.id
+          FROM availabilities av
+          WHERE av.doctor_id = a.doctor_id
+            AND av.specialty_id = a.specialty_id
+            AND av.location_id = a.location_id
+            AND av.date = DATE(a.scheduled_at)
+            AND TIME(a.scheduled_at) BETWEEN av.start_time AND av.end_time
+          ORDER BY ABS(TIMESTAMPDIFF(MINUTE, CONCAT(av.date,' ',av.start_time), a.scheduled_at)) ASC
+          LIMIT 1
+        )
+        WHERE a.availability_id IS NULL
+        LIMIT 500
+      `);
+      if (result?.affectedRows > 0) {
+        logger.info(`Backfilled ${result.affectedRows} appointments with availability_id`);
+        // Recalcular booked_slots en batch para las availabilities afectadas
+        await pool.query(`
+          UPDATE availabilities av
+          SET av.booked_slots = (
+            SELECT COUNT(*) FROM appointments ap
+            WHERE ap.availability_id = av.id AND ap.status != 'Cancelada'
+          )
+          WHERE av.date >= CURDATE()
+        `);
       }
     } catch { /* ignore backfill errors */ }
   } catch { /* master ignore */ }

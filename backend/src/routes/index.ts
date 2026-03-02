@@ -85,19 +85,27 @@ router.use((req: Request, _res: Response, next) => {
 	next();
 });
 
-// Healthcheck
+// Healthcheck (cached 5s to avoid DB spam)
+let healthCache: { data: any; expires: number } | null = null;
 router.get('/health', async (_req: Request, res: Response) => {
+	const now = Date.now();
+	if (healthCache && healthCache.expires > now) {
+		return res.json(healthCache.data);
+	}
 	try {
 		const [rows] = await pool.query('SELECT 1 AS ok');
 		const ok = Array.isArray(rows) && (rows as any)[0]?.ok === 1;
-		return res.json({
+		const data = {
 			status: 'ok',
 			db: ok ? 'ok' : 'fail',
 			name: (pkg as any).name,
 			version: (pkg as any).version,
 			uptime: process.uptime(),
+			memory: Math.round(process.memoryUsage().rss / 1048576),
 			timestamp: new Date().toISOString(),
-		});
+		};
+		healthCache = { data, expires: now + 5000 };
+		return res.json(data);
 	} catch {
 		return res.status(200).json({
 			status: 'degraded',
@@ -146,44 +154,6 @@ router.use('/audit', audit);
 router.use('/sessions', sessions);
 // Rutas públicas (SIN autenticación)
 router.use('/public', publicRoutes);
-// Endpoint público de municipios (directo, antes de montar patients-v2)
-router.get('/patients-v2/public/municipalities', async (req, res) => {
-  try {
-    const zoneId = req.query.zone_id;
-    let query = `SELECT id, name, zone_id 
-                 FROM municipalities 
-                 WHERE 1=1`;
-    const params: any[] = [];
-    
-    if (zoneId) {
-      query += ` AND zone_id = ?`;
-      params.push(parseInt(zoneId as string));
-    }
-    
-    query += ` ORDER BY name ASC`;
-    
-    const [rows] = await pool.execute(query, params);
-    res.json({ success: true, data: rows });
-  } catch (e) {
-    console.error('Error getting municipalities:', e);
-    res.status(500).json({ success: false, message: 'Error al obtener municipios' });
-  }
-});
-
-router.get('/patients-v2/public/zones', async (req, res) => {
-  try {
-    const [rows] = await pool.execute(
-      `SELECT id, name, description 
-       FROM zones 
-       ORDER BY name ASC`
-    );
-    res.json({ success: true, data: rows });
-  } catch (e) {
-    console.error('Error getting zones:', e);
-    res.status(500).json({ success: false, message: 'Error al obtener zonas' });
-  }
-});
-
 // Nuevas rutas Biosanarcall 2025
 router.use('/patients-v2', patientsUpdated);
 router.use('/patients-enhanced', patientsEnhanced);
@@ -203,7 +173,6 @@ router.use('/outbound-public', outboundPublic);
 // Nuevas rutas avanzadas de endpoints
 router.use('/search', search);
 router.use('/export', exportReports);
-router.use('/notifications', notifications);
 // Sistema de asignación diaria y cola de espera
 router.use('/daily-queue', dailyQueue);
 router.use('/auto-assignment', autoAssignment);

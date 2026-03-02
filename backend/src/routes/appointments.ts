@@ -221,8 +221,6 @@ router.get('/patient-history/:patient_id', requireAuth, async (req: Request, res
 
     appointmentsQuery += ' ORDER BY a.scheduled_at DESC';
 
-    const [appointments]: any = await pool.query(appointmentsQuery, appointmentParams);
-
     // 2. Obtener todas las entradas de cola de espera del paciente
     let waitingListQuery = `
       SELECT 
@@ -266,13 +264,19 @@ router.get('/patient-history/:patient_id', requireAuth, async (req: Request, res
 
     waitingListQuery += ' ORDER BY wl.created_at DESC';
 
+    // Ejecutar ambas consultas en paralelo
+    const [appointmentsResult, waitingListResult] = await Promise.allSettled([
+      pool.query(appointmentsQuery, appointmentParams),
+      pool.query(waitingListQuery, waitingListParams)
+    ]);
+
+    const appointments: any[] = appointmentsResult.status === 'fulfilled' ? (appointmentsResult.value as any)[0] : [];
     let waitingListRows: any[] = [];
-    try {
-      const [rows]: any = await pool.query(waitingListQuery, waitingListParams);
-      waitingListRows = rows;
-    } catch (e: any) {
-      // Si la tabla no existe, continuar sin error
-      if (e.code !== 'ER_NO_SUCH_TABLE' && e.errno !== 1146) {
+    if (waitingListResult.status === 'fulfilled') {
+      waitingListRows = (waitingListResult.value as any)[0];
+    } else {
+      const e = waitingListResult.reason;
+      if (e?.code !== 'ER_NO_SUCH_TABLE' && e?.errno !== 1146) {
         console.error('Error fetching waiting list:', e);
       }
     }
@@ -748,25 +752,29 @@ router.get('/summary', requireAuth, async (req: Request, res: Response) => {
   const end = String(req.query.end || '');
   if (!start || !end) return res.status(400).json({ message: 'start y end son requeridos (YYYY-MM-DD)' });
   try {
-    const [apptRows] = await pool.query(
-      `SELECT DATE(scheduled_at) AS date, COUNT(*) AS appointments
-       FROM appointments
-       WHERE DATE(scheduled_at) BETWEEN ? AND ?
-         AND status = 'Confirmada'
-       GROUP BY DATE(scheduled_at)
-       ORDER BY DATE(scheduled_at)`,
-      [start, end]
-    );
-    const [availRows] = await pool.query(
-      `SELECT date, COUNT(*) AS availabilities
-       FROM availabilities
-       WHERE date BETWEEN ? AND ?
-         AND status IN ('Activa', 'Completa')
-         AND (is_paused = 0 OR is_paused IS NULL)
-       GROUP BY date
-       ORDER BY date`,
-      [start, end]
-    );
+    const [apptResult, availResult] = await Promise.all([
+      pool.query(
+        `SELECT DATE(scheduled_at) AS date, COUNT(*) AS appointments
+         FROM appointments
+         WHERE DATE(scheduled_at) BETWEEN ? AND ?
+           AND status = 'Confirmada'
+         GROUP BY DATE(scheduled_at)
+         ORDER BY DATE(scheduled_at)`,
+        [start, end]
+      ),
+      pool.query(
+        `SELECT date, COUNT(*) AS availabilities
+         FROM availabilities
+         WHERE date BETWEEN ? AND ?
+           AND status IN ('Activa', 'Completa')
+           AND (is_paused = 0 OR is_paused IS NULL)
+         GROUP BY date
+         ORDER BY date`,
+        [start, end]
+      )
+    ]);
+    const [apptRows] = apptResult;
+    const [availRows] = availResult;
 
     const apptMap = new Map<string, number>();
     (Array.isArray(apptRows) ? (apptRows as any[]) : []).forEach(r => {
@@ -810,57 +818,43 @@ router.get('/conflicts', requireAuth, async (req: Request, res: Response) => {
     return res.status(400).json({ message: 'scheduled_at y duration_minutes son requeridos, y al menos doctor_id o patient_id o room_id' });
   }
   try {
+    // Construir las consultas de conflicto en paralelo
+    const conflictQuery = (field: string, id: number) => {
+      const params: any[] = [id, scheduled_at, duration_minutes, scheduled_at];
+      let extra = '';
+      if (exclude_id && !Number.isNaN(exclude_id)) { extra = ' AND id != ?'; params.push(exclude_id); }
+      return pool.query(
+        `SELECT id, patient_id, scheduled_at, duration_minutes
+         FROM appointments
+         WHERE ${field} = ? AND status != 'Cancelada'${extra}
+           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
+           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
+         ORDER BY scheduled_at
+         LIMIT 5`,
+        params
+      );
+    };
+
+    const hasRoom = room_id ? await hasRoomColumn() : false;
+    const queries: Promise<any>[] = [];
+    const queryKeys: string[] = [];
+
+    if (doctor_id) { queries.push(conflictQuery('doctor_id', doctor_id)); queryKeys.push('doctor'); }
+    if (patient_id) { queries.push(conflictQuery('patient_id', patient_id)); queryKeys.push('patient'); }
+    if (room_id && hasRoom) { queries.push(conflictQuery('room_id', room_id)); queryKeys.push('room'); }
+
+    const results = await Promise.all(queries);
+
     let doctorItems: any[] = [];
     let patientItems: any[] = [];
     let roomItems: any[] = [];
-    if (doctor_id) {
-      const paramsD: any[] = [doctor_id, scheduled_at, duration_minutes, scheduled_at];
-      let extraD = '';
-      if (exclude_id && !Number.isNaN(exclude_id)) { extraD = ' AND id != ?'; paramsD.push(exclude_id); }
-      const [rowsD] = await pool.query(
-        `SELECT id, patient_id, scheduled_at, duration_minutes
-         FROM appointments
-         WHERE doctor_id = ? AND status != 'Cancelada'${extraD}
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
-         ORDER BY scheduled_at
-         LIMIT 5`,
-        paramsD
-      );
-      doctorItems = Array.isArray(rowsD) ? (rowsD as any[]) : [];
+    for (let i = 0; i < queryKeys.length; i++) {
+      const rows = Array.isArray(results[i][0]) ? results[i][0] : [];
+      if (queryKeys[i] === 'doctor') doctorItems = rows;
+      else if (queryKeys[i] === 'patient') patientItems = rows;
+      else if (queryKeys[i] === 'room') roomItems = rows;
     }
-  if (patient_id) {
-      const paramsP: any[] = [patient_id, scheduled_at, duration_minutes, scheduled_at];
-      let extraP = '';
-      if (exclude_id && !Number.isNaN(exclude_id)) { extraP = ' AND id != ?'; paramsP.push(exclude_id); }
-      const [rowsP] = await pool.query(
-        `SELECT id, patient_id, scheduled_at, duration_minutes
-         FROM appointments
-         WHERE patient_id = ? AND status != 'Cancelada'${extraP}
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
-         ORDER BY scheduled_at
-         LIMIT 5`,
-        paramsP
-      );
-      patientItems = Array.isArray(rowsP) ? (rowsP as any[]) : [];
-    }
-    if (room_id && await hasRoomColumn()) {
-      const paramsR: any[] = [room_id, scheduled_at, duration_minutes, scheduled_at];
-      let extraR = '';
-      if (exclude_id && !Number.isNaN(exclude_id)) { extraR = ' AND id != ?'; paramsR.push(exclude_id); }
-      const [rowsR] = await pool.query(
-        `SELECT id, patient_id, scheduled_at, duration_minutes
-         FROM appointments
-         WHERE room_id = ? AND status != 'Cancelada'${extraR}
-           AND scheduled_at < DATE_ADD(?, INTERVAL ? MINUTE)
-           AND DATE_ADD(scheduled_at, INTERVAL duration_minutes MINUTE) > ?
-         ORDER BY scheduled_at
-         LIMIT 5`,
-        paramsR
-      );
-      roomItems = Array.isArray(rowsR) ? (rowsR as any[]) : [];
-    }
+
     return res.json({
       conflict: (doctorItems.length > 0) || (patientItems.length > 0) || (roomItems.length > 0),
       doctor_conflict: doctorItems.length > 0,
@@ -879,13 +873,17 @@ router.get('/conflicts', requireAuth, async (req: Request, res: Response) => {
 // Recalcular booked_slots de todas las disponibilidades (uso administrativo)
 router.post('/recalc', requireAuth, async (_req: Request, res: Response) => {
   try {
-    // ⚠️ OPTIMIZACIÓN: Solo recalcular agendas actuales y futuras
-    const [availRows]: any = await pool.query('SELECT id FROM availabilities WHERE date >= CURDATE()');
-    for (const a of (Array.isArray(availRows) ? availRows : [])) {
-      try {
-        await pool.query('CALL recalc_availability_slots(?)', [a.id]);
-      } catch { /* ignore individual */ }
-    }
+    // Recalcular en batch con una sola query en vez de N llamadas a stored procedure
+    await pool.query(`
+      UPDATE availabilities a
+      SET booked_slots = (
+        SELECT COUNT(*)
+        FROM appointments ap
+        WHERE ap.availability_id = a.id
+          AND ap.status NOT IN ('Cancelada', 'No Show')
+      )
+      WHERE a.date >= CURDATE()
+    `);
     return res.json({ success: true, message: 'Recalculo ejecutado' });
   } catch {
     return res.status(500).json({ success: false, message: 'Error durante recálculo'});
@@ -1133,21 +1131,26 @@ router.get('/waiting-list', requireAuth, async (req: Request, res: Response) => 
     const result = Object.values(groupedBySpecialty);
     
     // Calcular estadísticas generales
+    // Calcular estadísticas generales (single-pass)
+    const wlByPriority = { urgente: 0, alta: 0, normal: 0, baja: 0 };
+    const wlByStatus = { pending: 0, reassigned: 0, cancelled: 0, expired: 0 };
+    for (const r of rows) {
+      const p = r.priority_level;
+      if (p === 'Urgente') wlByPriority.urgente++;
+      else if (p === 'Alta') wlByPriority.alta++;
+      else if (p === 'Normal') wlByPriority.normal++;
+      else if (p === 'Baja') wlByPriority.baja++;
+      const s = r.status;
+      if (s === 'pending') wlByStatus.pending++;
+      else if (s === 'reassigned') wlByStatus.reassigned++;
+      else if (s === 'cancelled') wlByStatus.cancelled++;
+      else if (s === 'expired') wlByStatus.expired++;
+    }
     const stats = {
       total_specialties: result.length,
       total_patients_waiting: rows.length,
-      by_priority: {
-        urgente: rows.filter((r: any) => r.priority_level === 'Urgente').length,
-        alta: rows.filter((r: any) => r.priority_level === 'Alta').length,
-        normal: rows.filter((r: any) => r.priority_level === 'Normal').length,
-        baja: rows.filter((r: any) => r.priority_level === 'Baja').length
-      },
-      by_status: {
-        pending: rows.filter((r: any) => r.status === 'pending').length,
-        reassigned: rows.filter((r: any) => r.status === 'reassigned').length,
-        cancelled: rows.filter((r: any) => r.status === 'cancelled').length,
-        expired: rows.filter((r: any) => r.status === 'expired').length
-      },
+      by_priority: wlByPriority,
+      by_status: wlByStatus,
       filters_applied: {
         specialty_id: specialtyId,
         availability_id: availabilityId,
@@ -1278,26 +1281,40 @@ router.get('/daily-queue', requireAuth, async (req: Request, res: Response) => {
       ORDER BY app.scheduled_at
     `;
 
-    const [waitingRows]: any = await pool.query(waitingQuery, [targetDateStr]);
-    const [appointmentRows]: any = await pool.query(appointmentsQuery, [targetDateStr]);
+    const [[waitingRows], [appointmentRows]]: any = await Promise.all([
+      pool.query(waitingQuery, [targetDateStr]),
+      pool.query(appointmentsQuery, [targetDateStr])
+    ]);
 
-    // 3. Calcular estadísticas
+    // 3. Calcular estadísticas (single-pass en vez de múltiples .filter)
+    const byStatus = { pending: 0, confirmed: 0, completed: 0, cancelled: 0 };
+    const byPriority = { urgente: 0, alta: 0, normal: 0, baja: 0 };
+
+    for (const a of appointmentRows) {
+      if (a.status === 'Pendiente') byStatus.pending++;
+      else if (a.status === 'Confirmada') byStatus.confirmed++;
+      else if (a.status === 'Completada') byStatus.completed++;
+      else if (a.status === 'Cancelada') byStatus.cancelled++;
+      const p = a.priority_level;
+      if (p === 'Urgente') byPriority.urgente++;
+      else if (p === 'Alta') byPriority.alta++;
+      else if (p === 'Normal') byPriority.normal++;
+      else if (p === 'Baja') byPriority.baja++;
+    }
+    for (const w of waitingRows) {
+      const p = w.priority_level;
+      if (p === 'Urgente') byPriority.urgente++;
+      else if (p === 'Alta') byPriority.alta++;
+      else if (p === 'Normal') byPriority.normal++;
+      else if (p === 'Baja') byPriority.baja++;
+    }
+
     const stats = {
       total_waiting: waitingRows.length,
       total_scheduled: appointmentRows.length,
       total_today: waitingRows.length + appointmentRows.length,
-      by_status: {
-        pending: appointmentRows.filter((a: any) => a.status === 'Pendiente').length,
-        confirmed: appointmentRows.filter((a: any) => a.status === 'Confirmada').length,
-        completed: appointmentRows.filter((a: any) => a.status === 'Completada').length,
-        cancelled: appointmentRows.filter((a: any) => a.status === 'Cancelada').length,
-      },
-      by_priority: {
-        urgente: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Urgente').length,
-        alta: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Alta').length,
-        normal: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Normal').length,
-        baja: [...waitingRows, ...appointmentRows].filter((a: any) => a.priority_level === 'Baja').length,
-      }
+      by_status: byStatus,
+      by_priority: byPriority
     };
 
     // 4. Agrupar por especialidad
@@ -2473,121 +2490,134 @@ router.get('/waiting-list/statistics', requireAuth, async (req: Request, res: Re
       params.push(endDate);
     }
 
-    // 1. Estadísticas por canal (requested_by)
-    const [channelStats] = await pool.query(`
-      SELECT 
-        COALESCE(requested_by, 'Sin especificar') as channel,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      ${dateFilter}
-      GROUP BY requested_by
-      ORDER BY total DESC
-    `, params);
+    // Ejecutar todas las consultas estadísticas en paralelo
+    const [
+      [channelStats],
+      [specialtyStats],
+      [genderStats],
+      [priorityStats],
+      [statusStats],
+      [dailyStats],
+      [callTypeStats],
+      [specialtyEpsStats],
+      [totals]
+    ] = await Promise.all([
+      // 1. Estadísticas por canal (requested_by)
+      pool.query(`
+        SELECT 
+          COALESCE(requested_by, 'Sin especificar') as channel,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        ${dateFilter}
+        GROUP BY requested_by
+        ORDER BY total DESC
+      `, params),
 
-    // 2. Estadísticas por especialidad
-    const [specialtyStats] = await pool.query(`
-      SELECT 
-        s.name as specialty,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      LEFT JOIN specialties s ON awl.specialty_id = s.id
-      ${dateFilter}
-      GROUP BY s.id, s.name
-      ORDER BY total DESC
-    `, params);
+      // 2. Estadísticas por especialidad
+      pool.query(`
+        SELECT 
+          s.name as specialty,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        LEFT JOIN specialties s ON awl.specialty_id = s.id
+        ${dateFilter}
+        GROUP BY s.id, s.name
+        ORDER BY total DESC
+      `, params),
 
-    // 3. Estadísticas por género
-    const [genderStats] = await pool.query(`
-      SELECT 
-        p.gender,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      INNER JOIN patients p ON awl.patient_id = p.id
-      ${dateFilter}
-      GROUP BY p.gender
-      ORDER BY total DESC
-    `, params);
+      // 3. Estadísticas por género
+      pool.query(`
+        SELECT 
+          p.gender,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        INNER JOIN patients p ON awl.patient_id = p.id
+        ${dateFilter}
+        GROUP BY p.gender
+        ORDER BY total DESC
+      `, params),
 
-    // 4. Estadísticas por prioridad
-    const [priorityStats] = await pool.query(`
-      SELECT 
-        priority_level,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      ${dateFilter}
-      GROUP BY priority_level
-      ORDER BY 
-        CASE priority_level
-          WHEN 'Urgente' THEN 1
-          WHEN 'Alta' THEN 2
-          WHEN 'Normal' THEN 3
-          WHEN 'Baja' THEN 4
-        END
-    `, params);
+      // 4. Estadísticas por prioridad
+      pool.query(`
+        SELECT 
+          priority_level,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        ${dateFilter}
+        GROUP BY priority_level
+        ORDER BY 
+          CASE priority_level
+            WHEN 'Urgente' THEN 1
+            WHEN 'Alta' THEN 2
+            WHEN 'Normal' THEN 3
+            WHEN 'Baja' THEN 4
+          END
+      `, params),
 
-    // 5. Estadísticas por estado
-    const [statusStats] = await pool.query(`
-      SELECT 
-        status,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      ${dateFilter}
-      GROUP BY status
-      ORDER BY total DESC
-    `, params);
+      // 5. Estadísticas por estado
+      pool.query(`
+        SELECT 
+          status,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        ${dateFilter}
+        GROUP BY status
+        ORDER BY total DESC
+      `, params),
 
-    // 6. Estadísticas diarias (últimos 30 días o rango especificado)
-    const [dailyStats] = await pool.query(`
-      SELECT 
-        DATE(created_at) as date,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      ${dateFilter}
-      GROUP BY DATE(created_at)
-      ORDER BY date DESC
-      LIMIT 30
-    `, params);
+      // 6. Estadísticas diarias (últimos 30 días o rango especificado)
+      pool.query(`
+        SELECT 
+          DATE(created_at) as date,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        ${dateFilter}
+        GROUP BY DATE(created_at)
+        ORDER BY date DESC
+        LIMIT 30
+      `, params),
 
-    // 7. Estadísticas por tipo de llamada
-    const [callTypeStats] = await pool.query(`
-      SELECT 
-        call_type,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      ${dateFilter}
-      GROUP BY call_type
-      ORDER BY total DESC
-    `, params);
+      // 7. Estadísticas por tipo de llamada
+      pool.query(`
+        SELECT 
+          call_type,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        ${dateFilter}
+        GROUP BY call_type
+        ORDER BY total DESC
+      `, params),
 
-    // 8. Estadísticas por Especialidad y EPS
-    const [specialtyEpsStats] = await pool.query(`
-      SELECT 
-        s.name as specialty,
-        s.id as specialty_id,
-        eps.name as eps_name,
-        eps.id as eps_id,
-        COUNT(*) as total
-      FROM appointments_waiting_list awl
-      INNER JOIN patients p ON awl.patient_id = p.id
-      LEFT JOIN specialties s ON awl.specialty_id = s.id
-      LEFT JOIN eps ON p.insurance_eps_id = eps.id
-      ${dateFilter}
-      ${dateFilter ? 'AND' : 'WHERE'} s.id IS NOT NULL
-      GROUP BY s.id, s.name, eps.id, eps.name
-      ORDER BY s.name, total DESC
-    `, params);
+      // 8. Estadísticas por Especialidad y EPS
+      pool.query(`
+        SELECT 
+          s.name as specialty,
+          s.id as specialty_id,
+          eps.name as eps_name,
+          eps.id as eps_id,
+          COUNT(*) as total
+        FROM appointments_waiting_list awl
+        INNER JOIN patients p ON awl.patient_id = p.id
+        LEFT JOIN specialties s ON awl.specialty_id = s.id
+        LEFT JOIN eps ON p.insurance_eps_id = eps.id
+        ${dateFilter}
+        ${dateFilter ? 'AND' : 'WHERE'} s.id IS NOT NULL
+        GROUP BY s.id, s.name, eps.id, eps.name
+        ORDER BY s.name, total DESC
+      `, params),
 
-    // 9. Totales generales
-    const [totals] = await pool.query(`
-      SELECT 
-        COUNT(*) as total_requests,
-        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
-        COUNT(CASE WHEN status = 'reassigned' THEN 1 END) as reassigned,
-        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled,
-        COUNT(CASE WHEN status = 'expired' THEN 1 END) as expired
-      FROM appointments_waiting_list awl
-      ${dateFilter}
-    `, params);
+      // 9. Totales generales
+      pool.query(`
+        SELECT 
+          COUNT(*) as total_requests,
+          COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+          COUNT(CASE WHEN status = 'reassigned' THEN 1 END) as reassigned,
+          COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled,
+          COUNT(CASE WHEN status = 'expired' THEN 1 END) as expired
+        FROM appointments_waiting_list awl
+        ${dateFilter}
+      `, params)
+    ]);
 
     return res.json({
       success: true,

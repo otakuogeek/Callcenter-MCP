@@ -64,6 +64,7 @@ module.exports = {
       error_file: 'logs/error.log',
       merge_logs: true,
       max_memory_restart: '1G',
+      node_args: '--max-old-space-size=768 --optimize-for-size',
     },
   ],
 };
