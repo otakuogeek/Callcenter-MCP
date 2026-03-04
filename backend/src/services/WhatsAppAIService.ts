@@ -75,6 +75,7 @@ import ConversationPersistence, {
   updateContext,
   markQuestion,
   saveAnswer,
+  resetConversationData,
   KnownPatientData,
   ConversationData
 } from './ConversationPersistence';
@@ -328,6 +329,28 @@ function generateDynamicContext(stateContext: StateContextType, phone?: string):
 const VALERIA_SYSTEM_PROMPT = `# Valeria - Fundación Biosanar IPS
 
 Eres Valeria, asistente virtual de Fundación Biosanar IPS (San Gil, Santander).
+
+## ⭐⭐⭐ REGLA DE ORO — CERO INVENCIÓN DE DATOS ⭐⭐⭐
+**NUNCA, BAJO NINGUNA CIRCUNSTANCIA, inventes, supongas o imagines datos sobre:**
+- Nombres de pacientes, doctores o especialistas
+- Fechas, horarios o disponibilidad de citas
+- Números de cita (appointment_id), posiciones en lista de espera
+- Sedes, direcciones, teléfonos
+- Especialidades, servicios o EPS
+- Cualquier otro dato clínico o administrativo
+
+**TODO dato que menciones DEBE provenir de:**
+1. Resultado REAL de una herramienta (searchPatient, getAvailableAppointments, scheduleAppointment, etc.)
+2. Información proporcionada directamente por el paciente en la conversación
+3. El contexto dinámico inyectado en este prompt
+
+**Si NO tienes datos reales:**
+- NO inventes una respuesta
+- Indica honestamente que no encontraste la información
+- SIEMPRE redirige al paciente con este mensaje:
+  "No logré encontrar esa información en nuestro sistema. Le invito a visitar nuestro portal web https://biosanarcall.site/ donde puede agendar su cita directamente, o llámenos al 607 691 1308 📞"
+
+**Penalización mental:** Cada dato inventado puede causar que un paciente acuda a una cita inexistente, con un doctor equivocado, en una fecha incorrecta. Esto es INACEPTABLE en un entorno médico.
 
 ## 🎯 TU PERSONALIDAD
 - Amable, cálida y profesional
@@ -985,6 +1008,10 @@ export async function processWhatsAppMessage(
     // 🆕 PASO 0.1: CARGAR/CREAR CONVERSACIÓN PERSISTENTE
     // ============================================================================
 
+    // 🆕 Guardar mensaje del usuario en memoria persistente INMEDIATAMENTE
+    // para que no se pierda si hay un early return en PASOs intermedios
+    saveMessageToMemory(cleanPhone, 'user', message).catch(() => { });
+
     // Intentar identificar automáticamente al paciente por teléfono
     const persistedConversation = await autoIdentify(cleanPhone);
 
@@ -1002,7 +1029,8 @@ export async function processWhatsAppMessage(
           patientId: patient.patientId,
           patientName: patient.fullName,
           patientDocument: patient.documentNumber,
-          patientPhone: patient.phone
+          patientPhone: patient.phone,
+          patientGender: patient.gender || 'No especificado'
         });
       } else if (isSuppressed) {
         console.log(`[WhatsAppAI] 🔒 Auto-identificación suprimida (flujo de beneficiario)`);
@@ -1074,11 +1102,132 @@ export async function processWhatsAppMessage(
     }
 
     // ============================================================================
+    // PASO 0.415: DETECCIÓN DIRECTA DE ESPECIALIDAD EN AWAITING_SPECIALTY
+    // ============================================================================
+    // Cuando el usuario está en AWAITING_SPECIALTY y nombra una especialidad,
+    // detectarla directamente con regex (no depender de buildEnrichedContext que puede fallar)
+    if (stateContext.currentState === ConversationState.AWAITING_SPECIALTY && stateContext.patientId && !stateContext.specialtyName) {
+      const msgLower = message.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const DIRECT_SPECIALTY_MAP: [RegExp, string][] = [
+        [/ginecolog[ií]?a|ginec[oó]?logo/i, 'Ginecología'],
+        [/control\s*prenatal|prenatal|embarazo/i, 'Control Prenatal'],
+        [/medicina\s*general|medico\s*general|m[eé]dico\s*general/i, 'Medicina General'],
+        [/odontolog[ií]?a|dentista|dientes|limpieza\s*dental/i, 'Odontología'],
+        [/psicolog[ií]?a|psic[oó]?logo/i, 'Psicología'],
+        [/pediatr[ií]?a|pediatra/i, 'Pediatría'],
+        [/cardiolog[ií]?a|cardi[oó]?logo|coraz[oó]n/i, 'Cardiología'],
+        [/oftalmolog[ií]?a|oftalm[oó]?logo|ojos|visi[oó]n/i, 'Oftalmología'],
+        [/dermatolog[ií]?a|dermat[oó]?logo|piel/i, 'Dermatología'],
+        [/traumatolog[ií]?a|traumat[oó]?logo|huesos|fractura/i, 'Traumatología'],
+        [/nutrici[oó]n|nutricionista|dieta/i, 'Nutrición'],
+        [/fisioterapia|fisioterapeuta|rehabilitaci[oó]n/i, 'Fisioterapia'],
+        [/urolog[ií]?a|ur[oó]?logo/i, 'Urología'],
+        [/otorrinolaringolog[ií]?a|otorrino|o[ií]dos?|garganta/i, 'Otorrinolaringología'],
+        [/neurolog[ií]?a|neur[oó]?logo/i, 'Neurología'],
+        [/endocrinolog[ií]?a|tiroides|diabetes/i, 'Endocrinología'],
+        [/gastroenterolog[ií]?a|gastro|est[oó]mago|digestivo/i, 'Gastroenterología'],
+        [/neumolog[ií]?a|neum[oó]?logo|pulmones?/i, 'Neumología'],
+        [/reumatolog[ií]?a|artritis/i, 'Reumatología'],
+        [/cirug[ií]?a\s*general|cirujano/i, 'Cirugía General'],
+        [/fonoaudiolog[ií]?a|fonoaudi[oó]?logo/i, 'Fonoaudiología'],
+        [/optometr[ií]?a|optometrista|lentes|gafas/i, 'Optometría'],
+        [/ecograf[ií]?a|ultrasonido/i, 'Ecografía'],
+      ];
+
+      for (const [pattern, specialtyStd] of DIRECT_SPECIALTY_MAP) {
+        if (pattern.test(msgLower)) {
+          console.log(`[WhatsAppAI] 🎯 PASO 0.415: Especialidad detectada directamente: "${specialtyStd}" (estado: AWAITING_SPECIALTY)`);
+          updateState(cleanPhone, { specialtyName: specialtyStd });
+          stateContext = getStateContext(cleanPhone);
+          break;
+        }
+      }
+    }
+
+    // ============================================================================
     // PASO 0.41: CONSULTA AUTOMÁTICA DE DISPONIBILIDAD SI YA TENEMOS ESPECIALIDAD
     // ============================================================================
     // Si ya tenemos paciente Y especialidad, consultar disponibilidad automáticamente
 
     if (stateContext.patientId && stateContext.specialtyName && !stateContext.availableAppointments) {
+
+      // ============================================================================
+      // 🆕 PASO 0.405: DETECCIÓN DE TERCERO ANTES DE CONSULTAR DISPONIBILIDAD
+      // ============================================================================
+      // Si el mensaje ORIGINAL contiene "para mi papá/mamá/padre/madre/hijo..." etc.,
+      // redirigir al flujo de tercero ANTES de consultar disponibilidad.
+      // Guardamos la especialidad para usarla después de identificar al beneficiario.
+      const thirdPartyInMessage = /para\s+mi\s+(papa|papá|padre|mama|mamá|madre|hijo|hija|hermano|hermana|esposo|esposa|abuelo|abuela|sobrino|sobrina|tio|tía|cuñado|cuñada|suegro|suegra|primo|prima|nieto|nieta)|mi\s+(papa|papá|padre|mama|mamá|madre|hijo|hija|hermano|hermana|esposo|esposa|abuelo|abuela)\s+(te\s+)?|para\s+(otra\s+persona|alguien\s+mas|alguien\s+más|un\s+familiar)/i;
+      
+      if (thirdPartyInMessage.test(message) && !stateContext.isThirdParty) {
+        const savedSpecialty = stateContext.specialtyName;
+        console.log(`[WhatsAppAI] 🎯 PASO 0.405: Tercero detectado en mensaje con especialidad "${savedSpecialty}" → flujo de beneficiario`);
+        
+        // Persistir beneficiario = other
+        markQuestion(cleanPhone, 'beneficiario').catch(() => {});
+        saveAnswer(cleanPhone, 'beneficiario', 'other').catch(() => {});
+        
+        // Guardar datos del solicitante y redirigir a pedir cédula del beneficiario
+        updateState(cleanPhone, ConversationState.AWAITING_DOCUMENT, {
+          isThirdParty: true,
+          requestorPatientId: stateContext.patientId,
+          requestorPatientName: stateContext.patientName,
+          requestorPatientDocument: stateContext.patientDocument,
+          // Limpiar paciente actual para buscar al beneficiario
+          patientId: undefined,
+          patientName: undefined,
+          patientDocument: undefined,
+          suppressAutoIdentifyUntil: Date.now() + 600_000,
+          // MANTENER la especialidad para usarla después de identificar al beneficiario
+          // specialtyName se mantiene, specialtyId se mantiene
+          availableAppointments: undefined,
+          selectedDoctor: undefined,
+          selectedDoctorId: undefined,
+          selectedLocation: undefined,
+          selectedLocationId: undefined,
+          selectedDate: undefined,
+          selectedTime: undefined,
+          scheduledDatetime: undefined,
+          availabilityId: undefined,
+          timeSlots: undefined,
+          availableDoctors: undefined,
+          timePreference: undefined,
+          reason: undefined,
+        });
+        
+        const firstName = stateContext.patientName?.split(' ')[0] || '';
+        const thirdPartyResponse = `Entendido${firstName ? ', ' + firstName : ''}. La cita de ${savedSpecialty} es para otra persona. 😊\n\nPor favor, indícame el número de cédula de la persona para quien es la cita.`;
+        saveMessageToMemory(cleanPhone, 'assistant', thirdPartyResponse).catch(() => { });
+        return {
+          success: true,
+          response: thirdPartyResponse,
+          toolCalls: []
+        };
+      }
+
+      // ⛔ VALIDACIÓN DE GÉNERO: Pacientes masculinos NO pueden agendar Ginecología/Control Prenatal
+      const FEMALE_ONLY_SPECIALTIES = /ginecolog[ií]a|control\s*prenatal/i;
+      const blockedSpecialtyName = stateContext.specialtyName; // capturar ANTES de updateState (Object.assign muta el objeto)
+      if (stateContext.patientGender === 'Masculino' && blockedSpecialtyName && FEMALE_ONLY_SPECIALTIES.test(blockedSpecialtyName)) {
+        console.log(`[WhatsAppAI] ⛔ GÉNERO: Paciente masculino (${stateContext.patientName}) intentó agendar ${blockedSpecialtyName}`);
+        
+        // Limpiar especialidad para que pueda elegir otra
+        updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, {
+          specialtyName: undefined,
+          specialtyId: undefined,
+          availableAppointments: undefined,
+        });
+
+        const firstName = stateContext.patientName?.split(' ')[0] || '';
+        const genderResponse = `${firstName ? firstName + ', la' : 'La'} especialidad de ${blockedSpecialtyName} está disponible únicamente para pacientes de género femenino. 😊\n\n¿Te gustaría agendar en otra especialidad?`;
+        saveMessageToMemory(cleanPhone, 'assistant', genderResponse).catch(() => { });
+        return {
+          success: true,
+          response: genderResponse,
+          toolCalls: []
+        };
+      }
+
       console.log(`[WhatsAppAI] 🔄 PASO 0.41: Tenemos paciente (${stateContext.patientId}) y especialidad (${stateContext.specialtyName}), consultando disponibilidad...`);
 
       const availResult = await DirectDBTools.getAvailableAppointments({
@@ -1124,6 +1273,7 @@ export async function processWhatsAppMessage(
 
         executedTools.push({ name: 'getAvailableAppointments', result: `${appts.length} citas, ${uniqueDates.length} fechas` });
 
+        saveMessageToMemory(cleanPhone, 'assistant', response).catch(() => { });
         return {
           success: true,
           response,
@@ -1132,9 +1282,11 @@ export async function processWhatsAppMessage(
       } else {
         // No hay disponibilidad
         const firstName = stateContext.patientName?.split(' ')[0] || '';
+        const noAvailResponse = `${firstName ? firstName + ', no' : 'No'} hay citas disponibles para ${stateContext.specialtyName} en este momento. 😔\n\n¿Te agrego a la lista de espera?`;
+        saveMessageToMemory(cleanPhone, 'assistant', noAvailResponse).catch(() => { });
         return {
           success: true,
-          response: `${firstName ? firstName + ', no' : 'No'} hay citas disponibles para ${stateContext.specialtyName} en este momento. 😔\n\n¿Te agrego a la lista de espera?`,
+          response: noAvailResponse,
           toolCalls: []
         };
       }
@@ -1150,10 +1302,40 @@ export async function processWhatsAppMessage(
     const cleanMessage = message.replace(/[.\-\s,]/g, ''); // Limpiar puntos, guiones, espacios, comas
     const cedMatch = cleanMessage.match(/^(\d{6,12})$/);
 
+    // También detectar cédula embebida en texto (ej: "Dave Bastidas 17265900 medicina general")
+    // Esto es útil cuando el usuario da nombre + cédula + especialidad en un solo mensaje
+    const embeddedCedMatch = !cedMatch ? message.match(/\b(\d{6,12})\b/) : null;
+    const isAwaitingBeneficiaryData = stateContext.isThirdParty && !stateContext.patientId &&
+      (stateContext.currentState === ConversationState.AWAITING_DOCUMENT ||
+       stateContext.currentState === ConversationState.AWAITING_PATIENT_DATA);
+
+    // Usar cédula embebida si estamos esperando datos del beneficiario
+    const effectiveCedMatch = cedMatch || (embeddedCedMatch && isAwaitingBeneficiaryData ? embeddedCedMatch : null);
+    
+    // Extraer posible nombre y especialidad del texto restante (para mensajes combinados)
+    let embeddedName: string | undefined;
+    let embeddedSpecialty: string | undefined;
+    if (embeddedCedMatch && isAwaitingBeneficiaryData) {
+      const msgWithoutCed = message.replace(embeddedCedMatch[1], '').trim();
+      // Detectar especialidades comunes en el texto
+      const specialtyMatch = msgWithoutCed.match(/medicina\s*general|odontolog[ií]a|ginecolog[ií]a|psicolog[ií]a|cardiolog[ií]a|ecograf[ií]a|control\s*prenatal|nutrici[oó]n|dermatolog[ií]a|oftalmolog[ií]a|pediatr[ií]a|urolog[ií]a/i);
+      if (specialtyMatch) {
+        embeddedSpecialty = specialtyMatch[0];
+        embeddedName = msgWithoutCed.replace(specialtyMatch[0], '').replace(/\s+/g, ' ').trim();
+      } else {
+        embeddedName = msgWithoutCed.replace(/\s+/g, ' ').trim();
+      }
+      // Solo considerar como nombre si tiene al menos 2 partes y parece un nombre real
+      if (embeddedName && (embeddedName.split(' ').length < 2 || embeddedName.length < 4)) {
+        embeddedName = undefined;
+      }
+      console.log(`[WhatsAppAI] 📝 Datos embebidos detectados - Cédula: ${embeddedCedMatch[1]}, Nombre: ${embeddedName || 'N/A'}, Especialidad: ${embeddedSpecialty || 'N/A'}`);
+    }
+
     // No interceptar como cédula si estamos en flujo de registro (ej: pidiendo teléfono)
-    if (cedMatch && !stateContext.patientId &&
+    if (effectiveCedMatch && !stateContext.patientId &&
         stateContext.currentState !== ConversationState.AWAITING_PATIENT_DATA) {
-      const document = cedMatch[1];
+      const document = effectiveCedMatch[1];
       console.log(`[WhatsAppAI] 📄 Cédula detectada: ${document} - Ejecutando searchPatient automáticamente`);
 
       // Ejecutar searchPatient directamente
@@ -1165,25 +1347,69 @@ export async function processWhatsAppMessage(
         const patientPhone = patient?.phone || patient?.mobile || '';
         const patientId = patient?.id;
         const patientEps = patient?.eps_name || patient?.eps || '';
+        const patientGender = patient?.gender || 'No especificado';
 
         // Si estamos en flujo de tercero, ir directo a selección de especialidad
         if (stateContext.isThirdParty) {
           console.log(`[WhatsAppAI] 👥 BENEFICIARIO encontrado: ${patientName} (ID: ${patientId}) - Flujo tercero`);
           
-          updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, {
+          const stateUpdate: Record<string, any> = {
             patientId,
             patientName,
             patientDocument: document,
-            patientPhone
+            patientPhone,
+            patientGender
             // isThirdParty y requestorPatient* se mantienen del estado anterior
-          });
+          };
 
           executedTools.push({ name: 'searchPatient', result: `Beneficiario encontrado: ${patientName}` });
           
           const firstName = patientName?.split(' ')[0] || '';
+          
+          // Si tenemos especialidad embebida del mensaje combinado, buscar disponibilidad directo
+          if (embeddedSpecialty) {
+            console.log(`[WhatsAppAI] 👥 BENEFICIARIO + ESPECIALIDAD: ${embeddedSpecialty} - Buscando disponibilidad directa`);
+            stateUpdate.specialtyName = embeddedSpecialty;
+            updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, stateUpdate);
+
+            const availResult = await DirectDBTools.getAvailableAppointments({
+              specialty_name: embeddedSpecialty
+            });
+
+            if (availResult.success && availResult.data?.appointments?.length > 0) {
+              const appts = availResult.data.appointments;
+              updateState(cleanPhone, ConversationState.AWAITING_DATE, {
+                availableAppointments: appts,
+                specialtyId: appts[0]?.specialty_id,
+                specialtyName: embeddedSpecialty
+              });
+
+              // Mostrar fechas disponibles
+              const uniqueDates = [...new Set(appts.map((a: any) => a.appointment_date_formatted || a.appointment_date))];
+              let response = `¡Encontré a ${firstName} en el sistema! 😊\n\nPara ${embeddedSpecialty} tenemos disponibilidad en:\n\n`;
+              uniqueDates.slice(0, 5).forEach((fecha: string, idx: number) => {
+                response += `${idx + 1}. ${fecha}\n`;
+              });
+              response += `\n¿Cuál fecha le sirve?`;
+
+              executedTools.push({ name: 'getAvailableAppointments', result: `${appts.length} citas, ${uniqueDates.length} fechas` });
+              saveMessageToMemory(cleanPhone, 'assistant', response).catch(() => { });
+              return { success: true, response, toolCalls: executedTools, intent: 'schedule' };
+            } else {
+              updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, stateUpdate);
+              const noAvailResponse = `¡Encontré a ${firstName} en el sistema! 😊\n\nPero no hay citas disponibles para ${embeddedSpecialty} en este momento. 😔\n\n¿Le agrego a la lista de espera o prefieres otra especialidad?`;
+              saveMessageToMemory(cleanPhone, 'assistant', noAvailResponse).catch(() => { });
+              return { success: true, response: noAvailResponse, toolCalls: executedTools, intent: 'schedule' };
+            }
+          }
+
+          updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, stateUpdate);
+          
+          const foundResponse = `¡Encontré a ${firstName} en el sistema! 😊\n\n¿Para qué especialidad necesita la cita?`;
+          saveMessageToMemory(cleanPhone, 'assistant', foundResponse).catch(() => { });
           return {
             success: true,
-            response: `¡Encontré a ${firstName} en el sistema! 😊\n\n¿Para qué especialidad necesita la cita?`,
+            response: foundResponse,
             toolCalls: executedTools,
             intent: 'schedule'
           };
@@ -1194,7 +1420,8 @@ export async function processWhatsAppMessage(
           patientId,
           patientName,
           patientDocument: document,
-          patientPhone
+          patientPhone,
+          patientGender
         });
 
         // 🆕 PERSISTIR EN CONVERSACIÓN JSON
@@ -1259,6 +1486,31 @@ export async function processWhatsAppMessage(
         // Paciente no encontrado
         console.log(`[WhatsAppAI] ⚠ Paciente con cédula ${document} no encontrado`);
         executedTools.push({ name: 'searchPatient', result: `No encontrado: ${document}` });
+
+        // Si tenemos nombre embebido del mensaje combinado (ej: "Dave Bastidas 17265900"),
+        // ya sabemos el nombre — no preguntar de nuevo, avanzar al siguiente paso del registro
+        if (embeddedName && stateContext.isThirdParty) {
+          console.log(`[WhatsAppAI] 📝 Nombre embebido para beneficiario: ${embeddedName}`);
+          updateState(cleanPhone, ConversationState.AWAITING_PATIENT_DATA, {
+            patientDocument: document,
+            registrationPending: true,
+            regStep: 'birth_date', // Saltar paso de nombre, ya lo tenemos — ir a fecha de nacimiento
+            regName: embeddedName, // Guardar como regName para que el flujo de registro lo use
+          });
+          if (embeddedSpecialty) {
+            updateState(cleanPhone, { specialtyName: embeddedSpecialty });
+          }
+
+          const labelPron = stateContext.isThirdParty ? 'su' : 'tu';
+          const regResponse = `No encontré a *${embeddedName}* con cédula ${document} en el sistema. 😊\n\nPara registrarle, ¿cuál es ${labelPron} fecha de nacimiento?\n_Ejemplo: 15/03/1990 o 15 de marzo de 1990_`;
+          saveMessageToMemory(cleanPhone, 'assistant', regResponse).catch(() => { });
+          return {
+            success: true,
+            response: regResponse,
+            toolCalls: executedTools,
+            intent: 'registration'
+          };
+        }
 
         updateState(cleanPhone, ConversationState.AWAITING_PATIENT_DATA, {
           patientDocument: document,
@@ -1461,19 +1713,152 @@ export async function processWhatsAppMessage(
     }
 
     // ============================================================================
+    // PASO 0.45: INTERCEPTOR "NO ES PARA MÍ" — Cambio a flujo de tercero
+    // ============================================================================
+    // Si el usuario dice "no es para mí" / "es para mi hermano/hijo/etc." en CUALQUIER
+    // estado del flujo de agendamiento, cambiar al flujo de beneficiario.
+    // Esto cubre el caso donde el PASO 0.46 ya pasó y el usuario clarifica después.
+    const isNotForMeMsg = /no\s*es\s*para\s*m[ií]|es\s*para\s*(mi|otro|otra)\s*(hermano|hermana|hijo|hija|mama|mamá|papá|papa|esposo|esposa|abuelo|abuela|familiar|pariente|persona)|para\s*(mi|otro|otra)\s*(hermano|hermana|hijo|hija|mama|mamá|papá|papa|esposo|esposa|abuelo|abuela|familiar)|no\s*es\s*m[ií]a|cita.*para.*(hermano|hermana|hijo|hija|familiar|otra\s*persona)/i.test(message);
+    
+    if (isNotForMeMsg && !stateContext.isThirdParty && stateContext.patientId) {
+      console.log(`[WhatsAppAI] 🔄 CAMBIO A TERCERO: Usuario dice que la cita NO es para sí mismo (estado=${stateContext.currentState})`);
+      
+      // Guardar datos del solicitante y limpiar paciente para que busque al beneficiario
+      updateState(cleanPhone, ConversationState.AWAITING_DOCUMENT, {
+        isThirdParty: true,
+        requestorPatientId: stateContext.patientId,
+        requestorPatientName: stateContext.patientName,
+        requestorPatientDocument: stateContext.patientDocument,
+        // Limpiar datos del paciente actual
+        patientId: undefined,
+        patientName: undefined,
+        patientDocument: undefined,
+        suppressAutoIdentifyUntil: Date.now() + 600_000, // 10 min
+        // Limpiar datos de agendamiento previo
+        specialtyName: undefined,
+        specialtyId: undefined,
+        availableAppointments: undefined,
+        selectedDoctor: undefined,
+        selectedDoctorId: undefined,
+        selectedLocation: undefined,
+        selectedLocationId: undefined,
+        selectedDate: undefined,
+        selectedTime: undefined,
+        scheduledDatetime: undefined,
+        availabilityId: undefined,
+        timeSlots: undefined,
+        availableDoctors: undefined,
+        timePreference: undefined,
+        reason: undefined,
+      });
+      
+      const switchResponse = "Entendido, la cita es para otra persona. 😊\n\nPor favor, indícame el número de cédula de la persona para quien es la cita.";
+      saveMessageToMemory(cleanPhone, 'assistant', switchResponse).catch(() => { });
+      return {
+        success: true,
+        response: switchResponse,
+        toolCalls: []
+      };
+    }
+
+    // ============================================================================
     // PASO 0.46: INTERCEPTOR DE BENEFICIARIO - ¿Para quién es la cita?
     // ============================================================================
-    // Cuando el usuario quiere agendar, SIEMPRE preguntar si es para sí mismo o para otra persona
-    if (intent === 'schedule' && stateContext.patientId && stateContext.currentState !== ConversationState.AWAITING_BENEFICIARY) {
-      console.log(`[WhatsAppAI] 🎯 BENEFICIARIO: Preguntando para quién es la cita`);
+    // Solo preguntar si estamos en IDLE o un estado previo al flujo de agendamiento.
+    // NO preguntar si ya estamos dentro del flujo (AWAITING_SPECIALTY, AWAITING_DATE, etc.)
+    // ni si ya estamos en flujo de tercero (isThirdParty).
+    const SCHEDULING_FLOW_STATES = new Set([
+      ConversationState.AWAITING_BENEFICIARY,
+      ConversationState.AWAITING_SPECIALTY,
+      ConversationState.AWAITING_LOCATION,
+      ConversationState.AWAITING_DOCTOR_SELECTION,
+      ConversationState.AWAITING_DATE,
+      ConversationState.AWAITING_TIME_PREFERENCE,
+      ConversationState.AWAITING_TIME,
+      ConversationState.AWAITING_REASON,
+      ConversationState.AWAITING_CONFIRMATION,
+      ConversationState.AWAITING_PHONE_CONFIRMATION,
+      ConversationState.AWAITING_PATIENT_DATA,
+      ConversationState.AWAITING_DOCUMENT,
+      ConversationState.WAITING_LIST,
+      ConversationState.COMPLETED,
+    ]);
+
+    if (intent === 'schedule' && stateContext.patientId
+        && !SCHEDULING_FLOW_STATES.has(stateContext.currentState)
+        && !stateContext.isThirdParty) {
+      
+      // 🆕 CONSULTAR PERSISTENCIA: Si ya preguntamos beneficiario antes, no repetir
+      try {
+        const persistedConv = await getConversation(cleanPhone);
+        if (persistedConv.askedQuestions?.beneficiario) {
+          const savedBeneficiary = persistedConv.collectedAnswers?.beneficiario?.value;
+          console.log(`[WhatsAppAI] 🧠 PERSISTENCIA: Beneficiario ya respondido → ${savedBeneficiary}`);
+          
+          if (savedBeneficiary === 'self') {
+            // Ya sabemos que es para sí mismo → ir directo a especialidad
+            updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, {
+              isThirdParty: false,
+              specialtyName: undefined,
+              specialtyId: undefined,
+              availableAppointments: undefined,
+              selectedDoctor: undefined,
+              selectedDoctorId: undefined,
+              selectedLocation: undefined,
+              selectedLocationId: undefined,
+              selectedDate: undefined,
+              selectedTime: undefined,
+              scheduledDatetime: undefined,
+              availabilityId: undefined,
+              timeSlots: undefined,
+              availableDoctors: undefined,
+              timePreference: undefined,
+              reason: undefined,
+            });
+            const firstName = stateContext.patientName?.split(' ')[0] || '';
+            const skipResponse = `¡Con gusto${firstName ? ', ' + firstName : ''}! 😊 ¿Para qué especialidad necesitas la cita?`;
+            saveMessageToMemory(cleanPhone, 'assistant', skipResponse).catch(() => { });
+            return { success: true, response: skipResponse, toolCalls: [] };
+          }
+          
+          if (savedBeneficiary === 'other') {
+            // Ya sabemos que es para otra persona → pedir cédula del beneficiario
+            updateState(cleanPhone, ConversationState.AWAITING_DOCUMENT, {
+              isThirdParty: true,
+              requestorPatientId: stateContext.patientId,
+              requestorPatientName: stateContext.patientName,
+              requestorPatientDocument: stateContext.patientDocument,
+              patientId: undefined,
+              patientName: undefined,
+              patientDocument: undefined,
+              suppressAutoIdentifyUntil: Date.now() + 600_000,
+              specialtyName: undefined,
+              specialtyId: undefined,
+              availableAppointments: undefined,
+            });
+            const otherResponse = "Entendido, la cita es para otra persona. 😊\n\nPor favor, indícame el número de cédula de la persona para quien es la cita.";
+            saveMessageToMemory(cleanPhone, 'assistant', otherResponse).catch(() => { });
+            return { success: true, response: otherResponse, toolCalls: [] };
+          }
+        }
+      } catch (e) {
+        console.warn('[WhatsAppAI] Error consultando persistencia de beneficiario:', e);
+      }
+      
+      console.log(`[WhatsAppAI] 🎯 BENEFICIARIO: Preguntando para quién es la cita (estado=${stateContext.currentState})`);
       
       updateState(cleanPhone, ConversationState.AWAITING_BENEFICIARY);
       
-      const firstName = stateContext.patientName?.split(' ')[0] || '';
+      // 🆕 Guardar que ya hicimos esta pregunta
+      markQuestion(cleanPhone, 'beneficiario').catch(() => {});
       
+      const firstName = stateContext.patientName?.split(' ')[0] || '';
+      const beneficiaryResponse = `${firstName ? firstName + ', ¿' : '¿'}la cita es para ti o para otra persona? 😊`;
+      
+      saveMessageToMemory(cleanPhone, 'assistant', beneficiaryResponse).catch(() => { });
       return {
         success: true,
-        response: `${firstName ? firstName + ', ¿' : '¿'}la cita es para ti o para otra persona? 😊`,
+        response: beneficiaryResponse,
         toolCalls: []
       };
     }
@@ -1927,7 +2312,7 @@ export async function processWhatsAppMessage(
 
           return {
             success: true,
-            response: `Disculpa, tuve un inconveniente al confirmar tu cita: ${scheduleResult.error}\n\n¿Intentamos de nuevo o prefieres llamarnos al 6076911308?`,
+            response: `Disculpa, tuve un inconveniente al confirmar tu cita: ${scheduleResult.error}\n\n¿Intentamos de nuevo o prefieres agendar desde https://biosanarcall.site/ o llamarnos al 607 691 1308?`,
             toolCalls: []
           };
         }
@@ -1936,7 +2321,7 @@ export async function processWhatsAppMessage(
 
         return {
           success: true,
-          response: `Disculpa, tuve un problema técnico al confirmar tu cita. Por favor, llámanos al 6076911308 para agendarla. 🏥`,
+          response: `Disculpa, tuve un problema técnico al confirmar tu cita. Puedes agendar desde https://biosanarcall.site/ o llamarnos al 607 691 1308 🏥`,
           toolCalls: []
         };
       }
@@ -1973,7 +2358,7 @@ export async function processWhatsAppMessage(
       incrementRetry(cleanPhone);
       return {
         success: true,
-        response: "Disculpa, tenemos una dificultad técnica momentánea. Por favor, llámanos al 6076911308 o intenta más tarde. 🏥",
+        response: "Disculpa, tenemos una dificultad técnica momentánea. Puedes agendar desde https://biosanarcall.site/ o llamarnos al 607 691 1308 🏥",
         toolCalls: []
       };
     }
@@ -2062,30 +2447,58 @@ export async function processWhatsAppMessage(
       // Detectar "para mí" / "para mi" / "mía" / "yo" / afirmativo
       const isForSelf = /para\s*m[ií]|m[ií]a|es\s*m[ií]a|yo\s*mism|para\s*m[eé]|es\s*para\s*m[ií]|^(si|s[ií]|claro|ok|sí|aja|ajá|por supuesto)$/i.test(normalizedMsg) || isAffirmative(message);
       
-      // Detectar "para otra persona" / "para alguien más" / "tercero"
-      const isForOther = /otra\s*persona|alguien\s*m[áa]s|tercero|otra|otro|familiar|pariente|hijo|hija|mama|papá|papa|esposo|esposa|abuelo|abuela|no.*para.*m[ií]/i.test(normalizedMsg) || isNegative(message);
+      // Detectar "para otra persona" / familiares / contexto de tercero
+      // Incluye: padre, madre, papá, mamá, hijo/a, hermano/a, esposo/a, abuelo/a
+      // También contexto: "mi padre te comentó", "mi mamá habló", "le comenté", etc.
+      const isForOther = /otra\s*persona|alguien\s*m[áa]s|tercero|otra|otro|familiar|pariente|hijo|hija|hermano|hermana|mama|mam[aá]|pap[aá]|papa|padre|madre|esposo|esposa|abuelo|abuela|sobrino|sobrina|tio|t[ií]o|t[ií]a|cu[ñn]ado|cu[ñn]ada|suegro|suegra|primo|prima|nieto|nieta|mi\s+(padre|madre|pap[aá]|mam[aá]|hijo|hija|hermano|hermana|esposo|esposa|abuelo|abuela)|te\s*coment[oóe]|le\s*coment[oóe]|habl[oóe]|llam[oóe]|te\s*dij[oe]|le\s*dij[oe]|no.*para.*m[ií]|no\s*es\s*para\s*m[ií]/i.test(normalizedMsg) || isNegative(message);
       
       if (isForSelf) {
         console.log(`[WhatsAppAI] ✅ BENEFICIARIO: Cita para sí mismo (${stateContext.patientName})`);
         
-        // Limpiar flags de tercero
+        // 🆕 Persistir respuesta de beneficiario en JSON
+        markQuestion(cleanPhone, 'beneficiario').catch(() => {});
+        saveAnswer(cleanPhone, 'beneficiario', 'self').catch(() => {});
+        
+        // Limpiar flags de tercero Y datos de agendamiento previo (evitar stale data)
         updateState(cleanPhone, ConversationState.AWAITING_SPECIALTY, {
           isThirdParty: false,
           requestorPatientId: undefined,
           requestorPatientName: undefined,
-          requestorPatientDocument: undefined
+          requestorPatientDocument: undefined,
+          // Limpiar datos de agendamiento previo para evitar preguntas repetidas
+          specialtyName: undefined,
+          specialtyId: undefined,
+          availableAppointments: undefined,
+          selectedDoctor: undefined,
+          selectedDoctorId: undefined,
+          selectedLocation: undefined,
+          selectedLocationId: undefined,
+          selectedDate: undefined,
+          selectedTime: undefined,
+          scheduledDatetime: undefined,
+          availabilityId: undefined,
+          timeSlots: undefined,
+          availableDoctors: undefined,
+          timePreference: undefined,
+          reason: undefined,
         });
         
         const firstName = stateContext.patientName?.split(' ')[0] || '';
+        const selfResponse = `¡Perfecto${firstName ? ', ' + firstName : ''}! 😊 ¿Para qué especialidad necesitas la cita?`;
+        saveMessageToMemory(cleanPhone, 'assistant', selfResponse).catch(() => { });
         return {
           success: true,
-          response: `¡Perfecto${firstName ? ', ' + firstName : ''}! 😊 ¿Para qué especialidad necesitas la cita?`,
+          response: selfResponse,
           toolCalls: []
         };
       }
       
       if (isForOther) {
         console.log(`[WhatsAppAI] 👥 BENEFICIARIO: Cita para otra persona - Pidiendo cédula del beneficiario`);
+        
+        // 🆕 Persistir respuesta de beneficiario en JSON
+        markQuestion(cleanPhone, 'beneficiario').catch(() => {});
+        saveAnswer(cleanPhone, 'beneficiario', 'other').catch(() => {});
         
         // Guardar datos del solicitante (quien tiene la conversación)
         updateState(cleanPhone, ConversationState.AWAITING_DOCUMENT, {
@@ -2098,20 +2511,40 @@ export async function processWhatsAppMessage(
           patientName: undefined,
           patientDocument: undefined,
           // NO limpiar suppressAutoIdentifyUntil — evitar re-auto-identificar al solicitante
-          suppressAutoIdentifyUntil: Date.now() + 600_000 // 10 min
+          suppressAutoIdentifyUntil: Date.now() + 600_000, // 10 min
+          // Limpiar datos de agendamiento previo para el nuevo beneficiario
+          specialtyName: undefined,
+          specialtyId: undefined,
+          availableAppointments: undefined,
+          selectedDoctor: undefined,
+          selectedDoctorId: undefined,
+          selectedLocation: undefined,
+          selectedLocationId: undefined,
+          selectedDate: undefined,
+          selectedTime: undefined,
+          scheduledDatetime: undefined,
+          availabilityId: undefined,
+          timeSlots: undefined,
+          availableDoctors: undefined,
+          timePreference: undefined,
+          reason: undefined,
         });
         
+        const otherResponse = "Entendido. 😊 Por favor, indícame el número de cédula de la persona para quien es la cita.";
+        saveMessageToMemory(cleanPhone, 'assistant', otherResponse).catch(() => { });
         return {
           success: true,
-          response: "Entendido. 😊 Por favor, indícame el número de cédula de la persona para quien es la cita.",
+          response: otherResponse,
           toolCalls: []
         };
       }
       
       // Si no entendemos la respuesta, preguntar de nuevo
+      const retryResponse = "Disculpa, no te entendí bien. ¿La cita es *para ti* o *para otra persona*? 🤔";
+      saveMessageToMemory(cleanPhone, 'assistant', retryResponse).catch(() => { });
       return {
         success: true,
-        response: "Disculpa, no te entendí bien. ¿La cita es *para ti* o *para otra persona*? 🤔",
+        response: retryResponse,
         toolCalls: []
       };
     }
@@ -2367,7 +2800,7 @@ export async function processWhatsAppMessage(
               console.error('[WhatsAppAI] Error al registrar:', regResult.error);
               return {
                 success: true,
-                response: `Disculpa, hubo un error al crear el perfil: ${regResult.error || 'Error desconocido'}. 😔\n\nPor favor, intenta de nuevo más tarde o llámanos al 6076911308.`,
+                response: `Disculpa, hubo un error al crear el perfil: ${regResult.error || 'Error desconocido'}. 😔\n\nPuedes intentarlo desde https://biosanarcall.site/ o llamarnos al 607 691 1308.`,
                 toolCalls: []
               };
             }
@@ -2375,7 +2808,7 @@ export async function processWhatsAppMessage(
             console.error('[WhatsAppAI] Error registrando paciente:', error);
             return {
               success: true,
-              response: "Disculpa, tuve un problema técnico al crear el perfil. Por favor, llámanos al 6076911308. 🏥",
+              response: "Disculpa, tuve un problema técnico al crear el perfil. Puedes registrarte en https://biosanarcall.site/ o llamarnos al 607 691 1308 🏥",
               toolCalls: []
             };
           }
@@ -3294,8 +3727,7 @@ export async function processWhatsAppMessage(
     // Agregar mensaje del usuario
     context.messages.push({ role: 'user', content: message });
 
-    // Guardar mensaje del usuario en memoria persistente
-    saveMessageToMemory(cleanPhone, 'user', message).catch(() => { });
+    // (user message already saved to DB at PASO 0.1 — no duplicate save needed)
 
     // Limitar historial a últimos 20 mensajes
     if (context.messages.length > 20) {
@@ -3551,6 +3983,12 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
                 toolResult: { appointmentId, scheduled: true }
               }).catch(() => { });
             }
+
+            // 🆕 LIMPIAR JSON DE PERSISTENCIA después de agendar/lista de espera
+            // Así la próxima cita arranca limpia y NO reusa respuestas anteriores
+            resetConversationData(cleanPhone).catch((e) => {
+              console.warn('[WhatsAppAI] Error reseteando conversación persistente:', e);
+            });
 
             // NO auto-resetear - la conversación continúa hasta que el usuario diga "hola" o saludo
             // El estado COMPLETED permite seguir interactuando
@@ -3969,6 +4407,85 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
       }
     }
 
+    // ============================================================================
+    // ⭐ REGLA DE ORO: DETECCIÓN DE DATOS POTENCIALMENTE FABRICADOS
+    // Si la IA menciona un doctor, una fecha con hora, o un número de cita
+    // que NO proviene de una herramienta ejecutada, reemplazar con redirección segura.
+    // ============================================================================
+    const toolsExecutedNames = executedTools.map(t => t.name);
+    const toolResultsRaw = executedTools.map(t => JSON.stringify(t.result || '')).join(' ');
+    const finalState = getStateContext(cleanPhone);
+
+    // Detectar mención de doctor sin que venga de herramientas o estado
+    const doctorMentionMatch = response.text.match(/(?:Dr\.?|Dra\.?|Doctor(?:a)?)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+){0,3})/);
+    const mentionedDoctor = doctorMentionMatch ? doctorMentionMatch[1].trim() : null;
+    const doctorFromTools = finalState.selectedDoctor || '';
+    const doctorInToolResults = mentionedDoctor && (
+      toolResultsRaw.toLowerCase().includes(mentionedDoctor.toLowerCase()) ||
+      doctorFromTools.toLowerCase().includes(mentionedDoctor.toLowerCase()) ||
+      (mentionedDoctor.split(' ')[0].length > 3 && doctorFromTools.toLowerCase().includes(mentionedDoctor.split(' ')[0].toLowerCase()))
+    );
+
+    // Detectar mención de cita #XXXX sin que exista en estado o herramientas
+    const appointmentIdMatch = response.text.match(/(?:cita|#)\s*#?(\d{3,})/i);
+    const mentionedAppointmentId = appointmentIdMatch ? appointmentIdMatch[1] : null;
+    const realAppointmentId = finalState.lastAppointmentId ? String(finalState.lastAppointmentId) : null;
+    const appointmentIdFromTools = mentionedAppointmentId && (
+      toolResultsRaw.includes(mentionedAppointmentId) ||
+      realAppointmentId === mentionedAppointmentId
+    );
+
+    // Solo verificar si hubo herramientas de disponibilidad/agendamiento
+    const hadSchedulingTools = toolsExecutedNames.some(n =>
+      ['getAvailableAppointments', 'getAvailableTimeSlots', 'scheduleAppointment', 'searchPatient'].includes(n)
+    );
+
+    let fabricationDetected = false;
+
+    // Si menciona un doctor que NO viene de datos reales
+    if (mentionedDoctor && !doctorInToolResults && !hadSchedulingTools) {
+      aiLogger.warn({
+        phone: cleanPhone,
+        mentionedDoctor,
+        knownDoctor: doctorFromTools,
+        tools: toolsExecutedNames
+      }, '⭐ REGLA DE ORO: Doctor mencionado NO proviene de datos reales');
+      fabricationDetected = true;
+    }
+
+    // Si menciona un appointment_id que NO viene de datos reales
+    if (mentionedAppointmentId && !appointmentIdFromTools && !scheduleWasExecuted) {
+      aiLogger.warn({
+        phone: cleanPhone,
+        mentionedAppointmentId,
+        realAppointmentId,
+        tools: toolsExecutedNames
+      }, '⭐ REGLA DE ORO: Número de cita mencionado NO proviene de datos reales');
+      fabricationDetected = true;
+    }
+
+    if (fabricationDetected) {
+      aiLogger.error({
+        phone: cleanPhone,
+        originalResponse: response.text.substring(0, 300)
+      }, '⭐⭐⭐ REGLA DE ORO VIOLADA: Respuesta contiene datos posiblemente fabricados — reemplazando');
+
+      // Reemplazar con respuesta segura basada en el estado actual
+      if (finalState.patientId && finalState.specialtyName) {
+        response.text = `Disculpa, necesito verificar la información en el sistema antes de confirmar. Déjame buscar la disponibilidad real para ${finalState.specialtyName}. Un momento... 😊`;
+        // Forzar que en el siguiente mensaje se ejecute getAvailableAppointments
+        updateState(cleanPhone, {
+          availableAppointments: undefined,
+          selectedDoctor: undefined,
+          selectedDate: undefined,
+          selectedTime: undefined,
+          availabilityId: undefined
+        });
+      } else {
+        response.text = "No logré encontrar esa información en nuestro sistema. Le invito a visitar nuestro portal web https://biosanarcall.site/ donde puede agendar su cita directamente, o llámenos al 607 691 1308 📞";
+      }
+    }
+
     // Si la respuesta está vacía o es muy corta, usar mensaje de recuperación
     if (!response.text || response.text.trim().length < 10) {
       aiLogger.warn({ phone: cleanPhone }, 'Empty or too short response, using recovery message');
@@ -4072,7 +4589,7 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
     // Obtener mensaje de recuperación basado en el estado actual
     const recoveryMessage = getRecoveryMessage(cleanPhone);
 
-    const fallbackResponse = recoveryMessage || "Disculpa, tuve un problema procesando tu solicitud. ¿Podrías repetirlo? Si el problema persiste, llámanos al 6076911308. 📞";
+    const fallbackResponse = recoveryMessage || "Disculpa, tuve un problema procesando tu solicitud. ¿Podrías repetirlo? Si el problema persiste, puedes agendar desde nuestro portal web https://biosanarcall.site/ o llamarnos al 607 691 1308 📞";
 
     return {
       success: false,
@@ -4298,6 +4815,29 @@ async function executeToolCall(
         break;
 
       case 'getAvailableAppointments':
+        // ⛔ VALIDACIÓN DE GÉNERO antes de consultar disponibilidad
+        {
+          const FEMALE_ONLY_RE = /ginecolog[ií]a|control\s*prenatal/i;
+          const reqSpecialty = args.specialty_name || '';
+          const callerPhone = context.phone;
+          if (callerPhone && FEMALE_ONLY_RE.test(reqSpecialty)) {
+            const st = getStateContext(callerPhone);
+            if (st.patientGender === 'Masculino') {
+              aiLogger.warn({ phone: callerPhone, specialty: reqSpecialty, gender: st.patientGender },
+                '⛔ GÉNERO GUARD (tool): Bloqueada consulta de especialidad femenina para paciente masculino');
+              const firstName = st.patientName?.split(' ')[0] || '';
+              result = {
+                success: false,
+                error: `⛔ La especialidad ${reqSpecialty} está disponible únicamente para pacientes de género femenino. ${firstName ? firstName + ' es' : 'El paciente es'} masculino. Sugiere otra especialidad.`
+              };
+              // Limpiar especialidad del estado
+              updateState(callerPhone, ConversationState.AWAITING_SPECIALTY, {
+                specialtyName: undefined, specialtyId: undefined, availableAppointments: undefined,
+              });
+              break;
+            }
+          }
+        }
         result = await DirectDBTools.getAvailableAppointments(args);
         // Guardar doctores disponibles y datos de disponibilidad para manejo de selección
         if (result.success && result.data) {

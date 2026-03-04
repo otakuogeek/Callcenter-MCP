@@ -1892,7 +1892,7 @@ router.post('/public/schedule-appointment', async (req, res) => {
     // Validar que el paciente exista en la base de datos
     console.log(`🔍 Verificando que el paciente ${patient_id} exista...`);
     const [patientCheck] = await pool.execute(
-      `SELECT id, name, phone FROM patients WHERE id = ? LIMIT 1`,
+      `SELECT id, name, phone, gender FROM patients WHERE id = ? LIMIT 1`,
       [patient_id]
     );
 
@@ -1904,6 +1904,20 @@ router.post('/public/schedule-appointment', async (req, res) => {
     }
 
     const patientData = (patientCheck as any[])[0];
+
+    // ⛔ VALIDACIÓN DE GÉNERO: Pacientes masculinos NO pueden agendar Ginecología/Control Prenatal
+    {
+      const [specCheck] = await pool.execute(
+        'SELECT name FROM specialties WHERE id = ? LIMIT 1', [specialty_id]
+      );
+      const specName = (specCheck as any[])[0]?.name || '';
+      if (/ginecolog[ií]a|control\s*prenatal/i.test(specName) && patientData.gender === 'Masculino') {
+        return res.status(400).json({
+          success: false,
+          error: `La especialidad ${specName} está disponible únicamente para pacientes de género femenino.`
+        });
+      }
+    }
 
     // Validar que el doctor exista y esté activo
     console.log(`🔍 Verificando que el doctor ${doctor_id} exista y esté activo...`);

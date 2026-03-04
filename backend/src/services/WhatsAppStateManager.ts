@@ -49,6 +49,7 @@ export interface StateContext {
   patientName?: string;
   patientDocument?: string;
   patientPhone?: string;  // Teléfono del paciente de la base de datos
+  patientGender?: string; // Género del paciente (Masculino, Femenino, Otro, No especificado)
   registrationPending?: boolean;  // NUEVO: Indica que el paciente necesita registrarse
   specialty?: any;
   specialtyId?: number;  // NUEVO: ID de especialidad seleccionada
@@ -323,7 +324,7 @@ export function getRecoveryMessage(phone: string): string {
       } else if (retryNum === 2) {
         return "Parece que hay un problema con el documento. Por favor, escríbelo sin puntos ni espacios, solo los números.";
       }
-      return "Si tienes problemas, también puedes llamarnos al 6076911308 para ayudarte. 📞";
+      return "Si tienes problemas, también puedes agendar desde nuestro portal web https://biosanarcall.site/ o llamarnos al 607 691 1308 📞";
 
     case ConversationState.AWAITING_SPECIALTY:
       if (retryNum === 1) {
@@ -405,7 +406,7 @@ export function getRecoveryMessage(phone: string): string {
 
     default:
       if (retryNum >= MAX_RETRIES) {
-        return "Parece que hay dificultades técnicas. Puedes intentar de nuevo en unos minutos o llamarnos al 6076911308. 📞";
+        return "Parece que hay dificultades técnicas. Puedes agendar desde nuestro portal web https://biosanarcall.site/ o llamarnos al 607 691 1308 📞";
       }
       return "Disculpa, no entendí bien. ¿Podrías repetir, por favor?";
   }

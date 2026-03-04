@@ -131,4 +131,35 @@ test-results/
 # Misc
 labsmobile-test-php/
 referencia/
-docs/
+
+# MCP Server redundant files
+mcp-server-node/docs/
+mcp-server-node/memory/
+mcp-server-node/ecosystem-*.config.json
+mcp-server-node/ecosystem.config.json
+mcp-server-node/mcp-inspector-config.json
+mcp-server-node/mcp-servers.json
+mcp-server-node/mcp-bridge.js
+mcp-server-node/logger-mysql.*
+mcp-server-node/server-mysql.*
+mcp-server-node/tsc
+mcp-server-node/biosanarcall-mcp-node@*
+mcp-server-node/nginx-unified.conf
+
+# MCP Server logs
+mcp-server-node/logs/*
+!mcp-server-node/logs/.gitkeep
+
+# Cluster monitor logs
+cluster-monitor/logs/*
+!cluster-monitor/logs/.gitkeep
+
+# Python virtual environments
+.venv/
+*/.venv/
+
+# GitHub artifacts (auto-generated)
+.github/java-upgrade/
+
+# firma-digital (removed from project)
+firma-digital/

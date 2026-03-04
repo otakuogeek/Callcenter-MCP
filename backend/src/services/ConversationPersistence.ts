@@ -54,6 +54,7 @@ export interface AskedQuestions {
   especialidad: boolean;
   fecha: boolean;
   motivo: boolean;
+  beneficiario: boolean;
 }
 
 // Interfaz para preferencias del paciente
@@ -157,7 +158,8 @@ function createEmptyConversation(phoneNumber: string): ConversationData {
       eps: false,
       especialidad: false,
       fecha: false,
-      motivo: false
+      motivo: false,
+      beneficiario: false
     },
     collectedAnswers: {},
     preferences: {},

@@ -662,15 +662,18 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
       try { await pool.query('CALL release_preallocation_slot(?)', [id]); } catch { /* ignore */ }
       
       // ================= Decrementar cupos reservados en availability =================
+      // NOTA: El trigger trg_appt_after_update llama recalc_availability_slots()
+      // que recalcula booked_slots con COUNT(*). El decremento manual es redundante
+      // y puede causar BIGINT UNSIGNED underflow si el trigger ya actualizó a 0.
+      // Se deja como safety fallback con CAST para evitar underflow.
       try {
-        // Obtener el availability_id de la cita antes de actualizarlo
         const [apptRows] = await pool.query('SELECT availability_id FROM appointments WHERE id = ? LIMIT 1', [id]);
         if (Array.isArray(apptRows) && apptRows.length) {
           const currentAppt = apptRows[0] as any;
           if (currentAppt.availability_id) {
             await pool.query(
               `UPDATE availabilities 
-               SET booked_slots = GREATEST(0, booked_slots - 1) 
+               SET booked_slots = GREATEST(0, CAST(booked_slots AS SIGNED) - 1) 
                WHERE id = ?`,
               [currentAppt.availability_id]
             );
@@ -715,7 +718,7 @@ router.put('/:id', requireAuth, async (req: Request, res: Response) => {
             // Decrementar del availability anterior
             await pool.query(
               `UPDATE availabilities 
-               SET booked_slots = GREATEST(0, booked_slots - 1) 
+               SET booked_slots = GREATEST(0, CAST(booked_slots AS SIGNED) - 1) 
                WHERE id = ?`,
               [oldAvailabilityId]
             );

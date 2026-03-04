@@ -1946,13 +1946,7 @@ export default function UserPortal() {
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gradient-to-br from-blue-600 via-blue-500 to-purple-600 p-3 sm:p-4">
-        {/* Banner de Mantenimiento */}
-        <div className="w-full max-w-md bg-yellow-400 text-yellow-900 px-4 py-3 rounded-lg mb-6 shadow-lg z-20 flex items-center gap-3 animate-pulse">
-          <AlertTriangle className="h-5 w-5 flex-shrink-0" />
-          <p className="font-semibold text-sm">
-            Estamos realizando una mejora interna
-          </p>
-        </div>
+
         {/* Decoración de fondo */}
         <div className="absolute top-0 left-0 w-72 h-72 bg-blue-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
         <div className="absolute top-40 right-0 w-72 h-72 bg-purple-400 rounded-full mix-blend-multiply filter blur-3xl opacity-20 animate-pulse"></div>
@@ -2248,13 +2242,7 @@ export default function UserPortal() {
     <div className="min-h-screen w-full bg-gradient-to-br from-gray-50 to-gray-100">
       {/* Header responsivo */}
       <div className="sticky top-0 z-50 bg-white border-b border-gray-200 shadow-sm">
-        {/* Banner de Mantenimiento */}
-        <div className="bg-yellow-400 text-yellow-900 px-4 py-2 flex items-center justify-center gap-2">
-          <AlertTriangle className="h-4 w-4" />
-          <p className="text-sm font-semibold">
-            Estamos realizando una mejora interna
-          </p>
-        </div>
+
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0">
           {/* Logo y bienvenida */}
           <div className="flex items-center gap-3 sm:gap-4 flex-1">

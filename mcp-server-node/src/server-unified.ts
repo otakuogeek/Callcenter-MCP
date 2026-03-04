@@ -2640,7 +2640,7 @@ async function scheduleAppointment(args: any): Promise<any> {
 
     // 1. Validar que el paciente existe y obtener su teléfono
     const [patientCheck] = await connection.execute(
-      'SELECT id, name, document, phone, phone_alt FROM patients WHERE id = ? AND status = "Activo"',
+      'SELECT id, name, document, phone, phone_alt, gender FROM patients WHERE id = ? AND status = "Activo"',
       [patient_id]
     );
 
@@ -2678,6 +2678,16 @@ async function scheduleAppointment(args: any): Promise<any> {
     }
 
     const availability = (availCheck as any[])[0];
+
+    // ⛔ VALIDACIÓN DE GÉNERO: Pacientes masculinos NO pueden agendar Ginecología/Control Prenatal
+    const femaleOnlyPattern = /ginecolog[ií]a|control\s*prenatal/i;
+    if (femaleOnlyPattern.test(availability.specialty_name) && patient.gender === 'Masculino') {
+      await connection.rollback();
+      return {
+        success: false,
+        error: `La especialidad ${availability.specialty_name} está disponible únicamente para pacientes de género femenino.`
+      };
+    }
 
     // 2.5 DERIVAR scheduled_date si no se proporciona
     // Si no viene scheduled_date, usar la fecha de la availability
@@ -3381,7 +3391,7 @@ async function addToWaitingList(args: any): Promise<any> {
 
     // 1. Validar paciente activo
     const [patientCheck] = await connection.execute(
-      `SELECT id, name, document, insurance_eps_id, phone, phone_alt 
+      `SELECT id, name, document, insurance_eps_id, phone, phone_alt, gender 
        FROM patients 
        WHERE id = ? AND status = "Activo"`,
       [patient_id]
@@ -3415,6 +3425,16 @@ async function addToWaitingList(args: any): Promise<any> {
     }
 
     const specialty = (specialtyCheck as any[])[0];
+
+    // ⛔ VALIDACIÓN DE GÉNERO: Pacientes masculinos NO pueden agendar Ginecología/Control Prenatal
+    const femaleOnlyPattern = /ginecolog[ií]a|control\s*prenatal/i;
+    if (femaleOnlyPattern.test(specialty.name) && patient.gender === 'Masculino') {
+      await connection.rollback();
+      return {
+        success: false,
+        error: `La especialidad ${specialty.name} está disponible únicamente para pacientes de género femenino.`
+      };
+    }
 
     // 2.5. Validar CUPS si se proporciona (OPCIONAL)
     let cupsInfo = null;

@@ -1036,6 +1036,21 @@ export async function scheduleAppointment(args: {
         return { success: false, error: 'No se puede agendar en una fecha pasada. Por favor seleccione una fecha futura.' };
       }
 
+      // ⛔ VALIDACIÓN DE GÉNERO: Pacientes masculinos NO pueden agendar Ginecología/Control Prenatal
+      const femaleOnlyPattern = /ginecolog[ií]a|control\s*prenatal/i;
+      if (femaleOnlyPattern.test(avail.specialty_name)) {
+        const [patientRows] = await connection.execute<RowDataPacket[]>(
+          `SELECT gender FROM patients WHERE id = ?`, [args.patient_id]
+        );
+        if (patientRows.length > 0 && patientRows[0].gender === 'Masculino') {
+          await connection.rollback();
+          return {
+            success: false,
+            error: `La especialidad ${avail.specialty_name} está disponible únicamente para pacientes de género femenino.`
+          };
+        }
+      }
+
       // Verificar si hay cupos
       if (avail.slots_available <= 0) {
         await connection.rollback();
@@ -1903,12 +1918,9 @@ export async function cancelAppointment(args: {
       `, [args.reason || args.cancellation_reason || 'Cancelada por paciente', args.appointment_id]);
 
       // Restaurar cupo en disponibilidad
+      // NOTA: El trigger trg_appt_after_update ya llama a recalc_availability_slots()
+      // que recalcula booked_slots con COUNT(*). Solo necesitamos procesar la lista de espera.
       if (appt.availability_id) {
-        await connection.execute(`
-          UPDATE availabilities 
-          SET booked_slots = GREATEST(0, booked_slots - 1) 
-          WHERE id = ?
-        `, [appt.availability_id]);
 
         try {
           await connection.execute(`CALL process_waiting_list_for_availability(?)`, [appt.availability_id]);
@@ -2297,11 +2309,24 @@ export async function addToWaitingList(args: {
     try {
       // Verificar que el paciente existe
       const [patientRows] = await connection.execute<RowDataPacket[]>(`
-        SELECT id, name FROM patients WHERE id = ?
+        SELECT id, name, gender FROM patients WHERE id = ?
       `, [args.patient_id]);
 
       if (patientRows.length === 0) {
         return { success: false, error: 'Paciente no encontrado' };
+      }
+
+      // ⛔ VALIDACIÓN DE GÉNERO: Pacientes masculinos NO pueden agendar Ginecología/Control Prenatal
+      if (patientRows[0].gender === 'Masculino') {
+        const [specRows] = await connection.execute<RowDataPacket[]>(
+          'SELECT name FROM specialties WHERE id = ?', [args.specialty_id]
+        );
+        if (specRows.length > 0 && /ginecolog[ií]a|control\s*prenatal/i.test(specRows[0].name)) {
+          return {
+            success: false,
+            error: `La especialidad ${specRows[0].name} está disponible únicamente para pacientes de género femenino.`
+          };
+        }
       }
 
       // Verificar si ya está en lista de espera para esta especialidad
