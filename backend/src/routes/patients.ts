@@ -63,7 +63,8 @@ router.get('/', requireAuth, async (req: Request, res: Response) => {
         eps.name as eps_name,
         el.name as education_level,
         ms.name as marital_status,
-        pg.name as population_group
+        pg.name as population_group,
+        (SELECT COUNT(*) FROM appointments WHERE patient_id = p.id) AS appointment_count
       FROM patients p
       LEFT JOIN zones z ON p.zone_id = z.id
       LEFT JOIN municipalities m ON p.municipality_id = m.id

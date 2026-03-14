@@ -414,8 +414,8 @@ async function scheduleAppointmentAdvanced(args: any, pool: mysql.Pool): Promise
       INSERT INTO appointments (
         patient_id, doctor_id, specialty_id, location_id, 
         scheduled_at, duration_minutes, appointment_type, 
-        reason, notes, status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', NOW())
+        reason, notes, status, appointment_source, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pendiente', 'Llamada', NOW())
     `, [
       args.patient_id,
       args.doctor_id,

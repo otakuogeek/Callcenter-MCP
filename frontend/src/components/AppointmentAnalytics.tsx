@@ -101,11 +101,12 @@ interface AppointmentAnalytics {
 }
 
 const COLORS = {
-  web: '#3b82f6',     // blue-500
-  phone: '#10b981',   // emerald-500
-  system: '#f59e0b',  // amber-500
-  booked: '#059669',  // emerald-600
-  available: '#e5e7eb' // gray-200
+  manual: '#3b82f6',    // blue-500
+  llamada: '#f59e0b',   // amber-500
+  whatsapp: '#25D366',  // whatsapp green
+  app: '#8b5cf6',       // violet-500
+  booked: '#059669',    // emerald-600
+  available: '#e5e7eb'  // gray-200
 };
 
 const AppointmentAnalytics = () => {
@@ -190,9 +191,10 @@ const AppointmentAnalytics = () => {
   }, [dateRange]);
 
   const sourceData = analytics ? [
-    { name: 'Web', value: analytics.sourceStats.web, color: COLORS.web },
-    { name: 'Teléfono', value: analytics.sourceStats.phone, color: COLORS.phone },
-    { name: 'Sistema', value: analytics.sourceStats.system, color: COLORS.system }
+    { name: 'Manual', value: analytics.sourceStats.manual, color: COLORS.manual },
+    { name: 'Llamada', value: analytics.sourceStats.llamada, color: COLORS.llamada },
+    { name: 'WhatsApp', value: analytics.sourceStats.whatsapp, color: COLORS.whatsapp },
+    { name: 'App', value: analytics.sourceStats.app, color: COLORS.app }
   ] : [];
 
   const totalAppointments = sourceData.reduce((sum, item) => sum + item.value, 0);
@@ -405,9 +407,10 @@ const AppointmentAnalytics = () => {
                     labelFormatter={(label) => format(new Date(label), "dd 'de' MMMM, yyyy", { locale: es })}
                   />
                   <Legend />
-                  <Bar dataKey="web" stackId="a" fill={COLORS.web} name="Web" />
-                  <Bar dataKey="phone" stackId="a" fill={COLORS.phone} name="Teléfono" />
-                  <Bar dataKey="system" stackId="a" fill={COLORS.system} name="Sistema" />
+                  <Bar dataKey="manual" stackId="a" fill={COLORS.manual} name="Manual" />
+                  <Bar dataKey="llamada" stackId="a" fill={COLORS.llamada} name="Llamada" />
+                  <Bar dataKey="whatsapp" stackId="a" fill={COLORS.whatsapp} name="WhatsApp" />
+                  <Bar dataKey="app" stackId="a" fill={COLORS.app} name="App" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -620,7 +623,7 @@ const AppointmentAnalytics = () => {
                 <Line 
                   type="monotone" 
                   dataKey="appointments" 
-                  stroke={COLORS.web} 
+                  stroke={COLORS.manual} 
                   strokeWidth={2}
                   name="Citas Agendadas"
                 />

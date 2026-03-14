@@ -1,440 +1,127 @@
-# GitHub Copilot Instructions for Biosanarcall Medical System
+# Biosanarcall Medical System — Workspace Instructions
 
-## Architecture Overview
+> Sistema integral de gestión médica para Fundación Biosanar IPS (Colombia).
+> IPS con múltiples sedes en Santander · EPS + CUPS · Regulación salud colombiana.
 
-This is a **modular medical management system** with three main components:
-- **Frontend**: React 18 + TypeScript + Vite with shadcn/ui design system
-- **Backend**: Node.js + Express + TypeScript with MySQL2 database  
-- **MCP Integration**: Python and Node.js MCP (Model Context Protocol) servers for AI agent integration
+## Stack & Puertos
 
-## Project Structure & Key Patterns
+| Componente | Stack | Puerto | Entrada |
+|---|---|---|---|
+| Backend API | Express 4 + TS + MySQL2 | 4000 | `backend/src/server.ts` |
+| Frontend | React 18 + Vite + shadcn/ui | 8080 | `frontend/src/App.tsx` |
+| MCP Server | Express + TS + MySQL2 (JSON-RPC 2.0) | 8977 | `mcp-server-node/src/server-unified.ts` |
+| Voice Service | Express + TS + ElevenLabs + Zadarma | 3001 | `voice-call-service/src/server.ts` |
+| Mobile | Expo 54 + React Native 0.81 | — | `mobile-app/App.tsx` |
+| Cluster Monitor | Express + SSH | 5055 | `cluster-monitor/src/server.js` |
 
-### Frontend (`/frontend/`)
-- Uses **shadcn/ui + Radix UI** components exclusively - never write custom UI from scratch
-- **React Router 6** with protected routes via `ProtectedRoute` wrapper
-- **TanStack Query** for server state management
-- **React Hook Form + Zod** validation pattern for all forms
-- **React.lazy + Suspense** for code splitting - all pages loaded on demand via `App.tsx`
-- **Modular patient management** system with 6 specialized components (4-6 fields each)
+## Build & Run
 
-```tsx
-// Standard form pattern used throughout
-const { register, handleSubmit, formState: { errors } } = useForm<FormData>({
-  resolver: zodResolver(schema)
-});
-
-// Lazy loading pattern (App.tsx)
-const Queue = lazy(() => import("./pages/Queue"));
-<Route path="/queue" element={<Suspense fallback={<LoadingScreen />}><Queue /></Suspense>} />
-```
-
-### Backend (`/backend/`)
-- **Express + TypeScript** with security-first approach (helmet, CORS, rate limiting)
-- **MySQL2** with connection pooling - database operations in `/src/db/`
-- **JWT authentication** with protected routes middleware pattern
-- **File uploads** handled via multer to `/uploads` directory
-- **PM2 ecosystem** configuration for production deployment
-- **In-memory caching** for analytics endpoints (60s TTL) - see `analytics.ts`
-
-```typescript
-// Standard API route pattern
-app.use('/api/patients', authenticateToken, patientRoutes);
-
-// Caching pattern for heavy queries
-const ANALYTICS_TTL_MS = 60_000;
-const analyticsCache = new Map<string, { ts: number; data: any }>();
-```
-
-### MCP Servers Integration
-- **Python MCP Server** (`/mcp-server-python/`) - 24 medical tools for AI agents
-- **Node.js MCP Server** (`/mcp-server-node/`) - Alternative implementation
-- **JSON-RPC 2.0** protocol for AI agent communication
-- Production endpoints: `https://biosanarcall.site/mcp-py*`
-
-## Development Workflows
-
-### Frontend Development
 ```bash
-cd frontend && npm run dev    # Vite dev server on port 8080 (not 5173!)
-npm run build                 # Production build with type checking (~17s)
+# Backend
+cd backend && npm run dev          # ts-node-dev auto-reload
+cd backend && npm run build        # esbuild → dist/server.js
+cd backend && npm run db:check     # Test MySQL connection
+cd backend && npm run db:migrate   # Apply migrations
+cd backend && npm run test:features
+
+# Frontend (port 8080, NOT 5173)
+cd frontend && npm run dev
+cd frontend && npm run build       # ~17s, includes type-check
+
+# Deploy (PM2)
+cd backend && npm run build && pm2 restart cita-central-backend
+cd frontend && npm run build       # dist/ → Nginx root
 ```
 
-**Build Configuration** (`vite.config.ts`):
-- Manual chunks: `vendor`, `pages`, `components`
-- Bundle warning limit: 1000 kB
-- Server/preview ports: 8080
+## Architecture Conventions
 
-### Backend Development  
-```bash
-cd backend && npm run dev     # ts-node-dev with auto-reload
-npm run build                 # TypeScript compilation to dist/
-npm run db:init              # Initialize database with schema
-npm run db:seed              # Create admin user (SEED_ADMIN_* env vars)
-npm run db:check             # Test MySQL connection
+### Backend
+- **Security-first**: helmet, CORS (`CORS_ORIGINS` env), rate limiting (20 req/15min login, 50k general)
+- **Auth**: JWT (min 16 chars secret, verified at startup). 6 roles: superadmin, admin, supervisor, agent, doctor, reception
+- **Doctor auth**: Independent JWT via `/api/doctor-auth/*`
+- **Response format**: `{ success: true, data: T }` / `{ success: false, error: string }`
+- **Logging**: Pino + pino-http (JSON prod, pretty dev). Audit middleware auto-logs POST/PUT/DELETE
+- **Webhooks**: `express.raw()` for Meta WhatsApp + ElevenLabs signature verification
+- **Caching**: In-memory Map with 60s TTL for analytics endpoints
+
+### Frontend
+- **shadcn/ui + Radix** exclusively — never write custom UI from scratch
+- **React Router 6** with `ProtectedRoute` + `DoctorProtectedRoute` wrappers
+- **TanStack Query 5** for server state (refetch on mount, not window focus)
+- **React Hook Form + Zod** for all forms
+- **React.lazy + Suspense** for all 35+ pages in `App.tsx`
+- **Layout**: Every page uses `<SidebarProvider><AppSidebar /><main>...</main></SidebarProvider>`
+- **API client**: `frontend/src/lib/api.ts` — centralized fetch + token handling + 401 redirect
+
+### Database
+- MySQL 8 (MariaDB prod). Master (82.29.62.188) ↔ Slave (72.62.164.88)
+- 52+ tables, 70+ migrations in `backend/migrations/`
+- Connection pool (25) via mysql2
+
+## API Routes
+
+| Prefix | Purpose |
+|---|---|
+| `/api/auth/*` | Login, logout, token refresh |
+| `/api/doctor-auth/*` | Doctor portal (independent) |
+| `/api/patients/*` | Patient CRUD |
+| `/api/appointments/*` | Scheduling + waiting list |
+| `/api/availabilities/*` | Doctor availability management |
+| `/api/lookups/*` | Reference data (municipalities, EPS, specialties) |
+| `/api/daily-queue` | Daily assignment queue |
+| `/api/analytics/*` | Cached analytics (60s TTL) |
+| `/api/whatsapp/meta/webhook` | Meta Cloud API webhooks (HMAC-SHA256) |
+| `/api/webhooks/elevenlabs` | ElevenLabs voice webhooks |
+
+## Performance Pitfalls
+
+**Queue page** (`/queue`) handles 785+ patients with 3-tier optimization:
+1. Summary mode: `GET /api/appointments/waiting-list?summary=true` (90% payload reduction)
+2. Lazy load per specialty: `GET /api/appointments/waiting-list/specialty/:id`
+3. react-window virtualization — **Props MUST use `rowProps` object, NOT closures**
+
+**Bundle**: vendor ~2.36 MB, pages ~233 KB, components ~625 KB. Use dynamic imports for heavy features.
+
+## WhatsApp Bot Architecture
+
+Pipeline in `backend/src/whatsapp/`:
 ```
-
-### Critical Environment Variables
-```env
-# Backend (.env in /backend/)
-DB_HOST=127.0.0.1
-DB_USER=biosanar_user  
-DB_NAME=biosanar
-JWT_SECRET=your_secret
-CORS_ORIGINS=https://biosanarcall.site,https://www.biosanarcall.site
-CALL_ARCHIVE_DAYS=30
-ENABLE_FULLTEXT_SEARCH=true
-PATIENT_SEARCH_CACHE_TTL_MS=5000
-
-# MCP Servers
-BACKEND_BASE=http://127.0.0.1:4000/api
-BACKEND_TOKEN=jwt_token_here
+01-Identify → 02-IntentAnalysis → 03-QuickIntents → 04-AutoAvailability
+→ 05-StateHandlers → 06-AIGeneration → 07-Validation
 ```
+Each step checks `ctx.earlyResponse`; if set, subsequent steps skip.
+Conversation AI: GPT-5-mini via ChatGPT API (configurable to Groq).
+See `.github/skills/whatsapp-flow-improvement/SKILL.md` for diagnosis patterns.
 
-## Performance Optimizations (Critical!)
-
-### Waiting List Queue Performance
-The `/queue` page implements **three-tier optimization** for handling 785+ patients:
-
-1. **Summary Mode** (Initial Load):
-```typescript
-// Backend: GET /api/appointments/waiting-list?summary=true
-// Returns only metadata, no patient arrays (~90% payload reduction)
-const response = await api.getWaitingList(true); // summary=true
-```
-
-2. **Lazy Loading per Specialty**:
-```typescript
-// Backend: GET /api/appointments/waiting-list/specialty/:id
-// Loads patients only when accordion is expanded
-const handleAccordionChange = async (values: string[]) => {
-  const newlyOpened = values.filter(v => !expandedSpecialties.includes(v));
-  for (const val of newlyOpened) {
-    const resp = await api.getWaitingListBySpecialty(specialtyId);
-    // Update state with fetched patients
-  }
-};
-```
-
-3. **Virtualization with react-window**:
-```typescript
-// VirtualizedPatientList.tsx - renders only visible items
-import { List } from 'react-window';
-
-<List
-  rowComponent={Row}
-  rowCount={patients.length}
-  rowHeight={180}
-  rowProps={{ patients, /* all handlers */ }}
-  style={{ height: maxHeight }}
-/>
-```
-
-**Important**: Props MUST be passed via `rowProps` object, not closures:
-```typescript
-// ✅ CORRECT
-const rowProps = { patients, handleChangePriority, handleCallPatient, /* ... */ };
-<List rowProps={rowProps} />
-
-// ❌ WRONG - causes "undefined" errors
-const Row = () => { handleChangePriority(...) }; // closure won't work
-```
-
-### Bundle Size Management
-- Vendor chunk: ~2.36 MB (TanStack Query, React Router, shadcn/ui)
-- Pages chunk: ~233 KB
-- Components chunk: ~625 KB
-- Use dynamic imports for heavy features (PDF export, charts)
-
-## Component Patterns & Conventions
-
-### Patient Management System
-The system uses a **6-tool modular approach** instead of monolithic forms:
-- `PatientBasicInfo` (4 fields) - Name, document, birth date, gender
-- `PatientContactInfo` (6 fields) - Phone, email, address, municipality  
-- `PatientMedicalInfo` (5 fields) - Blood type, allergies, conditions
-- `PatientInsuranceInfo` (3 fields) - EPS, affiliation type
-- `PatientDemographicInfo` (5 fields) - Education, marital status, occupation
-- `PatientsList` - Search and management interface
-
-### Layout Pattern
-All pages use consistent layout with sidebar:
-```tsx
-<SidebarProvider>
-  <AppSidebar />
-  <main className="w-full">
-    <SidebarTrigger />
-    {/* Page content */}
-  </main>
-</SidebarProvider>
-```
-
-### API Client Pattern (`/frontend/src/lib/api.ts`)
-Use centralized error handling for 401/404 responses:
-```typescript
-// Handle expired JWT gracefully
-.catch(error => {
-  if (error.response?.status === 401) {
-    // Redirect to login or refresh token
-  }
-  console.error('API Error:', error);
-});
-```
-
-## Database & API Conventions
-
-### Route Structure
-- `/api/auth/*` - Authentication endpoints
-- `/api/patients/*` - Patient CRUD operations
-- `/api/appointments/*` - Scheduling system + waiting list
-  - `/api/appointments/waiting-list` - Summary mode support
-  - `/api/appointments/waiting-list/specialty/:id` - Lazy load endpoint
-- `/api/lookups/*` - Reference data (municipalities, EPS, etc.)
-- `/api/daily-queue` - Daily queue management with specialty filter
-- `/api/analytics/*` - Analytics with in-memory cache (60s TTL)
-
-### Standard Response Format
-```typescript
-// Success response
-{ success: true, data: T, message?: string }
-
-// Error response  
-{ success: false, error: string, details?: any }
-```
-
-### Waiting List Data Structure
-The `appointments_waiting_list` table supports **two organization modes**:
+## Waiting List Data Model
 
 ```sql
 -- Mode 1: By Specialty (flexible, any doctor/location)
 specialty_id: NOT NULL, availability_id: NULL
-
 -- Mode 2: By Specific Availability (tied to doctor/location)
-availability_id: NOT NULL, specialty_id: NULL (or matches availability)
-
--- Queue position calculated by specialty_id + priority + FIFO
+availability_id: NOT NULL, specialty_id: NULL
+-- Queue position = specialty_id + priority + FIFO
 ```
 
-## Deployment & Production
-
-### PM2 Configuration
-Both backend and MCP servers use PM2 with ecosystem files:
-```javascript
-// backend/ecosystem.config.js
-{
-  name: 'cita-central-backend',
-  script: 'dist/src/server.js',
-  env: { NODE_ENV: 'production', PORT: 4000 },
-  max_memory_restart: '300M',
-  out_file: 'logs/out.log',
-  error_file: 'logs/error.log'
-}
-
-// Commands
-pm2 start ecosystem.config.js
-pm2 restart cita-central-backend  # After npm run build
-pm2 logs cita-central-backend     # View logs
-```
-
-### Nginx Integration
-- Frontend served as static files from `frontend/dist/`
-- Backend proxied to port 4000
-- MCP servers on separate endpoints
-- SSL/HTTPS required for production
-
-### Build & Deploy Workflow
-```bash
-# Backend
-cd backend && npm run build && pm2 restart cita-central-backend
-
-# Frontend
-cd frontend && npm run build
-# Files output to dist/ → sync to Nginx root
-```
-
-## Common Troubleshooting
-
-- **401 Errors**: Check JWT token expiration and refresh mechanism
-- **404 API Endpoints**: Some statistics endpoints may not be implemented - use graceful fallbacks
-- **CORS Issues**: Verify `CORS_ORIGINS` environment variable includes your domain
-- **Database Connection**: Use `npm run db:check` to verify MySQL connectivity
-- **"handleChangePriority is not defined"**: Ensure props passed via `rowProps` in react-window List
-- **Slow queue loading**: Check if summary mode is enabled (`?summary=true`)
-- **Bundle warnings**: Expected for vendor chunk >1MB, not critical
-
-## Testing Patterns
-
-```bash
-# Backend feature testing
-cd backend && npm run test:features
-
-# MCP server testing  
-curl -X POST https://biosanarcall.site/mcp-py-simple \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}'
-
-# Frontend build test
-cd frontend && npm run build # Should complete in ~17s
-```
-
-## Key Files Reference
-
-- **Frontend Entry**: `/frontend/src/App.tsx` - All lazy-loaded routes
-- **API Client**: `/frontend/src/lib/api.ts` - Centralized API calls
-- **Virtualized List**: `/frontend/src/components/VirtualizedPatientList.tsx` - react-window implementation
-- **Queue Page**: `/frontend/src/pages/Queue.tsx` - Summary mode + lazy load logic
-- **Backend Routes**: `/backend/src/routes/appointments.ts` - Waiting list endpoints (lines 811-1400)
-- **Vite Config**: `/frontend/vite.config.ts` - Build optimization settings
-- **PM2 Config**: `/backend/ecosystem.config.js` - Production deployment
-
-Remember: This system prioritizes **modular architecture**, **security-first design**, **performance optimization**, and **AI agent integration** through MCP protocol.
-
-Flujo de Trabajo Detallado
-PASO 1: Saludo e Inicio Inmediato del Agendamiento
-
-Saludo Inicial: Comienza la llamada directamente con: "Hola, bienvenido a Fundación Biosanar IPS. Le atiende Valeria, ¿cómo puedo colaborarle?"
-
-Ir al Grano: Tan pronto el usuario mencione que necesita una cita o un servicio, responde: "Con gusto, permítame un momento mientras verifico las agendas disponibles en el sistema." e inicia INMEDIATAMENTE el PASO 2.
-
-PASO 2: Consulta y Presentación de Disponibilidad
-
-Consultar Disponibilidad General: Llama a la herramienta getAvailableAppointments SIN ningún parámetro.
-
-Evaluar Respuesta:
-
-Si la herramienta falla o retorna vacío: Ve directamente al Flujo de Error A.
-
-Si retorna datos exitosamente: Continúa con el siguiente punto.
-
-Presentar Especialidades:
-
-Lee todas las specialty_name únicas de la respuesta.
-
-Di: "Claro que sí. En este momento tenemos agenda disponible para [lista de especialidades reales separadas por comas]."
-
-Pregunta: "¿Para cuál de ellas necesita la cita?"
-
-PASO 3: Selección de Sede y Fecha
-
-Filtrar por Especialidad: Una vez el paciente elija una especialidad, filtra mentalmente los resultados.
-
-Presentar Sedes:
-
-Lee todas las location_name únicas para esa especialidad.
-
-Di: "Perfecto. Para [especialidad elegida], puede agendar su cita en [lista de sedes reales]. ¿Cuál le queda mejor?"
-
-Presentar Opciones de Cita (SIN MÉDICO):
-
-Filtra los resultados por la specialty_name y location_name elegidas.
-
-Para CADA opción encontrada, evalúa los `slots_available`.
-
-Si hay cupos (`slots_available > 0`): Informa de manera clara: "En [sede elegida], tenemos agenda disponible para el día [appointment_date], en el horario de la [mañana/tarde]." (Ej: "...para el día 15 de octubre, en el horario de la mañana").
-
-Si NO hay cupos (`slots_available == 0`): NO menciones esta opción como disponible. Guárdala internamente por si el paciente insiste en esa fecha, para ofrecerle la lista de espera.
-
-Pregunta: "¿Le agendamos en alguna de las fechas disponibles?"
-
-Si el paciente elige una fecha CON cupos: Continúa al PASO 4.
-Si el paciente pregunta por una fecha SIN cupos o no hay ninguna con cupos: Ve al **Flujo de Lista de Espera**.
-
-Importante: Al seleccionar una opción, guarda internamente el availability_id, doctor_name, appointment_date y start_time asociados, pero NO menciones el doctor_name todavía.
-
-PASO 4: Verificación de Datos del Paciente
-
-Manejo de Preguntas sobre el Médico: Si en este punto el paciente pregunta por el nombre del médico, responde amablemente: "El sistema nos asignará el especialista disponible para esa fecha una vez completemos el agendamiento." y continúa el flujo normal.
-
-Solicitar Cédula: Una vez el paciente confirme la fecha, di: "Muy bien. Para procesar su cita, por favor, indíqueme su número de cédula."
-
-Normalizar Cédula: Aplica el proceso de 4 pasos de normalización.
-
-Buscar Paciente: Llama a la herramienta de búsqueda de pacientes con el document ya limpio.
-
-Evaluar Búsqueda:
-
-Si el paciente EXISTE: Guarda el patient_id y ve directamente al PASO 6.
-
-Si el paciente NO EXISTE: Ve al PASO 5.
-
-PASO 5: Validación de Datos Adicionales (Flujo Natural)
-
-Iniciar Validación: De forma conversacional y segura, di: "Perfecto, necesito validar unos datos en el sistema para continuar. ¿Me regala su nombre completo, por favor?"
-
-Solicitar Datos Faltantes: Pide el teléfono y la EPS (llamando a listActiveEPS).
-
-Confirmar y Registrar:
-
-Confirma verbalmente los datos con el paciente.
-
-Llama a registerPatientSimple con los datos limpios y normalizados.
-
-Guarda el patient_id que retorna la herramienta.
-
-PASO 6: Agendamiento y Confirmación Final
-
-Asignar Hora Automáticamente: Toma la start_time del bloque de cita seleccionado.
-
-Preguntar Motivo: "Para finalizar, ¿cuál es el motivo de la consulta?"
-
-Confirmación Previa (Sin Médico):
-
-Una vez tengas el motivo, confirma de manera previa: "Listo. Su cita quedaría programada para el [día y fecha] a las [start_time en formato conversacional] en nuestra sede [location_name]. ¿Es correcto?"
-
-Agendar en Sistema: Si el paciente confirma, llama a scheduleAppointment con availability_id, patient_id, reason y el scheduled_date.
-
-Confirmación Definitiva (CON TODOS LOS DATOS): Al recibir la respuesta exitosa de la herramienta, finaliza con la confirmación completa y detallada: "Perfecto, su cita ha sido confirmada. Le confirmo los detalles: es con el/la doctor/a [doctor_name] el día [fecha] a las [hora], en la sede [location_name]. El número de su cita es el [appointment_id REAL]."
-
-PASO 7: Cierre de la Llamada
-
-Ofrecer Ayuda Adicional: Pregunta siempre: "¿Hay algo más en lo que pueda colaborarle?"
-
-Despedida Profesional: Si no hay más solicitudes, cierra con: "Gracias por comunicarse con Fundación Biosanar IPS. Que tenga un excelente día."
-
-Flujo de Lista de Espera (Cuando no hay cupos)
-
-PASO A: Informar y Ofrecer
-
-Informar Situación: Con amabilidad, di: "Entiendo. Para esa fecha con [especialidad] en [sede], actualmente no tenemos cupos disponibles."
-
-Mencionar la Lista de Espera: Inmediatamente añade: "Sin embargo, veo que hay [waiting_list_count] personas en lista de espera. Puedo agregarle a esta lista y el sistema le notificará automáticamente tan pronto se libere un cupo. ¿Le gustaría que lo inscriba?"
-
-PASO B: Determinar Prioridad
-
-Si el paciente acepta, pregunta por la urgencia para asignar la prioridad correcta: "Claro que sí. Para darle la prioridad adecuada, ¿su consulta es de carácter 'Urgente', 'Alta', 'Normal' o 'Baja'?"
-
-Usa el criterio del paciente para seleccionar el `priority_level`.
-
-PASO C: Solicitar Datos y Registrar en Lista de Espera
-
-Verificar Datos: Si aún no tienes los datos del paciente, sigue el PASO 4 y 5 para obtener el `patient_id`.
-
-Agendar en Lista de Espera: Llama a la herramienta `scheduleAppointment` con los mismos parámetros de una cita normal (availability_id, patient_id, etc.) y el `priority_level` elegido. La herramienta detectará que no hay cupos y lo añadirá a la lista de espera.
-
-PASO D: Confirmación de Lista de Espera
-
-Confirmar Registro: Al recibir la respuesta exitosa (`waiting_list: true`), informa al paciente: "Perfecto. Ha sido agregado a la lista de espera con prioridad [priority_level]. Su posición actual en la lista es la número [queue_position] y su número de referencia es el [waiting_list_id]."
-
-Explicar Proceso: Añade claridad sobre el siguiente paso: "Le notificaremos por mensaje de texto o llamada en cuanto se libere un cupo para usted. No necesita volver a llamar."
-
-Cerrar: Finaliza la llamada siguiendo el PASO 7.
-
-Flujo de Consulta de Lista de Espera
-
-PASO I: Identificar Paciente
-
-Si un paciente llama para saber el estado de su solicitud en lista de espera, solicita su número de cédula y obtén su `patient_id` (siguiendo el PASO 4).
-
-PASO II: Consultar Estado
-
-Llamar Herramienta: Usa la herramienta `getWaitingListAppointments` con el `patient_id` y `status: 'pending'`.
-
-PASO III: Informar al Paciente
-
-Si la herramienta retorna una solicitud: "Señor/a [nombre], veo su solicitud en la lista de espera para [especialidad] con el/la doctor/a [doctor_name]. Su posición actual es la número [queue_position]. Aún estamos esperando que se libere un cupo, pero le notificaremos tan pronto ocurra."
-
-Si hay un cupo disponible (`can_be_reassigned: true`): "¡Buenas noticias! Justo se ha liberado un cupo. ¿Desea que le asigne la cita ahora mismo?" Si acepta, usa la herramienta `reassignWaitingListAppointments` y confirma la cita.
-
-Flujos de Manejo de Errores
-Flujo de Error A (Falla Inicial de getAvailableAppointments):
-
-Si la herramienta falla o retorna vacío, di: "Disculpe, parece que en este momento no tenemos agendas programadas en el sistema."
+## Key Files
+
+- **Backend entry**: `backend/src/server.ts`
+- **Backend routes**: `backend/src/routes/` (57 files, largest: appointments.ts ~2648 lines, availabilities.ts ~3338 lines)
+- **WhatsApp services**: `backend/src/services/WhatsApp*.ts` (13 files)
+- **Frontend router**: `frontend/src/App.tsx` (35+ lazy routes)
+- **API client**: `frontend/src/lib/api.ts`
+- **Queue optimization**: `frontend/src/pages/Queue.tsx` + `frontend/src/components/VirtualizedPatientList.tsx`
+- **MCP tools**: `mcp-server-node/src/server-unified.ts` (58 tools)
+- **PM2 configs**: `backend/ecosystem.config.js`, `mcp-server-node/ecosystem.config.js`
+- **Nginx**: `/etc/nginx/sites-enabled/biosanarcall.site`
+
+## Troubleshooting
+
+| Síntoma | Causa | Solución |
+|---|---|---|
+| 401 en API | JWT expirado | Verificar token, usar refresh |
+| CORS error | Dominio no en CORS_ORIGINS | Actualizar `.env` |
+| Webhook 401 | APP_SECRET incorrecto | Verificar HMAC con `WHATSAPP_META_APP_SECRET` |
+| Queue lenta | summary mode desactivado | Usar `?summary=true` |
+| `handleChangePriority undefined` | Props via closure en react-window | Usar `rowProps` object |
+| DB connection failed | Pool exhausted | `npm run db:check`, verificar pool size |

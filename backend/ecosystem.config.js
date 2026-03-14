@@ -32,6 +32,12 @@ module.exports = {
         REDIS_HOST: process.env.REDIS_HOST,
         REDIS_PORT: process.env.REDIS_PORT,
         REDIS_DB: process.env.REDIS_DB,
+        BACKEND_PUBLIC_URL: process.env.BACKEND_PUBLIC_URL,
+        WHATSAPP_PROVIDER: process.env.WHATSAPP_PROVIDER || 'baileys',
+        WHATSAPP_META_PHONE_NUMBER_ID: process.env.WHATSAPP_META_PHONE_NUMBER_ID,
+        WHATSAPP_META_ACCESS_TOKEN: process.env.WHATSAPP_META_ACCESS_TOKEN,
+        WHATSAPP_META_APP_SECRET: process.env.WHATSAPP_META_APP_SECRET,
+        WHATSAPP_META_VERIFY_TOKEN: process.env.WHATSAPP_META_VERIFY_TOKEN,
         // WhatsApp AI Configuration - Selector de proveedor
         // WHATSAPP_USE_GROQ=true -> Groq | WHATSAPP_USE_GROQ=false -> ChatGPT
         WHATSAPP_USE_GROQ: process.env.WHATSAPP_USE_GROQ !== undefined ? process.env.WHATSAPP_USE_GROQ : 'false',

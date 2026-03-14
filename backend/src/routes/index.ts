@@ -69,6 +69,8 @@ import transcription from './transcription';
 import wiki from './wiki';
 // Sistema de WhatsApp Bot con Baileys y DeepSeek AI
 import whatsapp from './whatsapp';
+// Sistema de WhatsApp Meta Cloud API (API oficial de Meta Business)
+import whatsappMeta from './whatsappMeta';
 // Sistema de Órdenes (vista simplificada de appointments)
 import orders from './orders';
 // Sistema de Soporte Técnico
@@ -192,6 +194,8 @@ router.use('/transcription', transcription);
 router.use('/wiki', requireAuth, wiki);
 // Sistema de WhatsApp Bot (la mayoría de endpoints requiere autenticación)
 router.use('/whatsapp', whatsapp);
+// WhatsApp Meta Cloud API — webhook público (sin JWT) + endpoints con auth
+router.use('/whatsapp/meta', whatsappMeta);
 // TODO: mount more routers as they are implemented
 
 // Endpoint para métricas de conexiones SSE activas (requiere autenticación)

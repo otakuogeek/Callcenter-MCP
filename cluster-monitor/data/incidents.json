@@ -1,0 +1,152 @@
+[
+  {
+    "id": "1773073459911-l5xl3l",
+    "timestamp": "2026-03-09T16:24:19.911Z",
+    "severity": "critical",
+    "category": "service",
+    "title": "PM2 \"foodhub-api\" caído en S1",
+    "details": "Estado: errored. Reinicios: 15",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773073499887-e0x02g",
+    "timestamp": "2026-03-09T16:24:59.887Z",
+    "severity": "resolved",
+    "category": "service",
+    "title": "PM2 \"foodhub-api\" restaurado en S1",
+    "details": "El proceso volvió a estar en línea. Reinicios: 15",
+    "resolved": true,
+    "resolvedAt": "2026-03-09T16:24:59.888Z"
+  },
+  {
+    "id": "1773156184995-4xfipr",
+    "timestamp": "2026-03-10T15:23:04.995Z",
+    "severity": "warning",
+    "category": "server",
+    "title": "CPU alto S1: 97.5%",
+    "details": "El servidor principal tiene carga de CPU elevada.",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773159126389-278eus",
+    "timestamp": "2026-03-10T16:12:06.389Z",
+    "severity": "warning",
+    "category": "server",
+    "title": "CPU alto S1: 93.5%",
+    "details": "El servidor principal tiene carga de CPU elevada.",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773171295717-77vxls",
+    "timestamp": "2026-03-10T19:34:55.717Z",
+    "severity": "warning",
+    "category": "server",
+    "title": "CPU alto S1: 90.9%",
+    "details": "El servidor principal tiene carga de CPU elevada.",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773174415921-g2ned9",
+    "timestamp": "2026-03-10T20:26:55.921Z",
+    "severity": "critical",
+    "category": "replication",
+    "title": "SQL Thread de replicación detenido",
+    "details": "Slave_SQL_Running: No. Error 'Data truncated for column 'appointment_source' at row 7938' on query. Default database: 'biosanar'. Query: 'ALTER TABLE appointments MODIFY COLUMN appointment_source ENUM('Manual','WhatsApp','Llamada','App') DEFAULT 'Manual''",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773180943188-6kgflo",
+    "timestamp": "2026-03-10T22:15:43.188Z",
+    "severity": "critical",
+    "category": "replication",
+    "title": "SQL Thread de replicación detenido",
+    "details": "Slave_SQL_Running: No. Error 'Data truncated for column 'appointment_source' at row 7938' on query. Default database: 'biosanar'. Query: 'ALTER TABLE appointments MODIFY COLUMN appointment_source ENUM('Manual','WhatsApp','Llamada','App') DEFAULT 'Manual''",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773327357243-wag4sy",
+    "timestamp": "2026-03-12T14:55:57.243Z",
+    "severity": "critical",
+    "category": "replication",
+    "title": "SQL Thread de replicación detenido",
+    "details": "Slave_SQL_Running: No. Error 'Data truncated for column 'appointment_source' at row 7938' on query. Default database: 'biosanar'. Query: 'ALTER TABLE appointments MODIFY COLUMN appointment_source ENUM('Manual','WhatsApp','Llamada','App') DEFAULT 'Manual''",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773442509992-odjm3t",
+    "timestamp": "2026-03-13T22:55:09.992Z",
+    "severity": "critical",
+    "category": "service",
+    "title": "Nginx caído en S1",
+    "details": "El balanceador de carga dejó de funcionar.",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773442519947-6mqv25",
+    "timestamp": "2026-03-13T22:55:19.947Z",
+    "severity": "resolved",
+    "category": "service",
+    "title": "Nginx restaurado en S1",
+    "details": "El balanceador volvió a funcionar.",
+    "resolved": true,
+    "resolvedAt": "2026-03-13T22:55:19.947Z"
+  },
+  {
+    "id": "1773443300018-zi1i5k",
+    "timestamp": "2026-03-13T23:08:20.018Z",
+    "severity": "critical",
+    "category": "service",
+    "title": "Nginx caído en S1",
+    "details": "El balanceador de carga dejó de funcionar.",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773443310012-ynxgj9",
+    "timestamp": "2026-03-13T23:08:30.012Z",
+    "severity": "resolved",
+    "category": "service",
+    "title": "Nginx restaurado en S1",
+    "details": "El balanceador volvió a funcionar.",
+    "resolved": true,
+    "resolvedAt": "2026-03-13T23:08:30.012Z"
+  },
+  {
+    "id": "1773470322722-1b5ruv",
+    "timestamp": "2026-03-14T06:38:42.722Z",
+    "severity": "warning",
+    "category": "database",
+    "title": "MariaDB caído en S2 (Slave)",
+    "details": "La base de datos réplica dejó de responder.",
+    "resolved": false,
+    "resolvedAt": null
+  },
+  {
+    "id": "1773470331482-prvllz",
+    "timestamp": "2026-03-14T06:38:51.482Z",
+    "severity": "resolved",
+    "category": "database",
+    "title": "MariaDB restaurado en S2 (Slave)",
+    "details": "La base de datos réplica volvió a funcionar.",
+    "resolved": true,
+    "resolvedAt": "2026-03-14T06:38:51.482Z"
+  },
+  {
+    "id": "1773472407776-8yt28h",
+    "timestamp": "2026-03-14T07:13:27.776Z",
+    "severity": "critical",
+    "category": "replication",
+    "title": "SQL Thread de replicación detenido",
+    "details": "Slave_SQL_Running: No. Error 'Data truncated for column 'appointment_source' at row 7938' on query. Default database: 'biosanar'. Query: 'ALTER TABLE appointments MODIFY COLUMN appointment_source ENUM('Manual','WhatsApp','Llamada','App') DEFAULT 'Manual''",
+    "resolved": false,
+    "resolvedAt": null
+  }
+]

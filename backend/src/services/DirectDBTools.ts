@@ -517,6 +517,7 @@ export async function getAvailableAppointments(args: {
           doctor_name: r.doctor_name,
           doctor_id: r.doctor_id,
           sede: r.location_name,
+          location_id: r.location_id,
           location_name: r.location_name,
           direccion_sede: r.location_address,
           cupos: r.slots_available,
@@ -958,7 +959,9 @@ export async function scheduleAppointment(args: {
   cups_code?: string;
   cups_manual_name?: string;
   create_double_appointment?: boolean;
+  appointment_source?: 'WhatsApp' | 'Llamada' | 'Manual' | 'App';
 }): Promise<any> {
+  const appointmentSource = args.appointment_source || 'WhatsApp';
   const startTime = Date.now();
   
   logger.info({ args }, 'scheduleAppointment: creating appointment with extended options');
@@ -1108,7 +1111,7 @@ export async function scheduleAppointment(args: {
       let cups_id = null;
       if (args.cups_code) {
         const [cupsRows] = await connection.execute<RowDataPacket[]>(`
-          SELECT id FROM cups WHERE code = ? AND is_active = 1 LIMIT 1
+          SELECT id FROM cups WHERE code = ? AND status = 'Activo' LIMIT 1
         `, [args.cups_code.trim()]);
         
         if (cupsRows.length > 0) {
@@ -1117,8 +1120,8 @@ export async function scheduleAppointment(args: {
         } else if (args.cups_manual_name) {
           // Registrar CUPS manualmente si no existe
           const [insertResult] = await connection.execute<ResultSetHeader>(`
-            INSERT INTO cups (code, name, is_active) 
-            VALUES (?, ?, 1)
+            INSERT INTO cups (code, name, status) 
+            VALUES (?, ?, 'Activo')
           `, [args.cups_code.trim(), args.cups_manual_name]);
           cups_id = insertResult.insertId;
           logger.info({ cups_code: args.cups_code, cups_id, manual: true }, 'CUPS registered manually');
@@ -1181,7 +1184,7 @@ export async function scheduleAppointment(args: {
         INSERT INTO appointments 
         (patient_id, doctor_id, specialty_id, location_id, availability_id, 
          scheduled_at, duration_minutes, reason, cups_id, status, appointment_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?)
       `, [
         args.patient_id,
         avail.doctor_id,
@@ -1191,7 +1194,8 @@ export async function scheduleAppointment(args: {
         `${dateStr} ${scheduledTime}`,
         duration,
         args.reason || '',
-        cups_id
+        cups_id,
+        appointmentSource
       ]);
 
       const appointmentId = result.insertId;
@@ -1224,7 +1228,7 @@ export async function scheduleAppointment(args: {
               INSERT INTO appointments (
                 patient_id, doctor_id, specialty_id, location_id, availability_id,
                 scheduled_at, duration_minutes, reason, cups_id, status, appointment_source
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente')
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?)
             `, [
               args.patient_id,
               avail.doctor_id,
@@ -1234,7 +1238,8 @@ export async function scheduleAppointment(args: {
               `${dateStr} ${nextTime}`,
               duration,
               `${args.reason || ''} (cita doble)`,
-              cups_id
+              cups_id,
+              appointmentSource
             ]);
 
             secondAppointmentId = secondResult.insertId;
@@ -1571,11 +1576,13 @@ export async function getAuthorizedSpecialtiesForEPS(args: {
       // Obtener especialidades autorizadas (usa la vista v_eps_authorizations que valida fechas)
       const [rows] = await connection.execute<RowDataPacket[]>(`
         SELECT DISTINCT 
-          specialty_id,
-          specialty_name
-        FROM v_eps_authorizations
-        WHERE eps_id = ? AND authorized = 1 AND is_currently_valid = 1
-        ORDER BY specialty_name
+          va.specialty_id,
+          va.specialty_name,
+          COALESCE(s.allows_double_appointment, 0) AS allows_double_appointment
+        FROM v_eps_authorizations va
+        JOIN specialties s ON va.specialty_id = s.id
+        WHERE va.eps_id = ? AND va.authorized = 1 AND va.is_currently_valid = 1
+        ORDER BY va.specialty_name
       `, [eps_id]);
 
       const elapsed = Date.now() - startTime;
@@ -1686,7 +1693,7 @@ export async function getCUPSInfo(args: {
           name AS cups_name,
           description
         FROM cups
-        WHERE code = ? AND is_active = 1
+        WHERE code = ? AND status = 'Activo'
         LIMIT 1
       `, [cups_code]);
 
@@ -2196,7 +2203,7 @@ export async function scheduleDoubleAppointment(args: {
         INSERT INTO appointments 
         (patient_id, doctor_id, specialty_id, location_id, availability_id, 
          scheduled_at, duration_minutes, reason, status, appointment_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente')
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?)
       `, [
         args.patient_id,
         avail.doctor_id,
@@ -2205,7 +2212,8 @@ export async function scheduleDoubleAppointment(args: {
         args.availability_id,
         `${dateStr} ${scheduledTimeUTC1}`,
         duration,
-        reason1
+        reason1,
+        appointmentSource
       ]);
 
       // Insertar segunda cita
@@ -2213,7 +2221,7 @@ export async function scheduleDoubleAppointment(args: {
         INSERT INTO appointments 
         (patient_id, doctor_id, specialty_id, location_id, availability_id, 
          scheduled_at, duration_minutes, reason, status, appointment_source, related_appointment_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', 'Sistema_Inteligente', ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?)
       `, [
         args.patient_id,
         avail.doctor_id,
@@ -2223,6 +2231,7 @@ export async function scheduleDoubleAppointment(args: {
         `${dateStr} ${scheduledTimeUTC2}`,
         duration,
         reason2,
+        appointmentSource,
         result1.insertId // Relacionar con primera cita
       ]);
 

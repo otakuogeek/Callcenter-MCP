@@ -26,7 +26,8 @@ import {
   FileText,
   MoreVertical,
   CheckCircle,
-  XCircle
+  XCircle,
+  CalendarX
 } from 'lucide-react';
 import { 
   Patient, 
@@ -57,7 +58,8 @@ export const PatientCard = ({
   const [isHovered, setIsHovered] = useState(false);
   
   const initials = getInitials(patient.name);
-  const avatarColor = getAvatarColor(patient.id);
+  const hasNoAppointments = patient.appointment_count === 0;
+  const avatarColor = hasNoAppointments ? '#9CA3AF' : getAvatarColor(patient.id);
   const age = patient.birth_date ? calculateAge(patient.birth_date) : null;
   const formattedDate = patient.created_at 
     ? format(new Date(patient.created_at), "d 'de' MMM, yyyy", { locale: es })
@@ -69,12 +71,13 @@ export const PatientCard = ({
         relative overflow-hidden transition-all duration-300 hover:shadow-xl
         ${isHovered ? 'scale-105 shadow-2xl' : 'shadow-md'}
         ${patient.status === 'Inactivo' ? 'opacity-75' : ''}
+        ${hasNoAppointments ? 'grayscale opacity-60' : ''}
       `}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
     >
       {/* Badge de estado en esquina superior derecha */}
-      <div className="absolute top-2 right-2 z-10">
+      <div className="absolute top-2 right-2 z-10 flex flex-col items-end gap-1">
         {patient.status === 'Activo' ? (
           <Badge variant="default" className="bg-green-500 hover:bg-green-600">
             <CheckCircle className="w-3 h-3 mr-1" />
@@ -84,6 +87,12 @@ export const PatientCard = ({
           <Badge variant="secondary" className="bg-gray-400">
             <XCircle className="w-3 h-3 mr-1" />
             Inactivo
+          </Badge>
+        )}
+        {hasNoAppointments && (
+          <Badge variant="secondary" className="bg-gray-300 text-gray-600 text-xs">
+            <CalendarX className="w-3 h-3 mr-1" />
+            Sin citas
           </Badge>
         )}
       </div>

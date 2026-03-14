@@ -26,7 +26,7 @@ export interface AppointmentComplete {
   priority_level?: 'Baja' | 'Normal' | 'Alta' | 'Urgente'; // Nivel de prioridad
   insurance_company?: string; // VARCHAR(100) - Compañía de seguros específica
   insurance_policy_number?: string; // VARCHAR(50) - Número de póliza
-  appointment_source?: 'Manual' | 'Sistema_Inteligente' | 'Llamada' | 'Web' | 'App'; // Origen de la cita
+  appointment_source?: 'Manual' | 'WhatsApp' | 'Llamada' | 'App'; // Origen de la cita
   reminder_sent?: boolean; // TINYINT(1) - Si se envió recordatorio
   reminder_sent_at?: string; // timestamp - Fecha de envío de recordatorio
   preferred_time?: string; // VARCHAR(50) - Horario preferido del paciente
@@ -61,7 +61,7 @@ export interface AppointmentCreate {
   priority_level?: 'Baja' | 'Normal' | 'Alta' | 'Urgente';
   insurance_company?: string;
   insurance_policy_number?: string;
-  appointment_source?: 'Manual' | 'Sistema_Inteligente' | 'Llamada' | 'Web' | 'App';
+  appointment_source?: 'Manual' | 'WhatsApp' | 'Llamada' | 'App';
   preferred_time?: string;
   symptoms?: string;
   allergies?: string;
@@ -95,7 +95,7 @@ export interface AppointmentUpdate {
   priority_level?: 'Baja' | 'Normal' | 'Alta' | 'Urgente';
   insurance_company?: string;
   insurance_policy_number?: string;
-  appointment_source?: 'Manual' | 'Sistema_Inteligente' | 'Llamada' | 'Web' | 'App';
+  appointment_source?: 'Manual' | 'WhatsApp' | 'Llamada' | 'App';
   reminder_sent?: boolean;
   reminder_sent_at?: string;
   preferred_time?: string;
@@ -175,7 +175,7 @@ export interface AppointmentFormData {
   preferredTime: string;
   
   // Metadatos
-  appointmentSource: 'Manual' | 'Sistema_Inteligente' | 'Llamada' | 'Web' | 'App';
+  appointmentSource: 'Manual' | 'WhatsApp' | 'Llamada' | 'App';
 }
 
 // Interface para validación de formularios
@@ -215,7 +215,7 @@ export interface PaymentMethodOption {
 }
 
 export interface AppointmentSourceOption {
-  value: 'Manual' | 'Sistema_Inteligente' | 'Llamada' | 'Web' | 'App';
+  value: 'Manual' | 'WhatsApp' | 'Llamada' | 'App';
   label: string;
   description?: string;
 }
@@ -243,9 +243,8 @@ export const PAYMENT_METHOD_OPTIONS: PaymentMethodOption[] = [
 
 export const APPOINTMENT_SOURCE_OPTIONS: AppointmentSourceOption[] = [
   { value: 'Manual', label: 'Manual', description: 'Creada manualmente por usuario' },
-  { value: 'Sistema_Inteligente', label: 'Sistema Inteligente', description: 'Asignada automáticamente' },
+  { value: 'WhatsApp', label: 'WhatsApp', description: 'Agendada por WhatsApp' },
   { value: 'Llamada', label: 'Llamada', description: 'Agendada por teléfono' },
-  { value: 'Web', label: 'Web', description: 'Agendada desde sitio web' },
   { value: 'App', label: 'App', description: 'Agendada desde aplicación móvil' },
 ];
 

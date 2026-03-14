@@ -248,7 +248,7 @@ router.post('/public/add-to-waiting-list', async (req, res) => {
         requested_by,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, 'Normal', 'pending', 'Portal Público', NOW(), NOW())`,
+      ) VALUES (?, ?, ?, 'Normal', 'pending', 'Manual', NOW(), NOW())`,
       [patient_id, specialty_id, reason || 'Consulta general']
     );
 
@@ -363,7 +363,7 @@ router.post('/public/add-to-waiting-list-with-cups', async (req, res) => {
       `INSERT INTO appointments_waiting_list (
         patient_id, specialty_id, cups_id, reason, priority_level, 
         status, requested_by, created_at, updated_at
-      ) VALUES (?, ?, NULL, ?, 'Normal', 'pending', 'Portal Público', NOW(), NOW())`,
+      ) VALUES (?, ?, NULL, ?, 'Normal', 'pending', 'Manual', NOW(), NOW())`,
       [patient_id, specialty_id, finalReason]
     );
     
@@ -2279,7 +2279,7 @@ router.post('/public/schedule-appointment', async (req, res) => {
         patient_id, specialty_id, doctor_id, location_id, availability_id, cups_id,
         scheduled_at, duration_minutes, appointment_type, status, reason,
         appointment_source, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Presencial', 'Confirmada', ?, 'Web', NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Presencial', 'Confirmada', ?, 'Manual', NOW())`,
       [
         patient_id, specialty_id, doctor_id, location_id, availability_id,
         cups_id || null, scheduledAtString, duration_minutes, 
@@ -2302,7 +2302,7 @@ router.post('/public/schedule-appointment', async (req, res) => {
           patient_id, specialty_id, doctor_id, location_id, availability_id, cups_id,
           scheduled_at, duration_minutes, appointment_type, status, reason,
           appointment_source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Presencial', 'Confirmada', ?, 'Web', NOW())`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Presencial', 'Confirmada', ?, 'Manual', NOW())`,
         [
           patient_id, specialty_id, doctor_id, location_id, availability_id,
           cups_id || null, secondScheduledAtString, duration_minutes,

@@ -2257,7 +2257,8 @@ export async function processWhatsAppMessage(
           scheduled_date: stateContext.scheduledDatetime,
           reason: reason,
           appointment_type: 'Presencial',
-          priority_level: 'Normal'
+          priority_level: 'Normal',
+          appointment_source: 'WhatsApp'
         });
 
         if (scheduleResult.success) {
@@ -4218,7 +4219,8 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
               patient_id: stateForValidation.patientId,
               availability_id: stateForValidation.availabilityId,
               appointment_type: 'Presencial',
-              priority_level: 'Normal'
+              priority_level: 'Normal',
+              appointment_source: 'WhatsApp'
             };
 
             // Agregar fecha si está disponible
@@ -4361,7 +4363,8 @@ DEBES solicitar los datos para registrarlo. Responde EXACTAMENTE con:
             availability_id: finalStateCheck.availabilityId,
             patient_id: finalStateCheck.patientId,
             reason: finalStateCheck.specialtyName ? `Consulta de ${finalStateCheck.specialtyName}` : 'Consulta médica',
-            priority_level: 'Normal'
+            priority_level: 'Normal',
+            appointment_source: 'WhatsApp'
           };
 
           if (finalStateCheck.scheduledDatetime) {
@@ -4960,7 +4963,7 @@ async function executeToolCall(
           }
         }, '📋 Args finales para scheduleAppointment');
 
-        result = await DirectDBTools.scheduleAppointment(args as any);
+        result = await DirectDBTools.scheduleAppointment({ ...args, appointment_source: 'WhatsApp' } as any);
 
         // ⚠️ REGISTRAR CITA EN PERSISTENCIA SI FUE EXITOSA
         if (result.success && result.data?.appointment_id && context.phone) {

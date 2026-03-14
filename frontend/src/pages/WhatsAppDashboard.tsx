@@ -24,7 +24,12 @@ import {
   ArrowLeft,
   User,
   Clock,
-  Mic
+  Mic,
+  Cloud,
+  Copy,
+  ExternalLink,
+  ShieldCheck,
+  AlertCircle
 } from "lucide-react";
 import api from "@/lib/api";
 
@@ -47,6 +52,7 @@ interface WhatsAppStatus {
     activeConversations: number;
   };
   config: {
+    whatsappProvider?: 'baileys' | 'meta';
     aiProvider: string;
     aiModel: string;
     autoReply: boolean;
@@ -82,6 +88,18 @@ const WhatsAppDashboard = () => {
   const [selectedChat, setSelectedChat] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [showSidebar, setShowSidebar] = useState(true);
+  // Provider override: allow switching between meta/baileys from the UI
+  const [providerOverride, setProviderOverride] = useState<'baileys' | 'meta' | null>(() => {
+    const saved = localStorage.getItem('wa_provider_override');
+    return (saved === 'meta' || saved === 'baileys') ? saved : null;
+  });
+
+  const activeProvider = providerOverride ?? status?.config?.whatsappProvider ?? 'baileys';
+
+  const handleProviderSwitch = (p: 'baileys' | 'meta') => {
+    setProviderOverride(p);
+    localStorage.setItem('wa_provider_override', p);
+  };
   
   // Chat states
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -412,7 +430,171 @@ const WhatsAppDashboard = () => {
     );
   }
 
-  // QR Screen - when not connected
+  // ──────────────────────────────────────────────────────────────────────────
+  // Pantalla META CLOUD API (proveedor = 'meta')
+  // Sin código QR — se conecta vía credenciales del Portal Meta Business
+  // ──────────────────────────────────────────────────────────────────────────
+  if (activeProvider === 'meta') {
+    const metaConfigured = !!(
+      status?.connected || 
+      // Si no hay info de connected en meta, detectar si tiene config básica
+      false
+    );
+    const webhookUrl = `${window.location.origin.replace(':8080','')}/api/whatsapp/meta/webhook`;
+
+    return (
+      <SidebarProvider>
+        <div className="min-h-screen flex w-full bg-gray-50">
+          <AppSidebar />
+          <main className="flex-1 p-6 overflow-auto">
+            {/* Header */}
+            <div className="mb-6 flex items-center gap-3">
+              <div className="w-12 h-12 bg-[#1877F2] rounded-xl flex items-center justify-center">
+                <Cloud className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-gray-800">WhatsApp Business Cloud API</h1>
+                <p className="text-sm text-gray-500">Integración oficial de Meta — sin escaneo QR</p>
+              </div>
+              <Badge className={`ml-auto ${status?.connected ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
+                {status?.connected ? '✅ Activo' : '⚙️ Configuración pendiente'}
+              </Badge>
+              {/* Provider switcher */}
+              <div className="flex items-center gap-1 ml-3 bg-gray-100 rounded-lg p-1">
+                <button
+                  onClick={() => handleProviderSwitch('meta')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${activeProvider === 'meta' ? 'bg-[#1877F2] text-white shadow' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  Meta API
+                </button>
+                <button
+                  onClick={() => handleProviderSwitch('baileys')}
+                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${activeProvider === 'baileys' ? 'bg-green-600 text-white shadow' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  WhatsApp Web
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-4xl">
+              {/* Estado de configuración */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                <h2 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-[#1877F2]" />
+                  Estado de configuración
+                </h2>
+                <div className="space-y-3 text-sm">
+                  {[
+                    { label: 'Phone Number ID', env: 'WHATSAPP_META_PHONE_NUMBER_ID' },
+                    { label: 'Access Token', env: 'WHATSAPP_META_ACCESS_TOKEN' },
+                    { label: 'App Secret', env: 'WHATSAPP_META_APP_SECRET' },
+                    { label: 'Verify Token', env: 'WHATSAPP_META_VERIFY_TOKEN' },
+                  ].map(({ label }) => (
+                    <div key={label} className="flex items-center justify-between">
+                      <span className="text-gray-600">{label}</span>
+                      <span className={`font-medium ${status.connected ? 'text-green-600' : 'text-amber-600'}`}>
+                        {status.connected ? '✅ Configurado' : '⚠️ Verificar .env'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* URL del Webhook */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                <h2 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
+                  <ExternalLink className="w-4 h-4 text-[#1877F2]" />
+                  URL del Webhook
+                </h2>
+                <p className="text-xs text-gray-500 mb-2">Configura esta URL en el Portal Meta Business:</p>
+                <div className="bg-gray-50 rounded-lg p-3 flex items-center gap-2 border border-gray-200">
+                  <code className="text-xs text-gray-700 flex-1 break-all">{webhookUrl}</code>
+                  <button
+                    className="shrink-0 text-gray-400 hover:text-gray-700"
+                    title="Copiar URL"
+                    onClick={() => {
+                      navigator.clipboard.writeText(webhookUrl);
+                    }}
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+                <p className="text-xs text-gray-400 mt-3">
+                  Suscríbete al campo <strong>messages</strong> en Meta → WhatsApp → Webhook
+                </p>
+              </div>
+
+              {/* Variables de entorno */}
+              <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 md:col-span-2">
+                <h2 className="font-semibold text-gray-700 mb-4 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-[#1877F2]" />
+                  Variables de entorno requeridas (.env del backend)
+                </h2>
+                <pre className="bg-gray-900 text-green-400 text-xs rounded-lg p-4 overflow-x-auto">
+{`# Proveedor de WhatsApp
+WHATSAPP_PROVIDER=meta
+
+# Credenciales de Meta Business Platform
+WHATSAPP_META_PHONE_NUMBER_ID=<ID del número en Meta Business>
+WHATSAPP_META_ACCESS_TOKEN=<Token de acceso permanente>
+WHATSAPP_META_APP_SECRET=<Secreto de la aplicación>
+WHATSAPP_META_VERIFY_TOKEN=<Token personalizado para webhook>
+
+# URL pública del backend (para mostrar la URL del webhook)
+BACKEND_PUBLIC_URL=https://biosanarcall.site`}
+                </pre>
+              </div>
+
+              {/* Estadísticas (si hay datos) */}
+              {status.stats && (
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5 md:col-span-2">
+                  <h2 className="font-semibold text-gray-700 mb-4">Estadísticas de hoy</h2>
+                  <div className="grid grid-cols-3 gap-4 text-center">
+                    <div>
+                      <p className="text-2xl font-bold text-gray-800">{status.stats.todayMessages}</p>
+                      <p className="text-xs text-gray-500">Total mensajes</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-green-600">{status.stats.inboundMessages}</p>
+                      <p className="text-xs text-gray-500">Recibidos</p>
+                    </div>
+                    <div>
+                      <p className="text-2xl font-bold text-blue-600">{status.stats.outboundMessages}</p>
+                      <p className="text-xs text-gray-500">Enviados</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Enlace al portal Meta */}
+              <div className="md:col-span-2 flex gap-3">
+                <a
+                  href="https://developers.facebook.com/apps"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-[#1877F2] hover:underline"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Abrir Meta for Developers
+                </a>
+                <a
+                  href="https://business.facebook.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-2 text-sm text-[#1877F2] hover:underline"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Meta Business Suite
+                </a>
+              </div>
+            </div>
+          </main>
+        </div>
+      </SidebarProvider>
+    );
+  }
+
+  // QR Screen - when not connected (Baileys provider)
   if (!status?.connected) {
     return (
       <SidebarProvider>
@@ -420,6 +602,21 @@ const WhatsAppDashboard = () => {
           <AppSidebar />
           <main className="flex-1 flex items-center justify-center p-8">
             <div className="bg-white rounded-2xl p-8 max-w-md w-full text-center shadow-xl">
+            {/* Provider switcher */}
+            <div className="flex items-center justify-center gap-1 mb-6 bg-gray-100 rounded-lg p-1 w-fit mx-auto">
+              <button
+                onClick={() => handleProviderSwitch('meta')}
+                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1 ${activeProvider === 'meta' ? 'bg-[#1877F2] text-white shadow' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <Cloud className="w-3 h-3" /> Meta API
+              </button>
+              <button
+                onClick={() => handleProviderSwitch('baileys')}
+                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors flex items-center gap-1 ${activeProvider === 'baileys' ? 'bg-green-600 text-white shadow' : 'text-gray-500 hover:text-gray-700'}`}
+              >
+                <Smartphone className="w-3 h-3" /> WhatsApp Web
+              </button>
+            </div>
             {/* Logo */}
             <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-6">
               <MessageCircle className="w-10 h-10 text-white" />

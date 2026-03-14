@@ -14,6 +14,8 @@ export enum ConversationState {
   AWAITING_DATE = 'awaiting_date',
   AWAITING_TIME_PREFERENCE = 'awaiting_time_preference',
   AWAITING_TIME = 'awaiting_time',
+  AWAITING_CUPS = 'awaiting_cups',
+  AWAITING_DOUBLE_APPOINTMENT = 'awaiting_double_appointment',
   AWAITING_REASON = 'awaiting_reason',
   AWAITING_CONFIRMATION = 'awaiting_confirmation',
   CHECKING_APPOINTMENTS = 'checking_appointments',
@@ -36,7 +38,25 @@ export interface StateContext {
   patientName?: string;
   patientDocument?: string;
   patientPhone?: string;
+  patientBirthDate?: string;
+  patientGender?: string;
+  patientAge?: number;
+  patientEpsId?: number;
+  patientEpsName?: string;
   registrationPending?: boolean;
+
+  // Registration step-by-step fields
+  regStep?: 'name' | 'birth_date' | 'gender' | 'phone' | 'eps' | 'confirm';
+  regName?: string;
+  regBirthDate?: string;
+  regGender?: string;
+  regPhone?: string;
+  regEpsId?: number;
+  regEpsName?: string;
+
+  // Preferencias recopiladas durante la conversación
+  modalityPreference?: 'presencial' | 'virtual' | 'any';
+  waitingListIntent?: boolean;
 
   // Solicitante (quien chatea — puede ser distinto al beneficiario)
   isThirdParty?: boolean;
@@ -56,6 +76,22 @@ export interface StateContext {
   // Ubicación
   selectedLocation?: string;
   selectedLocationId?: number;
+  availableLocations?: Array<{ location_id: number; location_name: string }>;
+
+  // EPS Authorization
+  authorizedSpecialties?: Array<{ specialty_id: number; specialty_name: string; allows_double_appointment?: boolean }>;
+
+  // Cita doble
+  allowsDoubleAppointment?: boolean;
+  isDoubleAppointment?: boolean;
+  // Appointments cached before double question
+  pendingAppointments?: any[];
+  pendingLocationName?: string;
+
+  // CUPS (Ecografías)
+  cupsCode?: string;
+  cupsName?: string;
+  cupsId?: number;
 
   // Fecha/Hora
   selectedDate?: string;

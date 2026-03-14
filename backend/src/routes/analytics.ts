@@ -308,24 +308,26 @@ router.get('/appointments', requireAuth, async (req: Request, res: Response) => 
     `, [start_date, end_date]);
 
     const sourceData = {
-      web: 0,
-      phone: 0,
-      system: 0
+      manual: 0,
+      llamada: 0,
+      whatsapp: 0,
+      app: 0
     };
 
     sourceStats.forEach((stat: any) => {
       switch(stat.appointment_source) {
-        case 'Web':
-          sourceData.web = stat.count;
+        case 'Manual':
+          sourceData.manual = stat.count;
           break;
         case 'Llamada':
-          sourceData.phone = stat.count;
+          sourceData.llamada = stat.count;
           break;
-        case 'Sistema_Inteligente':
-          sourceData.system = stat.count;
+        case 'WhatsApp':
+          sourceData.whatsapp = stat.count;
           break;
-        default:
-          sourceData.system += stat.count; // Otros tipos van a sistema
+        case 'App':
+          sourceData.app = stat.count;
+          break;
       }
     });
 
@@ -343,9 +345,10 @@ router.get('/appointments', requireAuth, async (req: Request, res: Response) => 
 
     const dailyData = dailyStats.map((stat: any) => ({
       date: stat.date.toISOString().split('T')[0],
-      web: Math.floor(stat.total * 0.4),
-      phone: Math.floor(stat.total * 0.5),
-      system: Math.floor(stat.total * 0.1),
+      manual: Math.floor(stat.total * 0.4),
+      llamada: Math.floor(stat.total * 0.3),
+      whatsapp: Math.floor(stat.total * 0.2),
+      app: Math.floor(stat.total * 0.1),
       total: stat.total
     }));
 

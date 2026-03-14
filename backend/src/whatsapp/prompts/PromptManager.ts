@@ -100,6 +100,16 @@ export function generateDynamicContext(stateContext: StateContext, phone?: strin
   if (stateContext.patientId) {
     lines.push(`✅ **Paciente:** ${stateContext.patientName || 'Identificado'} (ID: ${stateContext.patientId})`);
     if (stateContext.patientDocument) lines.push(`   Documento: ${stateContext.patientDocument}`);
+    if ((stateContext as any).patientAge) lines.push(`   Edad: ${(stateContext as any).patientAge} años`);
+    if ((stateContext as any).patientGender) lines.push(`   Género: ${(stateContext as any).patientGender === 'M' ? 'Masculino' : (stateContext as any).patientGender === 'F' ? 'Femenino' : (stateContext as any).patientGender}`);
+    if ((stateContext as any).patientEpsName) lines.push(`   EPS: ${(stateContext as any).patientEpsName}`);
+    // Eligibility reminders for AI
+    if ((stateContext as any).patientGender === 'M') {
+      lines.push('   ⚠️ Género MASCULINO → NO ofrecer Ginecología ni Control Prenatal');
+    }
+    if ((stateContext as any).patientAge && (stateContext as any).patientAge > 17) {
+      lines.push(`   ⚠️ Mayor de 17 años (${(stateContext as any).patientAge}) → NO ofrecer Pediatría`);
+    }
     lines.push('   → NO pidas cédula de nuevo');
   } else {
     lines.push('❌ **Paciente:** No identificado → Pedir cédula');

@@ -293,6 +293,8 @@ const INTENT_PATTERNS: Record<string, { patterns: RegExp[]; weight: number }> = 
   'schedule': {
     patterns: [
       /quiero( una)?( la)? cita/i,
+      /(me )?gustar[ií]a( una)?( la)? cita/i,
+      /quisiera( una)?( la)? cita/i,
       /necesito (una )?cita/i,
       /agendar(me)?( una)?( cita)?/i,
       /sacar( una)? cita/i,

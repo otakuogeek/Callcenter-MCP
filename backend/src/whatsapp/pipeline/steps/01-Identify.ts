@@ -35,12 +35,50 @@ export async function identifyStep(ctx: PipelineContext): Promise<PipelineContex
 
       const current = getStateContext(phone);
       if (!current.patientId) {
-        updateState(phone, ConversationState.AWAITING_SPECIALTY, {
+        const stateUpdate: Record<string, any> = {
           patientId: patient.patientId,
           patientName: patient.fullName,
           patientDocument: patient.documentNumber,
           patientPhone: patient.phone,
-        });
+        };
+
+        // Enrich with demographic data if not already present (needed for specialty validation)
+        if (!current.patientGender && patient.documentNumber) {
+          try {
+            const profileResult = await DirectDBTools.searchPatient({ document: patient.documentNumber });
+            if (profileResult.success && profileResult.data?.found) {
+              const p = profileResult.data.patient;
+              if (p?.birth_date) {
+                const birth = new Date(p.birth_date);
+                const today = new Date();
+                let age = today.getFullYear() - birth.getFullYear();
+                const m = today.getMonth() - birth.getMonth();
+                if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--;
+                stateUpdate.patientAge = age;
+                stateUpdate.patientBirthDate = p.birth_date;
+              }
+              if (p?.gender) stateUpdate.patientGender = p.gender;
+              if (p?.insurance_eps_id) stateUpdate.patientEpsId = p.insurance_eps_id;
+              if (p?.eps_name) stateUpdate.patientEpsName = p.eps_name;
+
+              // Load EPS-authorized specialties for filtering
+              if (p?.insurance_eps_id) {
+                try {
+                  const epsAuth = await DirectDBTools.getAuthorizedSpecialtiesForEPS({ eps_id: p.insurance_eps_id });
+                  if (epsAuth.success && epsAuth.authorized_specialties?.length > 0) {
+                    stateUpdate.authorizedSpecialties = epsAuth.authorized_specialties;
+                  }
+                } catch (e) { /* non-critical */ }
+              }
+            }
+          } catch (e) { /* non-critical, ignore */ }
+        }
+
+        // Always ask "for whom" — save requestor and go to AWAITING_BENEFICIARY
+        stateUpdate.requestorPatientId = stateUpdate.patientId;
+        stateUpdate.requestorPatientName = stateUpdate.patientName;
+        stateUpdate.requestorPatientDocument = stateUpdate.patientDocument;
+        updateState(phone, ConversationState.AWAITING_BENEFICIARY, stateUpdate);
       }
     }
   } catch (err) {
@@ -52,8 +90,9 @@ export async function identifyStep(ctx: PipelineContext): Promise<PipelineContex
   const cleanMessage = message.replace(/[.\-\s,]/g, '');
   const cedMatch = cleanMessage.match(/^(\d{6,12})$/);
 
-  // Allow cedula detection in AWAITING_BENEFICIARY state even if patientId already set
-  const isBeneficiaryFlow = stateContext.currentState === ConversationState.AWAITING_BENEFICIARY;
+  // Allow cedula detection in AWAITING_BENEFICIARY or AWAITING_DOCUMENT state even if patientId already set
+  const isBeneficiaryFlow = stateContext.currentState === ConversationState.AWAITING_BENEFICIARY
+    || stateContext.currentState === ConversationState.AWAITING_DOCUMENT;
 
   if (cedMatch && (!stateContext.patientId || isBeneficiaryFlow)) {
     const document = cedMatch[1];
@@ -68,21 +107,72 @@ export async function identifyStep(ctx: PipelineContext): Promise<PipelineContex
       const patientId = patient?.id;
       const patientEps = patient?.eps_name || patient?.eps || '';
 
+      // Calcular edad del paciente para validaciones de especialidad
+      let patientAge: number | undefined;
+      if (patient?.birth_date) {
+        const birth = new Date(patient.birth_date);
+        const today = new Date();
+        patientAge = today.getFullYear() - birth.getFullYear();
+        const m = today.getMonth() - birth.getMonth();
+        if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) patientAge--;
+      }
+
       if (isBeneficiaryFlow) {
         // Beneficiary found — set as the appointment patient, keep requestor saved
-        updateState(phone, ConversationState.AWAITING_SPECIALTY, {
+        const beneficiaryUpdate: Record<string, any> = {
           patientId, patientName, patientDocument: document, patientPhone,
+          patientBirthDate: patient?.birth_date,
+          patientGender: patient?.gender,
+          patientAge,
+          patientEpsId: patient?.insurance_eps_id,
+          patientEpsName: patient?.eps_name,
           isThirdParty: true,
-        });
+        };
+
+        // Load EPS-authorized specialties for the beneficiary
+        if (patient?.insurance_eps_id) {
+          try {
+            const epsAuth = await DirectDBTools.getAuthorizedSpecialtiesForEPS({ eps_id: patient.insurance_eps_id });
+            if (epsAuth.success && epsAuth.authorized_specialties?.length > 0) {
+              beneficiaryUpdate.authorizedSpecialties = epsAuth.authorized_specialties;
+            }
+          } catch (e) { /* non-critical */ }
+        }
+
+        updateState(phone, ConversationState.AWAITING_SPECIALTY, beneficiaryUpdate);
         ctx.executedTools.push({ name: 'searchPatient', result: `Beneficiary found: ${patientName}` });
         const firstName = patientName?.split(' ')[0] || 'paciente';
-        ctx.earlyResponse = `¡Listo! 😊 Encontré a ${firstName}. ¿Para qué especialidad necesita la cita?`;
+
+        // Build specialty list message
+        const authSpecs = beneficiaryUpdate.authorizedSpecialties;
+        let specialtyMsg: string;
+        if (authSpecs && authSpecs.length > 0) {
+          specialtyMsg = `Estas son las especialidades disponibles para su EPS:\n\n`;
+          authSpecs.forEach((s: any, i: number) => { specialtyMsg += `${i + 1}. ${s.specialty_name}\n`; });
+          specialtyMsg += '\n¿Cuál especialidad necesita? Responde con el número o el nombre. 😊';
+        } else {
+          specialtyMsg = '¿Para qué especialidad necesita la cita?';
+        }
+
+        ctx.earlyResponse = `¡Listo! 😊 Encontré a *${firstName}*.\n\n${specialtyMsg}`;
         ctx.intent = 'identification';
         return ctx;
       }
 
       updateState(phone, ConversationState.AWAITING_PHONE_CONFIRMATION, {
         patientId, patientName, patientDocument: document, patientPhone,
+        patientBirthDate: patient?.birth_date,
+        patientGender: patient?.gender,
+        patientAge,
+        patientEpsId: patient?.insurance_eps_id,
+        patientEpsName: patient?.eps_name,
+        authorizedSpecialties: await (async () => {
+          if (!patient?.insurance_eps_id) return undefined;
+          try {
+            const epsAuth = await DirectDBTools.getAuthorizedSpecialtiesForEPS({ eps_id: patient.insurance_eps_id });
+            return epsAuth.success ? epsAuth.authorized_specialties : undefined;
+          } catch { return undefined; }
+        })(),
       });
 
       // Persist in JSON conversation

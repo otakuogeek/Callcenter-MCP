@@ -1132,10 +1132,10 @@ const DoctorDashboard = () => {
                                         <div className="flex items-center gap-2 text-xs text-gray-500">
                                           {appointment.appointment_source && (
                                             <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-700 border-amber-200">
-                                              {appointment.appointment_source === 'Sistema_Inteligente' ? '🤖 Bot' : 
-                                               appointment.appointment_source === 'Web' ? '🌐 Web' : 
+                                              {appointment.appointment_source === 'WhatsApp' ? '💬 WhatsApp' : 
                                                appointment.appointment_source === 'Manual' ? '✋ Manual' :
                                                appointment.appointment_source === 'Llamada' ? '📞 Llamada' :
+                                               appointment.appointment_source === 'App' ? '📱 App' :
                                                appointment.appointment_source}
                                             </Badge>
                                           )}
@@ -1282,10 +1282,10 @@ const DoctorDashboard = () => {
                                         <div className="flex items-center gap-2 text-xs text-gray-500">
                                           {appointment.appointment_source && (
                                             <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-700 border-amber-200">
-                                              {appointment.appointment_source === 'Sistema_Inteligente' ? '🤖 Bot' : 
-                                               appointment.appointment_source === 'Web' ? '🌐 Web' : 
+                                              {appointment.appointment_source === 'WhatsApp' ? '💬 WhatsApp' : 
                                                appointment.appointment_source === 'Manual' ? '✋ Manual' :
                                                appointment.appointment_source === 'Llamada' ? '📞 Llamada' :
+                                               appointment.appointment_source === 'App' ? '📱 App' :
                                                appointment.appointment_source}
                                             </Badge>
                                           )}
@@ -1471,10 +1471,10 @@ const DoctorDashboard = () => {
                                   <div className="flex items-center gap-2 mt-1">
                                     {appointment.appointment_source && (
                                       <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-50 text-amber-700 border-amber-200">
-                                        {appointment.appointment_source === 'Sistema_Inteligente' ? '🤖 Bot/IA' : 
-                                         appointment.appointment_source === 'Web' ? '🌐 Portal Web' : 
+                                        {appointment.appointment_source === 'WhatsApp' ? '💬 WhatsApp' : 
                                          appointment.appointment_source === 'Manual' ? '✋ Manual' :
                                          appointment.appointment_source === 'Llamada' ? '📞 Llamada' :
+                                         appointment.appointment_source === 'App' ? '📱 App' :
                                          appointment.appointment_source}
                                       </Badge>
                                     )}

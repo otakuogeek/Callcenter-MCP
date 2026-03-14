@@ -49,6 +49,197 @@ const authMiddleware = (req, res, next) => {
 const cache = { s1: {}, s2: {}, lastUpdate: null };
 const sseClients = new Set();
 
+// ── Sistema de Incidentes ─────────────────────────────────────────
+const INCIDENTS_FILE = path.join(__dirname, '../data/incidents.json');
+const INCIDENTS_MAX = 500; // max incidents to keep
+
+// Ensure data directory exists
+const dataDir = path.join(__dirname, '../data');
+if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+
+// Load existing incidents
+let incidents = [];
+try {
+  if (fs.existsSync(INCIDENTS_FILE)) {
+    incidents = JSON.parse(fs.readFileSync(INCIDENTS_FILE, 'utf-8'));
+  }
+} catch { incidents = []; }
+
+// Track previous state for change detection
+let prevState = {
+  s1_online: true, s2_online: true,
+  s1_nginx: true, s1_db: true, s2_db: true,
+  s1_redis: true, s1_nfs: true,
+  repl_io: true, repl_sql: true,
+  s1_pm2: {}, s2_pm2: {}
+};
+
+function saveIncidents() {
+  try {
+    if (incidents.length > INCIDENTS_MAX) incidents = incidents.slice(-INCIDENTS_MAX);
+    fs.writeFileSync(INCIDENTS_FILE, JSON.stringify(incidents, null, 2));
+  } catch (e) { console.error('[Incidents] Error saving:', e.message); }
+}
+
+function addIncident(severity, category, title, details = '') {
+  const incident = {
+    id: Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    timestamp: new Date().toISOString(),
+    severity,    // critical | warning | info | resolved
+    category,    // server | database | replication | service | network
+    title,
+    details,
+    resolved: severity === 'resolved',
+    resolvedAt: severity === 'resolved' ? new Date().toISOString() : null
+  };
+  incidents.push(incident);
+  saveIncidents();
+
+  // Broadcast incident via SSE
+  broadcastSSE({ type: 'incident', incident });
+  console.log(`[Incident] ${severity.toUpperCase()} — ${title}`);
+  return incident;
+}
+
+function detectIncidents(s1, s2) {
+  // ── Server Online Status ──
+  if (prevState.s1_online && !s1?.online) {
+    addIncident('critical', 'server', 'Server 1 (Master) caído', `El nodo principal no responde. Error: ${s1?.error || 'Sin respuesta'}`);
+  } else if (!prevState.s1_online && s1?.online) {
+    addIncident('resolved', 'server', 'Server 1 (Master) recuperado', 'El nodo principal volvió a estar en línea.');
+  }
+
+  if (prevState.s2_online && !s2?.online) {
+    addIncident('critical', 'server', 'Server 2 (Réplica) caído', `El nodo réplica no responde. Error: ${s2?.error || 'Sin respuesta'}`);
+  } else if (!prevState.s2_online && s2?.online) {
+    addIncident('resolved', 'server', 'Server 2 (Réplica) recuperado', 'El nodo réplica volvió a estar en línea.');
+  }
+
+  // ── Nginx ──
+  const s1Nginx = s1?.nginx?.running ?? false;
+  if (prevState.s1_nginx && !s1Nginx) {
+    addIncident('critical', 'service', 'Nginx caído en S1', 'El balanceador de carga dejó de funcionar.');
+  } else if (!prevState.s1_nginx && s1Nginx) {
+    addIncident('resolved', 'service', 'Nginx restaurado en S1', 'El balanceador volvió a funcionar.');
+  }
+
+  // ── Database S1 ──
+  const s1Db = s1?.database?.running ?? false;
+  if (prevState.s1_db && !s1Db) {
+    addIncident('critical', 'database', 'MariaDB caído en S1 (Master)', 'La base de datos principal dejó de responder.');
+  } else if (!prevState.s1_db && s1Db) {
+    addIncident('resolved', 'database', 'MariaDB restaurado en S1 (Master)', 'La base de datos principal volvió a funcionar.');
+  }
+
+  // ── Database S2 ──
+  const s2Db = s2?.database?.running ?? false;
+  if (prevState.s2_db && !s2Db) {
+    addIncident('warning', 'database', 'MariaDB caído en S2 (Slave)', 'La base de datos réplica dejó de responder.');
+  } else if (!prevState.s2_db && s2Db) {
+    addIncident('resolved', 'database', 'MariaDB restaurado en S2 (Slave)', 'La base de datos réplica volvió a funcionar.');
+  }
+
+  // ── Redis ──
+  const s1Redis = s1?.redis?.running ?? false;
+  if (prevState.s1_redis && !s1Redis) {
+    addIncident('warning', 'service', 'Redis caído en S1', 'El servicio de caché dejó de responder.');
+  } else if (!prevState.s1_redis && s1Redis) {
+    addIncident('resolved', 'service', 'Redis restaurado en S1', 'El servicio de caché volvió a funcionar.');
+  }
+
+  // ── NFS ──
+  const s1Nfs = s1?.nfs?.running ?? false;
+  if (prevState.s1_nfs && !s1Nfs) {
+    addIncident('warning', 'service', 'NFS caído en S1', 'El servicio de archivos compartidos dejó de responder.');
+  } else if (!prevState.s1_nfs && s1Nfs) {
+    addIncident('resolved', 'service', 'NFS restaurado en S1', 'El servicio de archivos compartidos volvió a funcionar.');
+  }
+
+  // ── Replication IO Thread ──
+  const replIo = s2?.replication?.ioRunning === 'Yes';
+  if (prevState.repl_io && !replIo && s2?.online) {
+    addIncident('critical', 'replication', 'IO Thread de replicación detenido', `Slave_IO_Running: ${s2?.replication?.ioRunning || 'No'}. ${s2?.replication?.lastError || ''}`);
+  } else if (!prevState.repl_io && replIo) {
+    addIncident('resolved', 'replication', 'IO Thread de replicación restaurado', 'La replicación IO volvió a funcionar.');
+  }
+
+  // ── Replication SQL Thread ──
+  const replSql = s2?.replication?.sqlRunning === 'Yes';
+  if (prevState.repl_sql && !replSql && s2?.online) {
+    addIncident('critical', 'replication', 'SQL Thread de replicación detenido', `Slave_SQL_Running: ${s2?.replication?.sqlRunning || 'No'}. ${s2?.replication?.lastError || ''}`);
+  } else if (!prevState.repl_sql && replSql) {
+    addIncident('resolved', 'replication', 'SQL Thread de replicación restaurado', 'La replicación SQL volvió a funcionar.');
+  }
+
+  // ── Replication Lag (warning if > 30s) ──
+  const lag = s2?.replication?.secondsBehind;
+  if (typeof lag === 'number' && lag > 30) {
+    // Only warn every 60s (check last incident)
+    const lastLagIncident = incidents.filter(i => i.category === 'replication' && i.title.includes('Lag')).pop();
+    if (!lastLagIncident || (Date.now() - new Date(lastLagIncident.timestamp).getTime()) > 60000) {
+      addIncident('warning', 'replication', `Lag de replicación alto: ${lag}s`, `El slave está ${lag} segundos detrás del master.`);
+    }
+  }
+
+  // ── High CPU (>90%) ──
+  if (s1?.online && s1?.cpu > 90) {
+    const last = incidents.filter(i => i.title.includes('CPU alto S1')).pop();
+    if (!last || (Date.now() - new Date(last.timestamp).getTime()) > 120000) {
+      addIncident('warning', 'server', `CPU alto S1: ${s1.cpu.toFixed(1)}%`, 'El servidor principal tiene carga de CPU elevada.');
+    }
+  }
+  if (s2?.online && s2?.cpu > 90) {
+    const last = incidents.filter(i => i.title.includes('CPU alto S2')).pop();
+    if (!last || (Date.now() - new Date(last.timestamp).getTime()) > 120000) {
+      addIncident('warning', 'server', `CPU alto S2: ${s2.cpu.toFixed(1)}%`, 'El servidor réplica tiene carga de CPU elevada.');
+    }
+  }
+
+  // ── High RAM (>95%) ──
+  if (s1?.online && s1?.memory?.percent > 95) {
+    const last = incidents.filter(i => i.title.includes('RAM alto S1')).pop();
+    if (!last || (Date.now() - new Date(last.timestamp).getTime()) > 120000) {
+      addIncident('warning', 'server', `RAM alto S1: ${s1.memory.percent}%`, `Uso de memoria: ${s1.memory.used}/${s1.memory.total} MB`);
+    }
+  }
+  if (s2?.online && s2?.memory?.percent > 95) {
+    const last = incidents.filter(i => i.title.includes('RAM alto S2')).pop();
+    if (!last || (Date.now() - new Date(last.timestamp).getTime()) > 120000) {
+      addIncident('warning', 'server', `RAM alto S2: ${s2.memory.percent}%`, `Uso de memoria: ${s2.memory.used}/${s2.memory.total} MB`);
+    }
+  }
+
+  // ── PM2 process crashes ──
+  const checkPM2 = (procs, serverId, prevPm2) => {
+    if (!procs) return {};
+    const newState = {};
+    for (const p of procs) {
+      newState[p.name] = p.status;
+      const wasOnline = prevPm2[p.name] === 'online';
+      if (wasOnline && p.status !== 'online') {
+        addIncident('critical', 'service', `PM2 "${p.name}" caído en ${serverId}`, `Estado: ${p.status}. Reinicios: ${p.restarts}`);
+      } else if (!wasOnline && prevPm2[p.name] && p.status === 'online') {
+        addIncident('resolved', 'service', `PM2 "${p.name}" restaurado en ${serverId}`, `El proceso volvió a estar en línea. Reinicios: ${p.restarts}`);
+      }
+    }
+    return newState;
+  };
+
+  const newS1Pm2 = checkPM2(s1?.pm2, 'S1', prevState.s1_pm2);
+  const newS2Pm2 = checkPM2(s2?.pm2, 'S2', prevState.s2_pm2);
+
+  // Update previous state
+  prevState = {
+    s1_online: s1?.online ?? false,
+    s2_online: s2?.online ?? false,
+    s1_nginx: s1Nginx,
+    s1_db: s1Db, s2_db: s2Db,
+    s1_redis: s1Redis, s1_nfs: s1Nfs,
+    repl_io: replIo, repl_sql: replSql,
+    s1_pm2: newS1Pm2, s2_pm2: newS2Pm2
+  };
+}
+
 // ── Helper: ejecutar comando local ────────────────────────────────
 const execLocal = (cmd) => new Promise((resolve) => {
   exec(cmd, { timeout: 8000 }, (err, stdout) => resolve(err ? '' : stdout.trim()));
@@ -221,6 +412,9 @@ const refreshMetrics = async () => {
     cache.s2 = s2;
     cache.lastUpdate = Date.now();
 
+    // Detect incidents from metrics changes
+    detectIncidents(s1, s2);
+
     // Enviar a todos los clientes SSE
     const payload = `data: ${JSON.stringify({ s1, s2, lastUpdate: cache.lastUpdate })}\n\n`;
     sseClients.forEach(client => client.res.write(payload));
@@ -343,6 +537,46 @@ app.get('/monitor-api/config', authMiddleware, async (req, res) => {
       dnsManual: 'Hostinger DNS → cambiar A record a 72.62.164.88'
     }
   });
+});
+
+// ── Incidentes API ────────────────────────────────────────────────
+app.get('/monitor-api/incidents', authMiddleware, (req, res) => {
+  const { severity, category, limit, since } = req.query;
+  let filtered = [...incidents];
+  if (severity) filtered = filtered.filter(i => i.severity === severity);
+  if (category) filtered = filtered.filter(i => i.category === category);
+  if (since) {
+    const sinceMs = new Date(since).getTime();
+    if (!isNaN(sinceMs)) filtered = filtered.filter(i => new Date(i.timestamp).getTime() >= sinceMs);
+  }
+  const max = Math.min(parseInt(limit) || 100, 500);
+  filtered = filtered.slice(-max).reverse(); // newest first
+
+  // Calculate uptime stats
+  const now = Date.now();
+  const h24 = now - 86400000;
+  const h7d = now - 604800000;
+  const criticals24h = incidents.filter(i => new Date(i.timestamp).getTime() >= h24 && i.severity === 'critical').length;
+  const warnings24h = incidents.filter(i => new Date(i.timestamp).getTime() >= h24 && i.severity === 'warning').length;
+  const criticals7d = incidents.filter(i => new Date(i.timestamp).getTime() >= h7d && i.severity === 'critical').length;
+
+  res.json({
+    incidents: filtered,
+    stats: {
+      total: incidents.length,
+      criticals24h,
+      warnings24h,
+      criticals7d,
+      activeIssues: incidents.filter(i => !i.resolved && i.severity !== 'resolved' && i.severity !== 'info').length
+    }
+  });
+});
+
+app.delete('/monitor-api/incidents', authMiddleware, (req, res) => {
+  if (req.user.role !== 'superadmin') return res.status(403).json({ error: 'Solo superadmin' });
+  incidents = [];
+  saveIncidents();
+  res.json({ success: true, message: 'Historial de incidentes limpiado' });
 });
 
 // ── Stress Test Avanzado ──────────────────────────────────────────

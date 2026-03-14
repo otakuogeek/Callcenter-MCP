@@ -54,6 +54,9 @@ export interface Patient {
   notes?: string;
   created_at: string;
   
+  // Campos calculados / enriquecidos desde el servidor
+  appointment_count?: number;
+
   // Campos calculados (frontend)
   age?: number;
   avatar_color?: string;

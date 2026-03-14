@@ -75,7 +75,7 @@ if (process.env.NODE_ENV !== 'test') {
     skip: (req) => {
       // Omitir rate limiting para endpoints autenticados, salud y webhooks
       const hasAuth = !!(req.headers.authorization || req.query.token);
-      const isHealthOrWebhook = req.path === '/health' || req.path === '/ready' || req.path.startsWith('/api/webhooks');
+      const isHealthOrWebhook = req.path === '/health' || req.path === '/ready' || req.path.startsWith('/api/webhooks') || req.path.startsWith('/api/whatsapp/meta/webhook');
       return hasAuth || isHealthOrWebhook;
     }
   }));
@@ -84,7 +84,10 @@ if (process.env.NODE_ENV !== 'test') {
 app.options('*', cors(corsOptions));
 
 // Raw body parser para webhooks (antes del JSON parser)
+// /api/webhooks/* — webhooks genéricos (ElevenLabs, etc.)
 app.use('/api/webhooks', express.raw({ type: 'application/json' }));
+// /api/whatsapp/meta/webhook — webhooks de Meta Cloud API (necesita cuerpo crudo para verificar firma HMAC)
+app.use('/api/whatsapp/meta/webhook', express.raw({ type: '*/*' }));
 app.use(express.json());
 
 // Health & readiness endpoints

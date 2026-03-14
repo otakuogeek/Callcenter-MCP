@@ -57,8 +57,11 @@ export async function validationStep(ctx: PipelineContext): Promise<PipelineCont
   let text = ctx.aiResponseText || '';
   const { phone } = ctx;
   const state = getStateContext(phone);
+  // Only consider schedule as "executed" if scheduleAppointment specifically ran (not any tool error)
   const scheduleExecuted = ctx.executedTools.some(t =>
-    t.name === 'scheduleAppointment' || t.name.includes('YA AGENDADA') || t.name.includes('ERROR'),
+    t.name === 'scheduleAppointment' ||
+    t.name.includes('YA AGENDADA') ||
+    t.name === 'scheduleAppointment (ERROR)',
   );
 
   // 7A: Replace placeholders with real IDs

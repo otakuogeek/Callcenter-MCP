@@ -3163,7 +3163,7 @@ async function scheduleAppointment(args: any): Promise<any> {
         priority_level,
         appointment_source,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?, ?, 'Sistema_Inteligente', NOW())
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?, ?, 'Llamada', NOW())
     `, [
       patient_id,
       availability_id,
@@ -3199,7 +3199,7 @@ async function scheduleAppointment(args: any): Promise<any> {
           priority_level,
           appointment_source,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?, ?, 'Sistema_Inteligente', NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Confirmada', ?, ?, ?, 'Llamada', NOW())
       `, [
         patient_id,
         availability_id,

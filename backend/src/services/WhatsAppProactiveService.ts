@@ -15,11 +15,28 @@ import pool from '../db/pool';
 import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import pino from 'pino';
 import WhatsAppConnection from './WhatsAppConnection';
+import MetaConnection from './WhatsAppMetaConnection';
 
 const logger = pino({
   name: 'whatsapp-proactive',
   level: process.env.LOG_LEVEL || 'info'
 });
+
+function getWhatsAppProvider(): 'baileys' | 'meta' {
+  return process.env.WHATSAPP_PROVIDER?.toLowerCase() === 'meta' ? 'meta' : 'baileys';
+}
+
+function isWhatsAppAvailable(): boolean {
+  return getWhatsAppProvider() === 'meta'
+    ? MetaConnection.isConfigured()
+    : WhatsAppConnection.getStatus().connected;
+}
+
+async function sendWhatsAppText(phone: string, message: string) {
+  return getWhatsAppProvider() === 'meta'
+    ? MetaConnection.sendMessage(phone, message)
+    : WhatsAppConnection.sendMessage(phone, message);
+}
 
 // ============================================================================
 // TIPOS
@@ -279,13 +296,12 @@ export class WhatsAppProactiveService {
       const renderedMessage = this.renderTemplate(message.template, message.variables);
 
       // Verificar que WhatsApp está conectado
-      const status = WhatsAppConnection.getStatus();
-      if (!status.connected) {
+      if (!isWhatsAppAvailable()) {
         throw new Error('WhatsApp not connected');
       }
 
       // Enviar mensaje
-      const result = await WhatsAppConnection.sendMessage(message.phone, renderedMessage);
+      const result = await sendWhatsAppText(message.phone, renderedMessage);
 
       if (result.success) {
         await connection.execute(`
@@ -472,8 +488,7 @@ export class WhatsAppProactiveService {
       variables
     );
 
-    const status = WhatsAppConnection.getStatus();
-    if (!status.connected) {
+    if (!isWhatsAppAvailable()) {
       logger.warn({ phone }, 'WhatsApp not connected, queuing confirmation');
       // Programar para envío inmediato
       const connection = await pool.getConnection();
@@ -495,7 +510,7 @@ export class WhatsAppProactiveService {
       return false;
     }
 
-    const result = await WhatsAppConnection.sendMessage(phone, renderedMessage);
+    const result = await sendWhatsAppText(phone, renderedMessage);
     
     if (result.success) {
       logger.info({ appointmentId, phone }, 'Appointment confirmation sent');

@@ -44,9 +44,20 @@ export async function aiGenerationStep(ctx: PipelineContext): Promise<PipelineCo
     return ctx;
   }
 
-  // Greeting reset
-  const isGreeting = /^(hola|buenas|buenos días|buenas tardes|buenas noches|hey|hi|hello|saludos)/i.test(message.trim());
-  if (isGreeting && stateContext.currentState !== ConversationState.IDLE) {
+  // Greeting reset — ONLY for pure greetings (not "hola quiero cita") and ONLY outside mid-flow states
+  const isPureGreeting = /^(hola|buenas|buenos\s+días|buenas\s+tardes|buenas\s+noches|hey|hi|hello|saludos)\s*[,!.¡¿]*\s*$/i.test(message.trim());
+  const midFlowStates: ConversationState[] = [
+    ConversationState.AWAITING_DATE,
+    ConversationState.AWAITING_TIME,
+    ConversationState.AWAITING_REASON,
+    ConversationState.AWAITING_DOCTOR_SELECTION,
+    ConversationState.WAITING_LIST,
+    ConversationState.AWAITING_BENEFICIARY,
+    ConversationState.AWAITING_PHONE_CONFIRMATION,
+    ConversationState.AWAITING_CONFIRMATION,
+    ConversationState.AWAITING_PATIENT_DATA,
+  ];
+  if (isPureGreeting && stateContext.currentState !== ConversationState.IDLE && !midFlowStates.includes(stateContext.currentState)) {
     resetState(phone);
     updateState(phone, ConversationState.AWAITING_DOCUMENT);
   }

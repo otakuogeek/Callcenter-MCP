@@ -4,6 +4,7 @@ import { RowDataPacket, ResultSetHeader } from 'mysql2';
 import WhatsAppAI from '../services/WhatsAppAIService';
 import MCPTools from '../services/MCPToolsClient';
 import WhatsAppConnection, { whatsappEvents } from '../services/WhatsAppConnection';
+import MetaConnection from '../services/WhatsAppMetaConnection';
 import { normalizeIncomingText } from '../utils/whatsappUtils';
 import { resetState } from '../services/WhatsAppStateManager';
 import * as ChatMemoryService from '../services/ChatMemoryService';
@@ -347,8 +348,17 @@ ensureTablesExist().catch(err => {
  */
 router.get('/status', async (req: Request, res: Response) => {
   try {
-    // Obtener estado real de la conexión Baileys
-    const connectionStatus = WhatsAppConnection.getStatus();
+    const provider = (process.env.WHATSAPP_PROVIDER || 'baileys').toLowerCase();
+    const connectionStatus = provider === 'meta'
+      ? {
+          connected: MetaConnection.isConfigured(),
+          status: MetaConnection.isConfigured() ? 'configured' : 'not_configured',
+          phoneNumber: null,
+          qrCode: null,
+          sessionId: 'meta-cloud-api',
+          lastError: null,
+        }
+      : WhatsAppConnection.getStatus();
     
     const connection = await pool.getConnection();
     try {
@@ -401,6 +411,7 @@ router.get('/status', async (req: Request, res: Response) => {
             activeConversations: convRows[0]?.active_conversations || 0
           },
           config: {
+            whatsappProvider: (process.env.WHATSAPP_PROVIDER || 'baileys') as 'baileys' | 'meta',
             aiProvider: process.env.WHATSAPP_USE_GROQ?.toLowerCase() === 'true' ? 'groq' : 'chatgpt',
             aiModel: process.env.WHATSAPP_USE_GROQ?.toLowerCase() === 'true' 
               ? (process.env.GROQ_MODEL || 'llama-3.3-70b-versatile')
@@ -718,6 +729,7 @@ router.get('/messages', async (req: Request, res: Response) => {
 router.post('/messages/send', async (req: Request, res: Response) => {
   try {
     const { to, message, sessionId } = req.body;
+    const provider = (process.env.WHATSAPP_PROVIDER || 'baileys').toLowerCase();
 
     if (!to || !message) {
       res.status(400).json({
@@ -727,18 +739,27 @@ router.post('/messages/send', async (req: Request, res: Response) => {
       return;
     }
 
-    // Verificar conexión
-    const status = WhatsAppConnection.getStatus();
+    const status = provider === 'meta'
+      ? {
+          connected: MetaConnection.isConfigured(),
+          sessionId: 'meta-cloud-api',
+          phoneNumber: null,
+        }
+      : WhatsAppConnection.getStatus();
+
     if (!status.connected) {
       res.status(503).json({
         success: false,
-        error: 'WhatsApp no está conectado. Por favor, escanee el código QR primero.'
+        error: provider === 'meta'
+          ? 'WhatsApp Meta no está configurado correctamente. Revisa las credenciales de Meta en el .env.'
+          : 'WhatsApp no está conectado. Por favor, escanee el código QR primero.'
       });
       return;
     }
 
-    // Enviar mensaje real via Baileys
-    const sendResult = await WhatsAppConnection.sendMessage(to, message);
+    const sendResult = provider === 'meta'
+      ? await MetaConnection.sendMessage(to, message)
+      : await WhatsAppConnection.sendMessage(to, message);
     
     if (!sendResult.success) {
       res.status(500).json({
@@ -750,12 +771,13 @@ router.post('/messages/send', async (req: Request, res: Response) => {
 
     // Guardar mensaje en BD
     const messageId = sendResult.messageId || `msg_${Date.now()}`;
+    const fromNumber = provider === 'meta' ? 'meta-cloud-api' : (status.phoneNumber || 'bot');
     
     await pool.execute<ResultSetHeader>(`
       INSERT INTO wa_messages 
       (session_id, message_id, from_number, to_number, body, direction, status)
       VALUES (?, ?, ?, ?, ?, 'outbound', 'sent')
-    `, [status.sessionId, messageId, status.phoneNumber || 'bot', to, message]);
+    `, [status.sessionId, messageId, fromNumber, to, message]);
 
     res.json({
       success: true,

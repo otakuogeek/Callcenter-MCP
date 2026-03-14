@@ -29,7 +29,12 @@ import {
   CheckCircle2,
   XCircle,
   Pause,
-  Timer
+  Timer,
+  Phone,
+  Smartphone,
+  User,
+  MessageCircle,
+  MonitorSmartphone
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -61,6 +66,7 @@ interface HistoryRecord {
   location_name: string;
   cups_code?: string;
   cups_name?: string;
+  appointment_source?: string;
 }
 
 interface PatientHistoryModalProps {
@@ -154,6 +160,35 @@ export const PatientHistoryModal = ({
     );
   };
 
+  const SOURCE_CONFIG: Record<string, { icon: React.ReactNode; label: string; color: string; bgColor: string }> = {
+    'Llamada': { icon: <Phone className="h-3 w-3" />, label: 'Llamada', color: 'text-orange-800', bgColor: 'bg-orange-100 border-orange-300' },
+    'WhatsApp': { icon: <MessageCircle className="h-3 w-3" />, label: 'WhatsApp', color: 'text-green-800', bgColor: 'bg-green-100 border-green-300' },
+    'App': { icon: <Smartphone className="h-3 w-3" />, label: 'App', color: 'text-violet-800', bgColor: 'bg-violet-100 border-violet-300' },
+    'Manual': { icon: <User className="h-3 w-3" />, label: 'Manual', color: 'text-gray-700', bgColor: 'bg-gray-100 border-gray-300' },
+  };
+
+  const getSourceBadge = (record: HistoryRecord) => {
+    // Para waiting_list, usar requested_by si no hay appointment_source
+    const rawSource = record.appointment_source ||
+      (record.record_type === 'waiting_list' && record.requested_by ? record.requested_by : null) ||
+      'Manual';
+
+    // Normalizar fuentes conocidas
+    let source = rawSource;
+    if (/whatsapp/i.test(rawSource)) source = 'WhatsApp';
+    else if (/llamada|call|telefon|elevenlabs/i.test(rawSource)) source = 'Llamada';
+    else if (/portal|web|público|manual|sistema|inteligente/i.test(rawSource)) source = 'Manual';
+    else if (/app/i.test(rawSource)) source = 'App';
+
+    const config = SOURCE_CONFIG[source] || { icon: <MonitorSmartphone className="h-3 w-3" />, label: rawSource, color: 'text-gray-700', bgColor: 'bg-gray-100 border-gray-300' };
+    return (
+      <Badge variant="outline" className={`${config.bgColor} ${config.color} flex items-center gap-1 text-xs`}>
+        {config.icon}
+        {config.label}
+      </Badge>
+    );
+  };
+
   const renderRecord = (record: HistoryRecord) => {
     const scheduledDate = record.scheduled_at ? new Date(record.scheduled_at) : null;
     const createdDate = record.created_at ? new Date(record.created_at) : null;
@@ -176,6 +211,8 @@ export const PatientHistoryModal = ({
           </span>
           {getStatusBadge(record.status)}
           {record.priority_level && getPriorityBadge(record.priority_level)}
+          {/* Origen de la cita */}
+          {getSourceBadge(record)}
           {isWaitingList && record.call_type && (
             <Badge variant="outline" className="bg-gray-100 text-gray-600">
               {record.call_type === 'reagendar' ? 'Reagendamiento' : 'Normal'}
@@ -239,7 +276,7 @@ export const PatientHistoryModal = ({
             {record.notes && (
               <p className="text-gray-600 italic">Notas: {record.notes}</p>
             )}
-            {isWaitingList && record.requested_by && (
+            {isWaitingList && record.requested_by && !['WhatsApp','Llamada','App','Manual','Portal Público'].some(k => new RegExp(k, 'i').test(record.requested_by!)) && (
               <p className="text-gray-600">
                 <span className="text-gray-500">Solicitado por:</span> {record.requested_by}
               </p>
